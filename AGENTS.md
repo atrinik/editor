@@ -63,19 +63,28 @@
   design choices; this program replaces technical implementation, not product
   intent.
 - M1 establishes the clean-room Cargo application, dependency directions,
-  safe-filesystem threat model, and released renderer/toolkit boundaries.
+  safe-filesystem threat model, released renderer/toolkit boundaries, and the
+  machine-readable classic authoring behavior inventory in issue #15. That
+  inventory supplies editor capability IDs and evidence to the program-wide
+  equivalence contract in `atrinik/atrinik#279`.
 - M2 integrates lossless authored documents with the shared renderer using
   deterministic adapters and resource providers. It must not add a parser or
   editor-specific renderer.
-- M3 has no editor-owned product delivery. The first playable replacement may
-  proceed in parallel while editor work remains on stable toolkit/renderer
-  contracts; do not invent hidden M3 editor scope.
+- M3 delivers only the bounded vertical slice in issue #17: open and render one
+  licensed map through the shared toolkit/renderer path, select one object,
+  make one preconditioned semantic edit, validate and save atomically, reopen
+  it losslessly, and invoke the wrapper-owned isolated playtest. Retain this
+  path for M4; do not turn it into a throwaway parser, renderer, writer, or the
+  full map-editor MVP.
 - M4 delivers project/multi-document lifecycle, transactional commands,
   undo/redo, minimal atomic saves, shared-renderer viewport and map tools,
   catalog/tree/inspector/diagnostics, automation/preview/recovery, isolated
   playtests, and the map-editing MVP.
 - M5 adds focused non-map panels only from measured authoring demand and on the
-  same toolkit transaction/model contracts.
+  same toolkit transaction/model contracts, then issue #16 burns the M1
+  inventory down across the complete supported content pack. Publish its
+  machine-readable parity evidence for the aggregate cutover gate in
+  `atrinik/atrinik#280`.
 - M6 owns fuzz/fault/soak/recovery, Linux/Windows packages, final Gridarta
   replacement evidence, and supported-workflow cutover.
 - Project shell, command/history model, panels, document adapters, viewport
