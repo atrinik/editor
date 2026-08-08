@@ -15,8 +15,9 @@
   and offscreen previews. Do not fork renderer code or implement editor-only
   projection, painter order, lighting, resource caches, or pixel picking.
 - Do not depend on `atrinik/client`, generated game protocol, client sessions,
-  Go server internals, a legacy repository, or Gridarta. The editor is an
-  offline authoring consumer, not a mode embedded into the connected client.
+  Go server internals, `atrinik/classic`, an archived predecessor repository,
+  or Gridarta. The editor is an offline authoring consumer, not a mode embedded
+  into the connected client.
 - Coordinated local renderer/toolkit overrides belong in an
   `atrinik/atrinik` wrapper profile and must not modify Cargo manifests.
   Production dependencies use immutable released versions.
@@ -96,9 +97,9 @@
 
 - New Rust code, tests, documentation, and editor-specific fixtures in this
   repository are MIT. Do not add GPL/AGPL code dependencies or adapt Gridarta,
-  legacy editor/client/server source, tests, comments, or internal structure by
-  default. Observable workflows and preserved product specifications may guide
-  an independent implementation.
+  classic editor/client/server source, tests, comments, or internal structure
+  by default. Observable workflows and preserved product specifications may
+  guide an independent implementation.
 - Historical reuse is allowed only for a person and scope present in the
   exhaustive approved-grantor registry in the current `atrinik/atrinik`
   `AGENTS.md`. Apply its complete-history, identity, separability,
@@ -152,7 +153,7 @@
   Linux/Windows packages. Packages pin compatible renderer/toolkit releases and
   include checksums, SBOM, provenance, MIT/dependency notices, and only exact
   allowlisted assets. They must not bundle Java/Gridarta, a server/client,
-  Python, legacy libraries, source checkouts, or mutable game state.
+  Python, classic libraries, source checkouts, or mutable game state.
 - Pull-request titles and squash commits use Conventional Commits. Every squash
   merge is released by semantic-release; do not create tags manually or couple
   publication to wrapper, renderer, toolkit, or client commits.
