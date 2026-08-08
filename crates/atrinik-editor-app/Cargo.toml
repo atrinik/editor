@@ -1,0 +1,14 @@
+[package]
+name = "atrinik-editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+atrinik-editor-project.workspace = true
+sdl3.workspace = true
+
+[lints]
+workspace = true

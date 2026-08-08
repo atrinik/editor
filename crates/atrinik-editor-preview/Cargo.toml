@@ -1,0 +1,18 @@
+[package]
+name = "atrinik-editor-preview"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+atrinik-render-api.workspace = true
+atrinik-render-resources.workspace = true
+atrinik-scene.workspace = true
+
+[dev-dependencies]
+atrinik-render-testkit.workspace = true
+
+[lints]
+workspace = true

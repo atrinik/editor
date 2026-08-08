@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "owner": "editor maintainers",
+  "review_cadence": "monthly and on every dependency update",
+  "eol_response": "upgrade, replace, or remove before an unsupported release ships",
+  "rust": "1.97.1",
+  "edition": "2024",
+  "direct_external": [
+    {"repository":"atrinik/content-toolkit","release":"v1.0.0","version":"0.1.0","revision":"b2178d442af5d897a45619c200fec5ceb39fc3cf","crates":["atrinik-source","atrinik-transaction"],"purpose":"released lossless document and semantic transaction authority"},
+    {"repository":"atrinik/renderer","release":"v1.0.0","version":"0.1.0","revision":"3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9","crates":["atrinik-scene","atrinik-render-api","atrinik-render-resources"],"purpose":"released scene, render, and resource contracts"},
+    {"repository":"crates.io","release":"sdl3 0.18.4 / SDL 3.4.14","version":"0.18.4","revision":"Cargo.lock","crates":["sdl3"],"purpose":"isolated native application window lifecycle"}
+  ],
+  "local_override_policy": "wrapper profiles only; never edit Cargo manifests",
+  "ci_tools": [
+    {"name":"cargo-deny","version":"0.20.2","source":"github.com/EmbarkStudios/cargo-deny releases","validation":"SHA-256 before execution"},
+    {"name":"cargo-auditable","version":"0.7.5","source":"github.com/rust-secure-code/cargo-auditable releases","validation":"SHA-256 before execution"},
+    {"name":"Syft","version":"1.50.0","source":"github.com/anchore/syft releases","validation":"SHA-256 before execution"},
+    {"name":"semantic-release","version":"25.0.9","source":"npm registry","validation":"ephemeral exact-version execution"}
+  ],
+  "actions": [
+    {"repository":"actions/checkout","revision":"3d3c42e5aac5ba805825da76410c181273ba90b1"},
+    {"repository":"actions/upload-artifact","revision":"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"},
+    {"repository":"actions/download-artifact","revision":"3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"}
+  ],
+  "forbidden": ["atrinik/client","atrinik/protocol","atrinik/server","atrinik/classic","Gridarta","write-capable network services","editor parsers/writers","editor renderers"]
+}
