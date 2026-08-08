@@ -20,9 +20,10 @@ try {
     syft "$Stage/bin/atrinik-editor.exe" --source-name atrinik-editor --source-version $Version --output "cyclonedx-json=$Stage/sbom.cdx.json"
     $Sbom = Get-Content "$Stage/sbom.cdx.json" -Raw | ConvertFrom-Json
     if ($Sbom.components.Count -lt 10) { throw "binary SBOM is incomplete" }
-    $Sbom.serialNumber = "urn:uuid:4e951c04-6a5e-5db4-8c15-67c613215450"
+    $Digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("atrinik-editor:windows-amd64:$Version"))).ToLowerInvariant()
+    $Sbom.serialNumber = "urn:uuid:$($Digest.Substring(0, 8))-$($Digest.Substring(8, 4))-8$($Digest.Substring(13, 3))-8$($Digest.Substring(17, 3))-$($Digest.Substring(20, 12))"
     $Sbom.metadata.timestamp = "1970-01-01T00:00:00Z"
-    $Sbom.metadata.component.'bom-ref' = "atrinik-editor@$Version"
+    $Sbom.metadata.component.'bom-ref' = "atrinik-editor-windows-amd64@$Version"
     foreach ($Component in $Sbom.components) {
         if ($Component.type -eq "file") { $Component.name = "/atrinik-editor.exe" }
     }

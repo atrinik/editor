@@ -14,8 +14,10 @@ wrapper alone may provision or supervise a server playtest.
 
 ## Required controls
 
-- Accept relative slash-separated paths only. Reject absolute, drive, UNC,
-  traversal, empty/dot segments, NUL, excessive length, and ambiguous case.
+- Accept portable relative slash-separated paths only. Reject absolute, drive,
+  UNC, traversal, empty/dot segments, control characters, Windows alternate
+  streams and device names, trailing dot/space aliases, excessive length, and
+  ambiguous case.
 - Declare source/write roots and deny generated, collected, build, runtime,
   state, log, and recovery prefixes even when nested below a source root.
 - Canonicalize without following authority from project instructions. Reject
@@ -38,6 +40,7 @@ wrapper alone may provision or supervise a server playtest.
 
 `RelativePath`, `PathPolicy`, `FileStamp`, and `PathProbe` enforce lexical,
 class, canonical, type, identity, and revision checks with deterministic fakes.
-They intentionally perform no real filesystem operation. Issue #4 integrates
-the released toolkit publisher and OS-specific canonical/file-identity adapter;
-issue #9 owns fault, race, symlink-swap, permission, disk-full, and crash tests.
+They intentionally perform no real filesystem operation. Canonical paths use a
+slash-normalized adapter contract. Issue #4 integrates the released toolkit
+publisher and OS-specific canonical/file-identity/case-collision adapter; issue
+#9 owns fault, race, symlink-swap, permission, disk-full, and crash tests.

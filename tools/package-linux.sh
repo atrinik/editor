@@ -31,10 +31,12 @@ SYFT_CHECK_FOR_APP_UPDATE=false syft \
   --output "cyclonedx-json=${stage}/atrinik-editor-${version}/sbom.cdx.json"
 sbom="${stage}/atrinik-editor-${version}/sbom.cdx.json"
 normalized="${sbom}.normalized"
-jq --arg version "${version}" '
-  .serialNumber = "urn:uuid:4e951c04-6a5e-5db4-8c15-67c613215450" |
+digest=$(printf 'atrinik-editor:linux-amd64:%s' "${version}" | sha256sum | cut -d' ' -f1)
+serial="urn:uuid:${digest:0:8}-${digest:8:4}-8${digest:13:3}-8${digest:17:3}-${digest:20:12}"
+jq --arg version "${version}" --arg serial "${serial}" '
+  .serialNumber = $serial |
   .metadata.timestamp = "1970-01-01T00:00:00Z" |
-  .metadata.component["bom-ref"] = ("atrinik-editor@" + $version) |
+  .metadata.component["bom-ref"] = ("atrinik-editor-linux-amd64@" + $version) |
   (.components[] | select(.type == "file") | .name) = "/atrinik-editor"
 ' "${sbom}" >"${normalized}"
 mv "${normalized}" "${sbom}"

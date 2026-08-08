@@ -16,13 +16,11 @@ impl RelativePath {
         let value = value.as_ref();
         if value.is_empty()
             || value.len() > MAX_PATH_BYTES
-            || value.contains(['\0', '\\'])
+            || value.contains([':', '\\'])
+            || value.chars().any(char::is_control)
             || value.starts_with('/')
             || value.starts_with("//")
-            || value.as_bytes().get(1) == Some(&b':')
-            || value
-                .split('/')
-                .any(|part| part.is_empty() || matches!(part, "." | ".."))
+            || value.split('/').any(|part| !portable_segment(part))
         {
             return Err(Error::InvalidPath);
         }
@@ -33,6 +31,21 @@ impl RelativePath {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+fn portable_segment(part: &str) -> bool {
+    if part.is_empty() || matches!(part, "." | "..") || part.ends_with(['.', ' ']) {
+        return false;
+    }
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !(stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -258,7 +271,19 @@ mod tests {
     #[test]
     fn rejects_path_attacks_and_denied_outputs() {
         for path in [
-            "", "../map", "/map", "C:/map", "maps//x", "maps/./x", "maps\\x",
+            "",
+            "../map",
+            "/map",
+            "C:/map",
+            "maps//x",
+            "maps/./x",
+            "maps\\x",
+            "maps/file:stream",
+            "maps/NUL.txt",
+            "maps/com1",
+            "maps/trailing.",
+            "maps/trailing ",
+            "maps/control\nname",
         ] {
             assert_eq!(RelativePath::new(path), Err(Error::InvalidPath));
         }

@@ -22,3 +22,10 @@ jq -e '
       ($source | startswith("git+https://github.com/atrinik/content-toolkit?rev=b2178d442af5d897a45619c200fec5ceb39fc3cf")) or
       ($source | startswith("git+https://github.com/atrinik/renderer?rev=3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9"))))
 ' "${metadata}" >/dev/null
+
+if grep -RnE --include='*.rs' \
+  'std::(fs|net|process::Command)|tokio::|fn[[:space:]]+(parse|serialize|write|save)[[:space:]]*\(' \
+  crates >/dev/null; then
+  echo "editor source duplicates a forbidden parser/writer or direct I/O authority" >&2
+  exit 1
+fi
