@@ -19,6 +19,6 @@ jq -e '
     (.source // "") as $source |
     ($source == "" or
       $source == "registry+https://github.com/rust-lang/crates.io-index" or
-      ($source | startswith("git+https://github.com/atrinik/content-toolkit?rev=b2178d442af5d897a45619c200fec5ceb39fc3cf#")) or
-      ($source | startswith("git+https://github.com/atrinik/renderer?rev=3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9#"))))
+      ($source | startswith("git+https://github.com/atrinik/content-toolkit?rev=b2178d442af5d897a45619c200fec5ceb39fc3cf")) or
+      ($source | startswith("git+https://github.com/atrinik/renderer?rev=3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9"))))
 ' "${metadata}" >/dev/null
