@@ -1,0 +1,25 @@
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "Zlib"]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+deny = [
+  { name = "reqwest" },
+  { name = "tokio" },
+  { name = "quinn" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = [
+  "https://github.com/atrinik/content-toolkit",
+  "https://github.com/atrinik/renderer",
+]
