@@ -13,7 +13,7 @@ jq -e '
   deps("atrinik-editor-ui") == ["atrinik-editor-project"] and
   deps("atrinik-editor-preview") == ["atrinik-render-api","atrinik-render-resources","atrinik-render-testkit","atrinik-scene"] and
   deps("atrinik-editor-testkit") == ["atrinik-editor-project"] and
-  deps("atrinik-editor") == ["atrinik-editor-project","sdl3"] and
+  deps("atrinik-editor") == ["atrinik-editor-commands","atrinik-editor-document","atrinik-editor-preview","atrinik-editor-project","atrinik-editor-ui","sdl3"] and
   ([.packages[].name | select(test("(client|protocol|server|classic|gridarta)"; "i"))] | length == 0) and
   all(.packages[].dependencies[];
     (.source // "") as $source |

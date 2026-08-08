@@ -3,9 +3,6 @@
 
 #![forbid(unsafe_code)]
 
-const TOOLKIT_COMPATIBILITY: &str = "content-toolkit-v1/0.1.0";
-const RENDERER_COMPATIBILITY: &str = "scene-bundle-v1/0.1.0";
-
 fn main() {
     let command = std::env::args()
         .nth(1)
@@ -14,15 +11,36 @@ fn main() {
         "version" | "--version" => println!(
             "atrinik-editor {} toolkit={} renderer={}",
             env!("CARGO_PKG_VERSION"),
-            TOOLKIT_COMPATIBILITY,
-            RENDERER_COMPATIBILITY
+            atrinik_editor_document::TOOLKIT_COMPATIBILITY,
+            atrinik_editor_preview::RENDERER_COMPATIBILITY
         ),
         "headless" => {
             let mut state = atrinik_editor_project::ProjectState::default();
             let path = atrinik_editor_project::RelativePath::new("maps/empty.map")
                 .expect("constant path is valid");
-            state.open(path).expect("empty project state is available");
-            println!("headless generation={}", state.generation());
+            state
+                .open(path.clone())
+                .expect("empty project state is available");
+            let document = atrinik_editor_document::DocumentView::open(
+                "headless:empty",
+                std::sync::Arc::from(&b"name empty\n"[..]),
+            )
+            .expect("synthetic document is valid");
+            let history = atrinik_editor_commands::History::default();
+            let mut ui = atrinik_editor_ui::UiState::default();
+            ui.select(atrinik_editor_ui::Selection {
+                document: path,
+                semantic_id: 1,
+            })
+            .expect("synthetic selection is valid");
+            let _scene =
+                atrinik_editor_preview::empty_scene(1, 1, 1).expect("synthetic viewport is valid");
+            println!(
+                "headless generation={} diagnostics={} history={:?}",
+                state.generation(),
+                document.diagnostics_len(),
+                history.depths()
+            );
         }
         "window" => {
             let sdl = sdl3::init().unwrap_or_else(|error| fail(&error));

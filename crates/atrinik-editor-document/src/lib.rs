@@ -6,6 +6,8 @@
 use atrinik_source::{Document, Limits, Revision, SourceId};
 use std::{fmt, sync::Arc};
 
+pub const TOOLKIT_COMPATIBILITY: &str = "content-toolkit-v1/0.1.0";
+
 #[derive(Clone, Debug)]
 pub struct DocumentView {
     document: Arc<Document>,

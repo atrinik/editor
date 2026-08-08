@@ -8,6 +8,8 @@ use atrinik_render_resources::ResourceProvider;
 use atrinik_scene::{SceneBundle, SceneLimits, Viewport};
 use std::sync::Arc;
 
+pub const RENDERER_COMPATIBILITY: &str = "scene-bundle-v1/0.1.0";
+
 pub fn empty_scene(
     width: u32,
     height: u32,

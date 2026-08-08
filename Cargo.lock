@@ -11,7 +11,11 @@ source = "git+https://github.com/atrinik/content-toolkit?rev=b2178d442af5d897a45
 name = "atrinik-editor"
 version = "0.1.0"
 dependencies = [
+ "atrinik-editor-commands",
+ "atrinik-editor-document",
+ "atrinik-editor-preview",
  "atrinik-editor-project",
+ "atrinik-editor-ui",
  "sdl3",
 ]
 
