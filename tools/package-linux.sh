@@ -29,7 +29,16 @@ SYFT_CHECK_FOR_APP_UPDATE=false syft \
   "${stage}/atrinik-editor-${version}/bin/atrinik-editor" \
   --source-name atrinik-editor --source-version "${version}" \
   --output "cyclonedx-json=${stage}/atrinik-editor-${version}/sbom.cdx.json"
-jq -e '(.components // []) | length >= 10' "${stage}/atrinik-editor-${version}/sbom.cdx.json" >/dev/null
+sbom="${stage}/atrinik-editor-${version}/sbom.cdx.json"
+normalized="${sbom}.normalized"
+jq --arg version "${version}" '
+  .serialNumber = "urn:uuid:4e951c04-6a5e-5db4-8c15-67c613215450" |
+  .metadata.timestamp = "1970-01-01T00:00:00Z" |
+  .metadata.component["bom-ref"] = ("atrinik-editor@" + $version) |
+  (.components[] | select(.type == "file") | .name) = "/atrinik-editor"
+' "${sbom}" >"${normalized}"
+mv "${normalized}" "${sbom}"
+jq -e '(.components // []) | length >= 10' "${sbom}" >/dev/null
 jq -n --arg version "${version}" --arg revision "$(git rev-parse HEAD)" \
   --arg rust "$(rustc --version)" \
   '{schema_version:1,version:$version,revision:$revision,rust:$rust,

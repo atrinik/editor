@@ -20,6 +20,13 @@ try {
     syft "$Stage/bin/atrinik-editor.exe" --source-name atrinik-editor --source-version $Version --output "cyclonedx-json=$Stage/sbom.cdx.json"
     $Sbom = Get-Content "$Stage/sbom.cdx.json" -Raw | ConvertFrom-Json
     if ($Sbom.components.Count -lt 10) { throw "binary SBOM is incomplete" }
+    $Sbom.serialNumber = "urn:uuid:4e951c04-6a5e-5db4-8c15-67c613215450"
+    $Sbom.metadata.timestamp = "1970-01-01T00:00:00Z"
+    $Sbom.metadata.component.'bom-ref' = "atrinik-editor@$Version"
+    foreach ($Component in $Sbom.components) {
+        if ($Component.type -eq "file") { $Component.name = "/atrinik-editor.exe" }
+    }
+    $Sbom | ConvertTo-Json -Depth 20 -Compress | Set-Content "$Stage/sbom.cdx.json" -Encoding utf8NoBOM
     $Provenance = [ordered]@{
         schema_version = 1; version = $Version; revision = (git rev-parse HEAD); rust = (rustc --version)
         toolkit = [ordered]@{ release = "v1.0.0"; revision = "b2178d442af5d897a45619c200fec5ceb39fc3cf" }
