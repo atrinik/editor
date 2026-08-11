@@ -15,14 +15,14 @@ direct human-written code contributions are welcome.
 This is a clean-room reimplementation and improvement of Classic/Gridarta-era
 authoring workflows, not a mechanical translation or source port. Follow the
 [replacement roadmap](https://github.com/atrinik/atrinik/issues/168) and the
-[canonical project authorship statement](https://atrinik.org/licenses/) for
-the wider project boundaries.
+[canonical project authorship statement](https://github.com/atrinik/atrinik/issues/331)
+for the wider project boundaries.
 
-The editor operates on maps, quests, lore, archetypes, pixel art, and other
-content owned and directed by human creators. The editor's MIT license does not
-change that content's authorship, provenance, or license, and the editor must
-not add a generative-content feature that conflicts with the owning content
-repository's policy.
+The editor operates on human-authored maps, quests, lore, archetypes, pixel
+art, and other creative game content with its own exact creator or upstream
+provenance and licenses. That content is distinct from the editor's
+MIT-licensed code, and the editor must not add a generative-content feature
+that conflicts with the owning content repository's policy.
 
 ## M1 architecture
 
