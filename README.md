@@ -3,6 +3,27 @@
 This is the fresh MIT Rust authoring application for Atrinik. It is independent
 of Gridarta, `atrinik/classic`, the connected client, protocol, and server.
 
+## Development model
+
+The editor is part of Atrinik's agentic next-generation reimplementation. Its
+fresh MIT-licensed Rust code is developed primarily through OpenAI Codex
+workflows under maintainer direction and review, with clean-room provenance
+controls, tests, and repository validation. This describes the project's
+current primary development workflow, not every line, commit, or contributor;
+direct human-written code contributions are welcome.
+
+This is a clean-room reimplementation and improvement of Classic/Gridarta-era
+authoring workflows, not a mechanical translation or source port. Follow the
+[replacement roadmap](https://github.com/atrinik/atrinik/issues/168) and the
+[canonical project authorship statement](https://github.com/atrinik/atrinik/issues/331)
+for the wider project boundaries.
+
+The editor operates on human-authored maps, quests, lore, archetypes, pixel
+art, and other creative game content with its own exact creator or upstream
+provenance and licenses. That content is distinct from the editor's
+MIT-licensed code, and the editor must not add a generative-content feature
+that conflicts with the owning content repository's policy.
+
 ## M1 architecture
 
 The editor pins the immutable v1.0.0 source revisions of
