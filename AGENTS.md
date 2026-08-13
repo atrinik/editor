@@ -12,9 +12,10 @@
   semantic masks, picking, typography, and offscreen previews. Never fork
   renderer code or create editor-only projection, painter, lighting, cache, or
   pixel-picking behavior.
-- Do not depend on client sessions, GP1, Go internals, classic implementation,
-  archived predecessors, or Gridarta. Preview is local rendering; playable
-  tests belong to wrapper-owned isolated topologies.
+- Do not make editor builds or runtime depend on client sessions, GP1, Go
+  internals, classic implementation, archived predecessors, or Gridarta.
+  Preview is local rendering; playable tests belong to wrapper-owned isolated
+  topologies.
 - Local renderer/toolkit overrides use wrapper profiles; production manifests
   retain immutable released dependencies.
 
@@ -42,10 +43,19 @@
 
 ## Licensing, delivery, and validation
 
-- New code/tests/docs/editor fixtures are MIT. Do not add GPL/AGPL or adapt
-  classic/Gridarta implementation. Historical reuse follows local
-  `PROVENANCE.md` and canonical `atrinik/atrinik/docs/PROVENANCE.md`, failing
-  closed on incomplete or mixed evidence.
+- New code/tests/docs/editor fixtures are MIT. Do not link, bundle, or depend on
+  GPL/AGPL source as MIT. Historical Classic destination reuse follows the
+  [local provenance record](PROVENANCE.md) and
+  [canonical grant registry](https://github.com/atrinik/atrinik/blob/main/docs/PROVENANCE.md).
+  At an exact source revision, prove every copyrightable portion is separable,
+  within a recorded grant's past-contribution scope, and original work solely
+  authored by its grantor. Present-day blame, majority authorship, a later
+  edit, or an agent-assisted commit cannot fill a coverage gap. Admitted
+  material may be inspected as implementation reference, copied, adapted,
+  ported, translated, and MIT-relicensed in this destination. Record the exact
+  source, destination, transformation, and registry revision; uncovered
+  material fails closed. The Classic repository remains GPL-distributed, and
+  Gridarta remains excluded without separately sufficient evidence.
 - Authored material keeps exact licenses. Preview/test assets require a
   source/author/license/digest/transformation/notice manifest; preserve legal
   metadata and fail on ambiguous inputs.

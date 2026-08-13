@@ -7,13 +7,19 @@ of Gridarta, `atrinik/classic`, the connected client, protocol, and server.
 
 The editor is part of Atrinik's agentic next-generation reimplementation. Its
 fresh MIT-licensed Rust code is developed primarily through OpenAI Codex
-workflows under maintainer direction and review, with clean-room provenance
+workflows under maintainer direction and review, with evidence-gated provenance
 controls, tests, and repository validation. This describes the project's
 current primary development workflow, not every line, commit, or contributor;
 direct human-written code contributions are welcome.
 
-This is a clean-room reimplementation and improvement of Classic/Gridarta-era
-authoring workflows, not a mechanical translation or source port. Follow the
+The current foundation was independently implemented rather than mechanically
+translated or source-ported. Future exact historical reuse is evidence-gated by
+the [local provenance record](PROVENANCE.md) and
+[canonical grant registry](https://github.com/atrinik/atrinik/blob/main/docs/PROVENANCE.md):
+admitted destination material may be consulted and MIT-relicensed, while every
+uncovered portion remains excluded and the Classic repository remains
+GPL-distributed.
+Follow the
 [replacement roadmap](https://github.com/atrinik/atrinik/issues/168) and the
 [canonical project authorship statement](https://github.com/atrinik/atrinik/issues/331)
 for the wider project boundaries.
