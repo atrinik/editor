@@ -15,7 +15,7 @@ $Stage = Join-Path $StageRoot "atrinik-editor-$Version"
 try {
     New-Item -ItemType Directory -Path "$Stage/bin", $Output | Out-Null
     Copy-Item (Join-Path $Metadata.target_directory "release/atrinik-editor.exe") "$Stage/bin/"
-    Copy-Item LICENSE, PROVENANCE.md, THIRD_PARTY_NOTICES.md, policy/dependencies.json $Stage
+    Copy-Item LICENSE, PROVENANCE.md, THIRD_PARTY_NOTICES.md $Stage
     & "$Stage/bin/atrinik-editor.exe" version | Out-Null
     syft "$Stage/bin/atrinik-editor.exe" --source-name atrinik-editor --source-version $Version --output "cyclonedx-json=$Stage/sbom.cdx.json"
     $Sbom = Get-Content "$Stage/sbom.cdx.json" -Raw | ConvertFrom-Json

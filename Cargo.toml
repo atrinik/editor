@@ -24,13 +24,13 @@ atrinik-editor-preview = { path = "crates/atrinik-editor-preview", version = "=0
 atrinik-editor-project = { path = "crates/atrinik-editor-project", version = "=0.1.0" }
 atrinik-editor-testkit = { path = "crates/atrinik-editor-testkit", version = "=0.1.0" }
 atrinik-editor-ui = { path = "crates/atrinik-editor-ui", version = "=0.1.0" }
-atrinik-render-api = { git = "https://github.com/atrinik/renderer", rev = "3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9", version = "=0.1.0" }
-atrinik-render-resources = { git = "https://github.com/atrinik/renderer", rev = "3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9", version = "=0.1.0" }
-atrinik-render-testkit = { git = "https://github.com/atrinik/renderer", rev = "3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9", version = "=0.1.0" }
-atrinik-scene = { git = "https://github.com/atrinik/renderer", rev = "3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9", version = "=0.1.0" }
-atrinik-source = { git = "https://github.com/atrinik/content-toolkit", rev = "b2178d442af5d897a45619c200fec5ceb39fc3cf", version = "=0.1.0" }
-atrinik-transaction = { git = "https://github.com/atrinik/content-toolkit", rev = "b2178d442af5d897a45619c200fec5ceb39fc3cf", version = "=0.1.0" }
-sdl3 = { version = "=0.18.4", default-features = false, features = ["build-from-source-static"] }
+atrinik-render-api = { git = "https://github.com/atrinik/renderer", rev = "3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9", version = "0.1.0" }
+atrinik-render-resources = { git = "https://github.com/atrinik/renderer", rev = "3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9", version = "0.1.0" }
+atrinik-render-testkit = { git = "https://github.com/atrinik/renderer", rev = "3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9", version = "0.1.0" }
+atrinik-scene = { git = "https://github.com/atrinik/renderer", rev = "3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9", version = "0.1.0" }
+atrinik-source = { git = "https://github.com/atrinik/content-toolkit", rev = "b2178d442af5d897a45619c200fec5ceb39fc3cf", version = "0.1.0" }
+atrinik-transaction = { git = "https://github.com/atrinik/content-toolkit", rev = "b2178d442af5d897a45619c200fec5ceb39fc3cf", version = "0.1.0" }
+sdl3 = { version = "0.18.4", default-features = false, features = ["build-from-source-static"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

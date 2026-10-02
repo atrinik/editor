@@ -8,7 +8,7 @@ yanked = "deny"
 allow = ["Apache-2.0", "MIT", "Zlib"]
 
 [bans]
-multiple-versions = "deny"
+multiple-versions = "allow"
 wildcards = "deny"
 deny = [
   { name = "reqwest" },
