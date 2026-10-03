@@ -7,7 +7,7 @@ SBOM.
 - Atrinik content-toolkit v1.0.0 crates: MIT.
 - Atrinik renderer v1.0.0 crates: MIT.
 - `sdl3` Rust bindings: MIT.
-- SDL 3.4.14: Zlib License.
+- SDL native library: Zlib License.
 
 Authored content opened by the editor is not part of this software and retains
 its own license and attribution.
