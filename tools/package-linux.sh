@@ -22,7 +22,7 @@ target=$(cargo metadata --locked --offline --format-version 1 --no-deps | jq -r 
 install -d "${stage}/atrinik-editor-${version}/bin" "${output}"
 install "${target}/release/atrinik-editor" "${stage}/atrinik-editor-${version}/bin/atrinik-editor"
 strip "${stage}/atrinik-editor-${version}/bin/atrinik-editor"
-cp LICENSE PROVENANCE.md THIRD_PARTY_NOTICES.md policy/dependencies.json \
+cp LICENSE PROVENANCE.md THIRD_PARTY_NOTICES.md \
   "${stage}/atrinik-editor-${version}/"
 "${stage}/atrinik-editor-${version}/bin/atrinik-editor" version >/dev/null
 SYFT_CHECK_FOR_APP_UPDATE=false syft \

@@ -53,9 +53,12 @@ filesystem writer, renderer, network service, or server lifecycle.
 
 ## Build and validation
 
-Rust 1.97.1 and SDL 3.4.14 are pinned. Linux builds need the native SDL headers
-installed by `tools/install-linux-native-deps.sh`. The Atrinik devcontainer
-release that includes the editor toolchain also provides them.
+Rust 1.97.1 is pinned, and `Cargo.lock` records the resolved SDL bindings and
+SDL source versions used by `--locked` builds. External dependency declarations
+use compatible SemVer ranges so routine updates can refresh the lockfile
+without editing a second version inventory. Linux builds need the native SDL
+headers installed by `tools/install-linux-native-deps.sh`. The Atrinik
+devcontainer release that includes the editor toolchain also provides them.
 
 ```sh
 cargo build --locked --workspace
