@@ -14,7 +14,10 @@ satisfy registry readiness; no lockfile checksum is invented.
 
 The hourly `Released dependency updates` workflow can also be dispatched manually
 from `main`.
-Its preparation job has no App credentials. It verifies the upstream versioned
+Its preparation job has no App credentials. A host-only read stage collects
+bounded public release metadata with the read-only workflow token. The cache
+contains allowlisted public fields and is sealed before being mounted read-only
+into Cargo stages; read credentials are absent from those stages. It verifies the upstream versioned
 release manifest, source commit, registry API and index, non-yanked version, and
 the downloaded crate checksum, then exercises Cargo from an external consumer.
 It regenerates only the owned dependency manifest and Cargo lockfile and runs the
