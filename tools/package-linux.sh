@@ -13,7 +13,7 @@ if [[ -e ${output} ]]; then
   echo "release output already exists: ${output}" >&2
   exit 1
 fi
-for command in cargo-auditable syft strip; do command -v "${command}" >/dev/null || { echo "missing required tool: ${command}" >&2; exit 1; }; done
+for command in cargo-auditable syft strip python3; do command -v "${command}" >/dev/null || { echo "missing required tool: ${command}" >&2; exit 1; }; done
 
 stage=$(mktemp -d /tmp/atrinik-editor-stage.XXXXXX)
 trap 'rm -rf -- "${stage}"' EXIT
@@ -41,12 +41,8 @@ jq --arg version "${version}" --arg serial "${serial}" '
 ' "${sbom}" >"${normalized}"
 mv "${normalized}" "${sbom}"
 jq -e '(.components // []) | length >= 10' "${sbom}" >/dev/null
-jq -n --arg version "${version}" --arg revision "$(git rev-parse HEAD)" \
-  --arg rust "$(rustc --version)" \
-  '{schema_version:1,version:$version,revision:$revision,rust:$rust,
-    toolkit:{release:"v1.0.0",revision:"b2178d442af5d897a45619c200fec5ceb39fc3cf"},
-    renderer:{release:"v1.0.0",revision:"3a6bbeabc2b7eac8d162d758732a0495fe8a9dd9"}}' \
-  >"${stage}/atrinik-editor-${version}/provenance.json"
+python3 tools/package-provenance.py --root . --version "${version}" \
+  --output "${stage}/atrinik-editor-${version}/provenance.json"
 
 archive="${output}/atrinik-editor-${version}-linux-amd64.tar.gz"
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 1970-01-01' \
