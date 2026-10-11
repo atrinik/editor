@@ -69,6 +69,9 @@
   failure, GPU loss, and repeated open/edit/save/reopen cases as relevant.
   Visual tests use the shared renderer, exact masks, explicit clocks/resources,
   and documented color tolerance.
+- Released library updates use [the dependency update policy](docs/RELEASED_DEPENDENCIES.md).
+  Keep internal editor packages unpublished; application archives remain GitHub releases.
+  Validate dependency readiness before compiler/build work.
 - Run the aggregate contract now present:
 
   ```sh
