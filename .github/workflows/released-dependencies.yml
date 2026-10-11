@@ -10,6 +10,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   prepare:
+    if: github.ref == 'refs/heads/main'
     name: Verify releases and validate candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -29,7 +30,10 @@ jobs:
         env:
           BUILD_IMAGE: ghcr.io/atrinik/linux-build:1.10.0@sha256:7904a1802054662b0ede5b55de72e4c92b0112a3c211125f994ed6c62e9ec9d8
         run: |
-          install -d "${RUNNER_TEMP}/dependency-cache"
+          install -d "${RUNNER_TEMP}/dependency-cache/prepare" \
+            "${RUNNER_TEMP}/dependency-cache/verify" \
+            "${RUNNER_TEMP}/dependency-cache/consumer" \
+            "${RUNNER_TEMP}/dependency-cache/application"
           install -d "${RUNNER_TEMP}/dependency-artifacts"
           docker pull "${BUILD_IMAGE}"
           docker run --rm --init --cpus 2 --read-only --cap-drop ALL \
@@ -37,14 +41,63 @@ jobs:
             --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
             --mount "type=bind,source=${GITHUB_WORKSPACE},target=/repo" \
             --mount "type=bind,source=${RUNNER_TEMP}/dependency-artifacts,target=/artifacts" \
-            --mount "type=bind,source=${RUNNER_TEMP}/dependency-cache,target=/cache" \
+            --mount "type=bind,source=${RUNNER_TEMP}/dependency-cache/prepare,target=/cache" \
             --workdir /repo --env HOME=/tmp/dependency-home \
             --env CARGO_HOME=/cache/cargo --env CARGO_TARGET_DIR=/cache/target \
             --env RUSTUP_TOOLCHAIN=1.97.1 --env CARGO_BUILD_JOBS=2 "${BUILD_IMAGE}" bash -euc '
               mkdir -p "$HOME"
               python3 tools/released_dependencies.py prepare --root . --output /artifacts/candidate
+            '
+          candidate="${RUNNER_TEMP}/dependency-artifacts/candidate"
+          if test -f "${candidate}/candidate.json"; then
+            sha256sum "${candidate}/Cargo.toml" "${candidate}/Cargo.lock" "${candidate}/candidate.json" \
+              >"${RUNNER_TEMP}/dependency-candidate-seal.sha256"
+          fi
+          git clone --no-hardlinks --config core.hooksPath=/dev/null \
+            "${GITHUB_WORKSPACE}" "${RUNNER_TEMP}/dependency-validation-source"
+          if test -f "${candidate}/candidate.json"; then
+            docker run --rm --init --cpus 2 --read-only --cap-drop ALL \
+              --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
+              --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
+              --mount "type=bind,source=${RUNNER_TEMP}/dependency-validation-source,target=/repo,readonly" \
+              --mount "type=bind,source=${candidate},target=/candidate,readonly" \
+              --mount "type=bind,source=${RUNNER_TEMP}/dependency-cache/verify,target=/cache" \
+              --workdir /repo --env HOME=/tmp/dependency-home \
+              --env CARGO_HOME=/cache/cargo --env CARGO_TARGET_DIR=/cache/target \
+              --env RUSTUP_TOOLCHAIN=1.97.1 --env CARGO_BUILD_JOBS=2 "${BUILD_IMAGE}" bash -euc '
+                mkdir -p "$HOME"
+                python3 tools/released_dependencies.py verify-lock --root . --candidate /candidate
+              '
+            cp "${candidate}/Cargo.toml" "${candidate}/Cargo.lock" "${RUNNER_TEMP}/dependency-validation-source/"
+            git -C "${RUNNER_TEMP}/dependency-validation-source" \
+              -c user.name=dependency-candidate -c user.email=dependency-candidate@users.noreply.github.com \
+              commit -m "chore(deps): validate registry candidate" -- Cargo.toml Cargo.lock
+          fi
+          docker run --rm --init --cpus 2 --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
+            --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
+            --mount "type=bind,source=${RUNNER_TEMP}/dependency-validation-source,target=/repo,readonly" \
+            --mount "type=bind,source=${RUNNER_TEMP}/dependency-cache/consumer,target=/cache" \
+            --workdir /repo --env HOME=/tmp/dependency-home \
+            --env CARGO_HOME=/cache/cargo --env CARGO_TARGET_DIR=/cache/target \
+            --env RUSTUP_TOOLCHAIN=1.97.1 --env CARGO_BUILD_JOBS=2 "${BUILD_IMAGE}" bash -euc '
+              mkdir -p "$HOME"
+              python3 tools/released_dependencies.py consumer --root .
+            '
+          docker run --rm --init --cpus 2 --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
+            --tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777 \
+            --mount "type=bind,source=${RUNNER_TEMP}/dependency-validation-source,target=/repo,readonly" \
+            --mount "type=bind,source=${RUNNER_TEMP}/dependency-cache/application,target=/cache" \
+            --workdir /repo --env HOME=/tmp/dependency-home \
+            --env CARGO_HOME=/cache/cargo --env CARGO_TARGET_DIR=/cache/target \
+            --env RUSTUP_TOOLCHAIN=1.97.1 --env CARGO_BUILD_JOBS=2 "${BUILD_IMAGE}" bash -euc '
+              mkdir -p "$HOME"
               tools/validate-dependency-candidate.sh
             '
+          if test -f "${candidate}/candidate.json"; then
+            sha256sum --check --strict "${RUNNER_TEMP}/dependency-candidate-seal.sha256"
+          fi
           if test -f "${RUNNER_TEMP}/dependency-artifacts/candidate/candidate.json"; then
             echo "changed=true" >>"${GITHUB_OUTPUT}"
           else

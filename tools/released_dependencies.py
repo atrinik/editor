@@ -4,11 +4,14 @@
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
+import tarfile
 import tempfile
 import tomllib
 import urllib.error
@@ -16,6 +19,7 @@ import urllib.request
 
 REGISTRY = 'registry+https://github.com/rust-lang/crates.io-index'
 MAX_BYTES = 32 * 1024 * 1024
+MAX_PACKAGES = 2000
 
 
 def require(condition, message):
@@ -86,10 +90,23 @@ def exact_dependencies(root, policy):
     return result
 
 
+def index_path(name):
+    require(isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', name), 'invalid crate name')
+    name = name.lower()
+    if len(name) <= 2:
+        return f'{len(name)}/{name}'
+    if len(name) == 3:
+        return f'3/{name[0]}/{name}'
+    return f'{name[:2]}/{name[2:4]}/{name}'
+
+
 def registry(dep, version, checksum):
     name = dep['name']
+    path = index_path(name)
+    require(isinstance(version, str) and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.+-]+)?', version), 'invalid registry version')
+    require(isinstance(checksum, str) and re.fullmatch('[0-9a-f]{64}', checksum), 'invalid registry checksum')
     api = fetch(f'https://crates.io/api/v1/crates/{name}/{version}', absent=True)
-    index = fetch(f'https://index.crates.io/{name[:2]}/{name[2:4]}/{name}', absent=True)
+    index = fetch(f'https://index.crates.io/{path}', absent=True)
     require(api is not None and index is not None, f'missing registry package {name} = {version}')
     value = json.loads(api)['version']
     entries = [json.loads(line) for line in index.splitlines() if line]
@@ -102,15 +119,23 @@ def registry(dep, version, checksum):
     require(value.get('checksum') == checksum and entry.get('cksum') == checksum, 'registry checksum mismatch')
     data = fetch(f'https://crates.io/api/v1/crates/{name}/{version}/download')
     require(hashlib.sha256(data).hexdigest() == checksum, 'registry download checksum mismatch')
+    return entry
 
 
 def source(dep, version=None):
-    if version is not None and version == dep.get('legacy', {}).get('version'):
-        record = dict(dep['legacy'], name=dep['name'])
+    legacy = dep.get('legacy', [])
+    if isinstance(legacy, dict):
+        legacy = [legacy]
+    historical = [record for record in legacy if record['version'] == version]
+    require(len(historical) <= 1, 'duplicate historical registry pin')
+    if version is not None and historical:
+        record = dict(historical[0], name=dep['name'])
         registry(dep, version, record['sha256'])
         return record
     repo = dep['repository']
     api = f'https://api.github.com/repos/{repo}'
+    identity = document(api)
+    require(identity.get('id') == dep['repository_id'] and identity.get('full_name') == repo, 'upstream repository identity changed')
     releases = document(f'{api}/releases?per_page=30')
     require(isinstance(releases, list) and len(releases) <= 30, 'release inventory truncated; narrow release discovery')
     require(len(releases) < 30, 'release history exceeds discovery bound; cannot establish latest candidate')
@@ -199,8 +224,107 @@ def choose_pr(pulls, version_title, branch, bot, repo):
     return 'create', None
 
 
+def bounded_file(path, maximum=MAX_BYTES):
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as error:
+        raise ValueError('candidate file is not a bounded regular file') from error
+    with os.fdopen(descriptor, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_size <= maximum, 'candidate file is not a bounded regular file')
+        data = stream.read(maximum + 1)
+        require(len(data) <= maximum, 'candidate file exceeds bound')
+        return data
+
+
+def validate_graph(packages, internal):
+    require(isinstance(packages, list) and 0 < len(packages) <= MAX_PACKAGES, 'invalid lock package inventory')
+    identities = [(item['name'], item['version'], item.get('source')) for item in packages]
+    require(len(identities) == len(set(identities)), 'duplicate lock package')
+    require(set(internal) <= {item['name'] for item in packages}, 'missing internal lock package')
+    for package in packages:
+        require(set(package) <= {'name', 'version', 'source', 'checksum', 'dependencies'} and
+                {'name', 'version'} <= set(package), 'unexpected lock package schema')
+        edges = package.get('dependencies', [])
+        require(isinstance(edges, list) and len(edges) == len(set(edges)), 'duplicate lock dependency')
+        for edge in edges:
+            match = re.fullmatch(r'([A-Za-z0-9_-]+)(?: ([^ ()]+))?(?: \(([^()]+)\))?', edge)
+            require(match is not None, 'invalid lock dependency reference')
+            name, version, source_name = match.groups()
+            matches = [item for item in packages if item['name'] == name and
+                       (version is None or item['version'] == version) and
+                       (source_name is None or item.get('source') == source_name)]
+            require(len(matches) == 1, 'missing or ambiguous lock dependency')
+
+
+def verify_owned_head(repo, pr, main, bot):
+    """A PR author alone never authorizes replacing its current branch tree."""
+    head = pr['head']['sha']
+    commit = gh_api(f'repos/{repo}/commits/{head}')
+    require(commit.get('committer', {}).get('login') == bot and
+            commit.get('author', {}).get('login') == bot and
+            commit['commit']['verification']['verified'] is True and
+            commit['commit']['verification']['reason'] == 'valid',
+            'bot branch contains an unverified or foreign commit; preserving branch')
+    require(commit['commit']['message'].startswith('chore(deps): update ') and
+            1 <= len(commit['parents']) <= 2, 'unexpected bot commit shape; preserving branch')
+    base = commit['parents'][0]['sha']
+    comparison = gh_api(f'repos/{repo}/compare/{base}...{main}')
+    require(comparison['status'] in {'ahead', 'identical'}, 'bot base is not trusted main history')
+    def tree(revision):
+        result = gh_api(f'repos/{repo}/git/trees/{revision}?recursive=1')
+        require(result.get('truncated') is False, 'bot tree inventory truncated')
+        return {item['path']: (item['mode'], item['type'], item['sha'])
+                for item in result['tree'] if item['type'] != 'tree'}
+    before, after = tree(base), tree(head)
+    changed = {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)}
+    require(changed and changed <= {'Cargo.toml', 'Cargo.lock'} and
+            all(after.get(name, (None, None))[:2] == ('100644', 'blob') for name in changed),
+            'bot branch contains unexpected edits; preserving branch')
+
+
+def verify_candidate(root, output, policy, candidate):
+    require(set(candidate) == {'repository', 'base', 'records', 'title', 'files'}, 'unexpected candidate schema')
+    require(isinstance(candidate['base'], str) and re.fullmatch('[0-9a-f]{40}', candidate['base']), 'invalid candidate base')
+    require(isinstance(candidate['records'], dict) and isinstance(candidate['files'], dict), 'invalid candidate object')
+    pins = exact_dependencies(root, policy)
+    require(set(candidate['records']) == set(pins), 'candidate dependency scope changed')
+    records = {}
+    text = (root / 'Cargo.toml').read_text()
+    for dep in policy['dependencies']:
+        record = candidate['records'][dep['name']]
+        require(re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', record['version']), 'invalid candidate version')
+        authenticated = source(dep, record['version'])
+        require(record == authenticated, 'candidate source provenance changed')
+        require(tuple(map(int, record['version'].split('.'))) >= tuple(map(int, pins[dep['name']].split('.'))), 'candidate downgrade prohibited')
+        name = dep['name']
+        text, count = re.subn(r'(?m)^' + re.escape(name) + r' = [^\n]+$',
+                             f'{name} = "={record["version"]}"', text)
+        require(count == 1, 'unsupported trusted manifest declaration')
+        records[name] = authenticated
+    require(bounded_file(output / 'Cargo.toml', 131072).decode() == text, 'candidate changes exceed exact dependency pins')
+    expected_title = 'chore(deps): update ' + ', '.join(f'{name} to {record["version"]}' for name, record in records.items())
+    require(candidate['title'] == expected_title and set(candidate['files']) == {'Cargo.toml', 'Cargo.lock'}, 'candidate metadata scope changed')
+    lock = tomllib.loads(bounded_file(output / 'Cargo.lock').decode())
+    require(set(lock) == {'version', 'package'} and lock['version'] == 4, 'unexpected lock schema')
+    packages = lock['package']
+    trusted_workspace_version = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['package']['version']
+    internal = {tomllib.loads(path.read_text())['package']['name']: tomllib.loads(path.read_text())['package'].get('version', trusted_workspace_version) for path in root.glob('crates/*/Cargo.toml')}
+    internal = {name: trusted_workspace_version if isinstance(version, dict) else version for name, version in internal.items()}
+    validate_graph(packages, internal)
+    for package in packages:
+        if package['name'] in internal:
+            require('source' not in package and 'checksum' not in package and package['version'] == internal[package['name']], 'internal lock package identity changed')
+        else:
+            require(package.get('source') == REGISTRY and re.fullmatch('[0-9a-f]{64}', package.get('checksum', '')), 'candidate lock contains non-registry source')
+            registry({'name': package['name']}, package['version'], package['checksum'])
+    lock_check(output, records)
+    for name in ('Cargo.toml', 'Cargo.lock'):
+        require(hashlib.sha256(bounded_file(output / name)).hexdigest() == candidate['files'][name], 'candidate artifact drift')
+
+
 def publish(root, output, policy):
-    candidate = json.loads((output / 'candidate.json').read_text())
+    candidate = json.loads(bounded_file(output / 'candidate.json', 131072))
     require(candidate['repository'] == policy['repository'], 'candidate repository drift')
     repo = policy['repository']
     branch = 'automation/released-crate-dependencies'
@@ -210,6 +334,8 @@ def publish(root, output, policy):
     require(installation['total_count'] == 1 and any(item['full_name'] == repo and item['id'] == policy['repository_id'] for item in installation['repositories']), 'unexpected App installation scope')
     main = gh_api(f'repos/{repo}/git/ref/heads/main')['object']['sha']
     require(main == candidate['base'] and run('git', 'rev-parse', 'HEAD', cwd=root) == main, 'main advanced; rerun credential-free preparation')
+    require(not run('git', 'status', '--porcelain', '--untracked-files=all', cwd=root), 'trusted publisher checkout is dirty')
+    verify_candidate(root, output, policy, candidate)
     pulls = gh_api(f'repos/{repo}/pulls?state=open&per_page=100')
     require(len(pulls) < 100, 'PR inventory truncated; refusing mutation')
     for existing in pulls:
@@ -228,6 +354,8 @@ def publish(root, output, policy):
     if mode == 'waiting':
         print('Existing PR waits for this version; preserving contributor branch and text.')
         return
+    if mode == 'owned':
+        verify_owned_head(repo, pr, main, bot)
     # Credentials never execute build scripts or candidate code. Commit only validated data files.
     for name in ('Cargo.toml', 'Cargo.lock'):
         data = (output / name).read_bytes()
@@ -235,31 +363,66 @@ def publish(root, output, policy):
         (root / name).write_bytes(data)
     require(run('git', 'diff', '--name-only', cwd=root).splitlines() == ['Cargo.lock', 'Cargo.toml'], 'unexpected candidate diff')
     lock_check(root, candidate['records'])
-    run('git', 'config', 'user.name', bot, cwd=root)
-    run('git', 'config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com', cwd=root)
-    run('git', 'add', '--', 'Cargo.toml', 'Cargo.lock', cwd=root)
-    run('git', 'commit', '-m', candidate['title'], cwd=root)
-    args = ['git', 'push', 'origin', f'HEAD:refs/heads/{branch}']
-    if mode == 'owned':
-        args.insert(2, f'--force-with-lease=refs/heads/{branch}:{pr["head"]["sha"]}')
+    commit = gh_api(f'repos/{repo}/git/commits/{main}')
+    entries = []
+    for name in ('Cargo.toml', 'Cargo.lock'):
+        blob = gh_api(f'repos/{repo}/git/blobs', 'POST', {
+            'content': base64.b64encode((output / name).read_bytes()).decode(), 'encoding': 'base64'})
+        entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+    tree = gh_api(f'repos/{repo}/git/trees', 'POST', {'base_tree': commit['tree']['sha'], 'tree': entries})
+    parents = [main] if mode == 'create' else [main, pr['head']['sha']]
+    update = gh_api(f'repos/{repo}/git/commits', 'POST', {'message': candidate['title'], 'tree': tree['sha'], 'parents': parents})
+    require(gh_api(f'repos/{repo}/git/ref/heads/main')['object']['sha'] == main, 'main advanced before branch mutation')
+    if mode == 'create':
+        gh_api(f'repos/{repo}/git/refs', 'POST', {'ref': 'refs/heads/' + branch, 'sha': update['sha']})
     else:
-        args.insert(2, f'--force-with-lease=refs/heads/{branch}:')
-    token = os.environ.get('GH_TOKEN')
-    require(token, 'App token missing')
-    environment = dict(os.environ, GIT_CONFIG_COUNT='2', GIT_CONFIG_KEY_0='credential.helper',
-                       GIT_CONFIG_VALUE_0='', GIT_CONFIG_KEY_1='http.https://github.com/.extraheader',
-                       GIT_CONFIG_VALUE_1='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
-    subprocess.run(args, cwd=root, env=environment, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+        fresh = gh_api(f'repos/{repo}/pulls/{pr["number"]}')
+        require(fresh['user']['login'] == bot and fresh['head']['sha'] == pr['head']['sha'] and
+                fresh['head']['ref'] == branch and fresh['head']['repo']['full_name'] == repo,
+                'owned bot PR changed before mutation')
+        require(gh_api(f'repos/{repo}/git/ref/heads/{branch}')['object']['sha'] == pr['head']['sha'], 'bot branch advanced')
+        # Previous bot commit is a parent, so a concurrent replacement cannot fast-forward.
+        gh_api(f'repos/{repo}/git/refs/heads/{branch}', 'PATCH', {'sha': update['sha'], 'force': False})
     if mode == 'create':
         gh_api(f'repos/{repo}/pulls', 'POST', {'title': candidate['title'], 'head': branch,
                'base': 'main', 'body': 'Updates exact released registry dependencies and Cargo.lock.\n\nSource release provenance, crates.io API/index/archive checksums, and credential-free Cargo resolution passed. Required application CI and review must pass before merge. No automatic merge.'})
-    else:
-        gh_api(f'repos/{repo}/pulls/{pr["number"]}', 'PATCH', {'title': candidate['title']})
+    # Preserve the existing PR title/body as contributor text.
+
+
+def verify_lock(root, output, policy):
+    """Run only in the credential-free resolver container with read-only inputs."""
+    candidate = json.loads(bounded_file(output / 'candidate.json', 131072))
+    require(run('git', 'rev-parse', 'HEAD', cwd=root) == candidate['base'] and
+            not run('git', 'status', '--porcelain', '--untracked-files=all', cwd=root),
+            'resolver requires clean trusted main')
+    verify_candidate(root, output, policy, candidate)
+    archive = subprocess.check_output(['git', 'archive', candidate['base']], cwd=root, timeout=60)
+    with tempfile.TemporaryDirectory(prefix='atrinik-authoritative-resolve-') as directory:
+        resolved = Path(directory)
+        with tarfile.open(fileobj=io.BytesIO(archive)) as source_tree:
+            source_tree.extractall(resolved, filter='data')
+        (resolved / 'Cargo.toml').write_bytes(bounded_file(output / 'Cargo.toml'))
+        run('cargo', '+1.97.1', 'generate-lockfile', cwd=resolved)
+        require((resolved / 'Cargo.lock').read_bytes() == bounded_file(output / 'Cargo.lock'),
+                'candidate lock differs from authoritative Cargo resolution')
+
+
+def consumer(records):
+    with tempfile.TemporaryDirectory(prefix='atrinik-external-resolve-') as directory:
+        external = Path(directory)
+        (external / 'src').mkdir()
+        (external / 'src/lib.rs').write_text('')
+        require(not any(record.get('legacy_git') for record in records.values()), 'external consumer requires released registry packages')
+        deps = '\n'.join(f'{name} = "={record["version"]}"' for name, record in records.items())
+        (external / 'Cargo.toml').write_text('[package]\nname="registry-consumer-proof"\nversion="0.0.0"\nedition="2024"\n[dependencies]\n' + deps + '\n')
+        run('cargo', '+1.97.1', 'generate-lockfile', '--manifest-path', str(external / 'Cargo.toml'))
+        run('cargo', '+1.97.1', 'check', '--locked', '--manifest-path', str(external / 'Cargo.toml'))
+        lock_check(external, records)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['ready', 'prepare', 'publish'])
+    parser.add_argument('command', choices=['ready', 'prepare', 'consumer', 'verify-lock', 'publish'])
     parser.add_argument('--root', type=Path, default=Path('.'))
     parser.add_argument('--output', '--candidate', type=Path)
     args = parser.parse_args()
@@ -270,20 +433,27 @@ def main():
         publish(root, args.output, policy)
         return
     require(not any(os.environ.get(key) for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'CARGO_REGISTRY_TOKEN', 'CARGO_REGISTRIES_CRATES_IO_TOKEN')), 'verification/build job must be credential-free')
+    if args.command == 'verify-lock':
+        verify_lock(root, args.output, policy)
+        return
     pins = exact_dependencies(root, policy)
     records = {}
     for dep in policy['dependencies']:
         declaration = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['dependencies'][dep['name']]
-        if args.command == 'ready' and declaration == dep.get('legacy_git'):
+        if args.command in {'ready', 'consumer'} and declaration == dep.get('legacy_git'):
             records[dep['name']] = {'version': pins[dep['name']], 'legacy_git': dep['legacy_git']}
         else:
-            records[dep['name']] = source(dep, pins[dep['name']] if args.command == 'ready' else None)
+            records[dep['name']] = source(dep, pins[dep['name']] if args.command in {'ready', 'consumer'} else None)
+    if args.command == 'consumer':
+        consumer(records)
+        return
     if args.command == 'ready':
         lock_check(root, records)
         print('Dependency readiness policy verified.')
         return
     require(args.output is not None, 'prepare requires --output')
-    if all(record['version'] == pins[name] for name, record in records.items()):
+    declarations = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['dependencies']
+    if all(declarations[name] == '=' + record['version'] for name, record in records.items()):
         print('No released dependency update.')
         return
     args.output.mkdir(parents=True, exist_ok=False)
@@ -296,15 +466,6 @@ def main():
     (root / 'Cargo.toml').write_text(text)
     run('cargo', '+1.97.1', 'generate-lockfile', cwd=root)
     lock_check(root, records)
-    with tempfile.TemporaryDirectory(prefix='atrinik-external-resolve-') as directory:
-        external = Path(directory)
-        (external / 'src').mkdir()
-        (external / 'src/lib.rs').write_text('')
-        deps = '\n'.join(f'{name} = "={record["version"]}"' for name, record in records.items())
-        (external / 'Cargo.toml').write_text('[package]\nname="registry-consumer-proof"\nversion="0.0.0"\nedition="2024"\n[dependencies]\n' + deps + '\n')
-        run('cargo', '+1.97.1', 'generate-lockfile', '--manifest-path', str(external / 'Cargo.toml'))
-        run('cargo', '+1.97.1', 'check', '--locked', '--manifest-path', str(external / 'Cargo.toml'))
-        lock_check(external, records)
     title = 'chore(deps): update ' + ', '.join(f'{name} to {record["version"]}' for name, record in records.items())
     candidate = {'repository': policy['repository'], 'base': run('git', 'rev-parse', 'HEAD', cwd=root),
                  'records': records, 'title': title, 'files': {}}
