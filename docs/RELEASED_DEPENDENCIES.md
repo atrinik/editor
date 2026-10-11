@@ -42,3 +42,13 @@ Keep this policy synchronized when adding or removing a released dependency.
 Run the fake-registry helper tests, ShellCheck, actionlint and `tools/validate.sh`
 for updater changes. Production registry verification and aggregate application
 validation remain separate from fixture-test success.
+
+Linux and Windows package provenance uses schema version 2. It records the
+editor revision, compiler version, complete Cargo.lock digest, and the actual
+locked version and source for each managed upstream library. Git bootstrap
+dependencies include their verified immutable locked revision. Registry
+dependencies include the locked archive checksum; a Git source revision or
+repository release tag is omitted because Cargo.lock does not establish it.
+The shared generator rejects mismatched manifest/lock coordinates and missing
+registry checksums. Package metadata therefore changes with a dependency update
+without a separate mutable provenance file or a guessed upstream release tag.
