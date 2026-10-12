@@ -85,3 +85,13 @@
 - Wrapper replacement build/runtime adapters are not available yet. Use
   repository validation, not classic fallbacks. Commits/PR titles use
   Conventional Commits; semantic-release owns releases/tags.
+- Dependency review is advisory, including operational errors. Before merge, the
+  implementing Codex must inspect the latest run for the current PR head and
+  read its job summary even when a bot comment exists, fix actionable introduced
+  risk, or record explicit maintainer acceptance of existing risk. A comment
+  from an earlier run is not current evidence; unavailable reports leave results
+  unknown. Reporting applies to eligible PR runs where this workflow exists in
+  the relevant PR/merge revision; removing branch filters does not backport it.
+  License metadata reporting does not automate compatibility policy: existing
+  repository license and provenance constraints remain authoritative. Validate
+  workflow changes with actionlint and `git diff --check`.
