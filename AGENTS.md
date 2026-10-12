@@ -85,3 +85,9 @@
 - Wrapper replacement build/runtime adapters are not available yet. Use
   repository validation, not classic fallbacks. Commits/PR titles use
   Conventional Commits; semantic-release owns releases/tags.
+- Dependency review is advisory, including operational errors. Before merge, the
+  implementing Codex must read its PR comment or job summary, fix actionable
+  introduced risk, or record explicit maintainer acceptance of existing risk.
+  Fork and Dependabot comment permissions may be restricted; read the job
+  summary when the comment is unavailable. Validate workflow changes with
+  actionlint and `git diff --check`.
