@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ground;
+
 use std::sync::Arc;
 use tilewright_render_api::{Error as RenderError, FrameOutput, RenderRequest, Renderer};
 use tilewright_render_resources::ResourceProvider;

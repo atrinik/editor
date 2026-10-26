@@ -29,10 +29,17 @@ tilewright-jsonc = "=0.1.0"
 tilewright-render-api = "=0.3.0"
 tilewright-render-resources = "=0.3.0"
 tilewright-render-testkit = "=0.3.0"
+tilewright-render-wgpu = "=0.3.0"
+tilewright-render-world = "=0.3.0"
 tilewright-scene = "=0.3.0"
 tilewright-source = "=0.1.0"
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "wayland", "wgpu_no_default_features", "x11"] }
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
+sha2 = "0.11.0"
 tempfile = "3.27.0"
-sdl3 = { version = "0.20.0", default-features = false, features = ["build-from-source-static"] }
+# The window loads its Wayland libraries at run time, so builds need no
+# Wayland development headers.
+winit = { version = "0.30.13", default-features = false, features = ["wayland-dlopen"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

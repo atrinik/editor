@@ -48,11 +48,12 @@ their repositories in `policy/released-dependencies.json`.
 
 ## Build and validation
 
-Rust 1.97.1 is pinned, and `Cargo.lock` records the resolved SDL bindings and
-SDL source versions used by `--locked` builds. External dependency declarations
-use compatible SemVer ranges so routine updates can refresh the lockfile
-without editing a second version inventory. Linux builds need the native SDL
-headers installed by `tools/install-linux-native-deps.sh`.
+Rust 1.97.1 is pinned, and `Cargo.lock` records every resolved dependency used
+by `--locked` builds. External dependency declarations use compatible SemVer
+ranges so routine updates can refresh the lockfile without editing a second
+version inventory. The window is egui on eframe (ADR 0001, amendment 1); it
+loads the platform's windowing and Vulkan libraries at run time, so Linux
+builds need no native development headers.
 
 ```sh
 cargo build --locked --workspace
@@ -60,15 +61,26 @@ cargo test --locked --workspace --all-targets
 cargo run --locked --package tilewright-editor -- version
 cargo run --locked --package tilewright-editor -- open crates/tilewright-editor-testkit/fixtures/meadow
 cargo run --locked --package tilewright-editor -- paint crates/tilewright-editor-testkit/fixtures/meadow --plane meadow --terrain sand 30,3 33,3
-SDL_VIDEO_DRIVER=dummy cargo run --locked --package tilewright-editor -- window
+cargo run --locked --package tilewright-editor -- headless crates/tilewright-editor-testkit/fixtures/meadow
+cargo run --locked --package tilewright-editor -- edit crates/tilewright-editor-testkit/fixtures/meadow
 tools/validate.sh
 ```
 
 `tools/validate.sh` checks formatting, Clippy-as-errors, all tests/docs,
 dependency architecture/licenses/advisories, provenance/assets, path/inventory
-contracts, the shared-renderer empty viewport, SDL lifecycle, Linux release
+contracts, the shared-renderer views, the window's headless composition, Linux release
 dry-run/SBOM/reproducibility, and diff hygiene. GitHub also builds/tests/packages
 on Windows and exposes one required aggregate check named `Editor validation`.
+
+`edit` opens the editor window: a terrain palette from the profile's
+transitions, the brush, history, and the plane drawn by the renderer, with
+each prototype as a colour swatch until the editor reads a game's art. The
+left button paints, the right or middle button pans, the wheel zooms, Ctrl+Z
+undoes, Ctrl+Shift+Z or Ctrl+Y redoes, Ctrl+S saves at once, and Escape
+cancels a stroke. Where the toolkit cannot check everything when it saves,
+on macOS and Windows and on Linux for a tree on a file system that hides its
+access control lists, the window says what is not checked and asks before it
+saves.
 
 The editor never launches a game server; playtests are run by the consuming
 game's own tooling.

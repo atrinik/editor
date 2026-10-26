@@ -15,7 +15,7 @@ tools/check-foundations.sh
 cargo run --locked --quiet --package tilewright-editor -- version
 cargo run --locked --quiet --package tilewright-editor -- open crates/tilewright-editor-testkit/fixtures/meadow
 cargo run --locked --quiet --package tilewright-editor -- paint crates/tilewright-editor-testkit/fixtures/meadow --plane meadow --terrain sand --brush circle:1 30,3 33,3 >/dev/null
-SDL_VIDEO_DRIVER=dummy cargo run --locked --quiet --package tilewright-editor -- window
+cargo run --locked --quiet --package tilewright-editor -- headless crates/tilewright-editor-testkit/fixtures/meadow
 first=$(mktemp -d /tmp/tilewright-editor-release-first.XXXXXX); rmdir "${first}"
 second=$(mktemp -d /tmp/tilewright-editor-release-second.XXXXXX); rmdir "${second}"
 trap 'rm -rf -- "${first}" "${second}"' EXIT

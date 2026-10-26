@@ -8,8 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+sha2.workspace = true
 tilewright-render-api.workspace = true
 tilewright-render-resources.workspace = true
+tilewright-render-world.workspace = true
 tilewright-scene.workspace = true
 
 [dev-dependencies]

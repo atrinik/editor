@@ -10,11 +10,16 @@ jq -e '
   deps("tilewright-editor-project") == [] and
   deps("tilewright-editor-document") == ["tilewright-editor-testkit","tilewright-source"] and
   deps("tilewright-editor-commands") == ["tempfile","tilewright-edit","tilewright-editor-document","tilewright-editor-testkit","tilewright-jsonc","tilewright-source"] and
-  deps("tilewright-editor-ui") == ["tilewright-editor-project"] and
-  deps("tilewright-editor-preview") == ["tilewright-render-api","tilewright-render-resources","tilewright-render-testkit","tilewright-scene"] and
+  deps("tilewright-editor-ui") == ["egui","tilewright-editor-project"] and
+  deps("tilewright-editor-preview") == ["sha2","tilewright-render-api","tilewright-render-resources","tilewright-render-testkit","tilewright-render-world","tilewright-scene"] and
   deps("tilewright-editor-testkit") == ["tilewright-editor-project"] and
-  deps("tilewright-editor") == ["sdl3","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-preview","tilewright-editor-testkit","tilewright-source"] and
-  ([.packages[].name | select(test("(client|protocol|server)"; "i"))] | length == 0) and
+  deps("tilewright-editor") == ["eframe","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-preview","tilewright-editor-testkit","tilewright-editor-ui","tilewright-render-api","tilewright-render-testkit","tilewright-render-wgpu","tilewright-render-world","tilewright-source","winit"] and
+  # No game client, server or protocol. The window platform crates
+  # are named here one by one, so a new match still fails.
+  ([.packages[].name | select(test("(client|protocol|server)"; "i"))
+    | select(IN("jobserver", "orbclient", "smithay-client-toolkit", "wayland-client",
+        "wayland-protocols", "wayland-protocols-plasma", "wayland-protocols-wlr",
+        "x11rb-protocol") | not)] | length == 0) and
   all(.packages[].dependencies[];
     (.source // "") as $source |
     ($source == "" or

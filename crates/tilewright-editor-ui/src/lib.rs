@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod editor;
+
 use std::{collections::BTreeMap, fmt};
 use tilewright_editor_project::RelativePath;
 

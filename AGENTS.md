@@ -41,8 +41,9 @@
 - Keep GPU handles renderer-private and filesystem authority toolkit-owned.
   Document-to-scene adaptation is read-only/deterministic; selection uses exact
   semantic masks rather than color inference.
-- Keep headless project/document/command/UI models independent of SDL3, GPU,
-  network, and real filesystem. Isolate native/unsafe code narrowly.
+- Keep headless project/document/command/UI models independent of the
+  window, GPU, network, and real filesystem. Isolate native/unsafe code
+  narrowly.
 
 ## Licensing, delivery, and validation
 

@@ -11,7 +11,7 @@
 | Game build/runtime/state/logs | the consuming game's workspace tooling | that game's profile/topology/state contracts only | the game's own status and log commands |
 | Credentials/trust | owning OS/wrapper service | never an editor document or snapshot | never rendered, logged, recovered, or packaged |
 
-No panel, tool, preview adapter, SDL callback, watcher, or application shell may
+No panel, tool, preview adapter, window callback, watcher, or application shell may
 write a file directly. Editor crates change source files only through the
 toolkit's transaction publisher, and write an inverse the user asked to keep
 only through the toolkit's `write_new`.

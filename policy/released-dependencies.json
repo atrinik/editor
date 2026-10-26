@@ -28,6 +28,16 @@
       "repository_id": 1327106998
     },
     {
+      "name": "tilewright-render-wgpu",
+      "repository": "seraphinastudios/tilewright-renderer",
+      "repository_id": 1327106998
+    },
+    {
+      "name": "tilewright-render-world",
+      "repository": "seraphinastudios/tilewright-renderer",
+      "repository_id": 1327106998
+    },
+    {
       "name": "tilewright-scene",
       "repository": "seraphinastudios/tilewright-renderer",
       "repository_id": 1327106998

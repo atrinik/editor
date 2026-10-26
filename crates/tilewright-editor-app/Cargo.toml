@@ -8,16 +8,22 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+eframe.workspace = true
 tilewright-editor-commands.workspace = true
 tilewright-editor-document.workspace = true
 tilewright-editor-preview.workspace = true
-sdl3.workspace = true
+tilewright-editor-ui.workspace = true
+tilewright-render-api.workspace = true
+tilewright-render-wgpu.workspace = true
+tilewright-render-world.workspace = true
+tilewright-source.workspace = true
+winit.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 tilewright-edit.workspace = true
 tilewright-editor-testkit.workspace = true
-tilewright-source.workspace = true
+tilewright-render-testkit.workspace = true
 
 [lints]
 workspace = true
