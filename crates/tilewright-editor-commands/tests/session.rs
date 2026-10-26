@@ -3,16 +3,16 @@
 
 //! Sessions save edits to a copy of the fixture world when interactions
 //! end, as one undo step per coalesced group, and undo and redo through
-//! the transactions' inverses. Publishing keeps every guarantee only on
-//! Linux, so these tests run there.
+//! the transactions' inverses. They run where the toolkit publishes; where
+//! it cannot check everything, the copies accept that.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
-use tilewright_edit::{Options as PlanOptions, Transaction};
+use tilewright_edit::{Options as PlanOptions, PublishOptions, Transaction};
 use tilewright_editor_commands::{
     brush::{Brush, Shape},
     json_string,
@@ -21,6 +21,12 @@ use tilewright_editor_commands::{
 };
 use tilewright_editor_document::WorldDocument;
 use tilewright_editor_testkit::MEADOW_FILES;
+
+/// Copies are made in a temporary directory no one else changes, so the
+/// tests accept what the toolkit cannot check on some platforms.
+const ACCEPTED: PublishOptions = PublishOptions {
+    unchecked_access: true,
+};
 
 const DOT: Brush = Brush {
     shape: Shape::Square,
@@ -45,9 +51,16 @@ fn meadow_copy() -> tempfile::TempDir {
     let created = Transaction::parse("copy.jsonc", text).unwrap();
     tilewright_edit::plan(directory.path(), &created, &PlanOptions::default())
         .unwrap()
-        .publish()
+        .publish_with(&ACCEPTED)
         .unwrap();
     directory
+}
+
+fn accepted() -> Options {
+    Options {
+        unchecked_access: true,
+        ..Options::default()
+    }
 }
 
 fn revision(root: &Path) -> [u8; 32] {
@@ -80,7 +93,7 @@ fn a_release_saves_at_once_without_a_window_and_undo_restores_every_byte() {
     let opened = revision(root.path());
     let options = Options {
         coalesce: Duration::ZERO,
-        ..Options::default()
+        unchecked_access: true,
     };
     let mut session = Session::open(root.path(), options).unwrap();
     let now = Instant::now();
@@ -146,7 +159,7 @@ fn a_release_saves_at_once_without_a_window_and_undo_restores_every_byte() {
 fn interactions_within_the_window_are_one_save_and_one_undo_step() {
     let root = meadow_copy();
     let opened = revision(root.path());
-    let mut session = Session::open(root.path(), Options::default()).unwrap();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
     let start = Instant::now();
     paint(&mut session, start, "sand", &[[1, 1]]);
     assert_eq!(session.end_stroke(start).unwrap(), None);
@@ -179,7 +192,7 @@ fn interactions_within_the_window_are_one_save_and_one_undo_step() {
 #[test]
 fn an_interaction_after_the_window_saves_the_last_one_first() {
     let root = meadow_copy();
-    let mut session = Session::open(root.path(), Options::default()).unwrap();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
     let start = Instant::now();
     paint(&mut session, start, "sand", &[[1, 1]]);
     session.end_stroke(start).unwrap();
@@ -203,7 +216,7 @@ fn an_interaction_after_the_window_saves_the_last_one_first() {
 fn undo_drops_pending_edits_without_writing_and_redo_saves_them() {
     let root = meadow_copy();
     let opened = revision(root.path());
-    let mut session = Session::open(root.path(), Options::default()).unwrap();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
     let now = Instant::now();
     paint(&mut session, now, "sand", &[[1, 1]]);
     session.end_stroke(now).unwrap();
@@ -228,7 +241,7 @@ fn a_new_edit_clears_redo() {
     let root = meadow_copy();
     let options = Options {
         coalesce: Duration::ZERO,
-        ..Options::default()
+        unchecked_access: true,
     };
     let mut session = Session::open(root.path(), options).unwrap();
     let now = Instant::now();
@@ -245,7 +258,7 @@ fn a_new_edit_clears_redo() {
 #[test]
 fn cancelling_a_stroke_puts_its_tiles_back() {
     let root = meadow_copy();
-    let mut session = Session::open(root.path(), Options::default()).unwrap();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
     let now = Instant::now();
     paint(&mut session, now, "sand", &[[1, 1], [40, 1]]);
     let dirty = session.cancel_stroke(now).unwrap();
@@ -262,7 +275,7 @@ fn undo_after_an_outside_change_is_a_conflict_and_keeps_the_step() {
     let root = meadow_copy();
     let options = Options {
         coalesce: Duration::ZERO,
-        ..Options::default()
+        unchecked_access: true,
     };
     let mut session = Session::open(root.path(), options).unwrap();
     let now = Instant::now();
@@ -277,7 +290,7 @@ fn undo_after_an_outside_change_is_a_conflict_and_keeps_the_step() {
     let outside = Transaction::parse("outside.jsonc", outside).unwrap();
     tilewright_edit::plan(root.path(), &outside, &PlanOptions::default())
         .unwrap()
-        .publish()
+        .publish_with(&ACCEPTED)
         .unwrap();
     let Err(Error::Rejected(rejected)) = session.undo() else {
         panic!("undo over an outside change was accepted");
@@ -290,7 +303,7 @@ fn undo_after_an_outside_change_is_a_conflict_and_keeps_the_step() {
 #[test]
 fn interactions_follow_their_order() {
     let root = meadow_copy();
-    let mut session = Session::open(root.path(), Options::default()).unwrap();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
     let now = Instant::now();
     assert!(matches!(session.end_interaction(now), Err(Error::Idle)));
     assert!(matches!(session.stamp([0, 0]), Err(Error::NoStroke)));
@@ -299,4 +312,30 @@ fn interactions_follow_their_order() {
     assert!(matches!(session.undo(), Err(Error::Busy)));
     assert!(matches!(session.flush(), Err(Error::Busy)));
     assert_eq!(session.end_interaction(now).unwrap(), None);
+}
+
+#[test]
+fn saving_waits_for_consent_where_the_toolkit_cannot_check_everything() {
+    let root = meadow_copy();
+    let opened = revision(root.path());
+    let options = Options {
+        coalesce: Duration::ZERO,
+        unchecked_access: false,
+    };
+    let mut session = Session::open(root.path(), options).unwrap();
+    let now = Instant::now();
+    paint(&mut session, now, "sand", &[[1, 1]]);
+    match session.end_stroke(now) {
+        // Linux, on a file system that shows its access control lists.
+        Ok(Some(_)) => assert!(tilewright_edit::UNCHECKED_ACCESS.is_none()),
+        Err(Error::NeedsConsent(unchecked)) => {
+            assert!(!unchecked.is_empty());
+            assert_eq!(revision(root.path()), opened, "nothing was written");
+            assert!(session.is_dirty());
+            session.set_unchecked_access(true);
+            session.flush().unwrap().unwrap();
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+    assert_eq!(on_disk(root.path(), [1, 1]).as_deref(), Some("sand"));
 }

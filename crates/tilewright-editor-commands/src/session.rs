@@ -67,9 +67,11 @@ pub struct Options {
     /// to join them in the same save and undo step, at most
     /// [`MAXIMUM_COALESCE`]. Zero saves on every release.
     pub coalesce: Duration,
-    /// Whether the user has accepted what publishing on this platform does
-    /// not check, [`crate::UNCHECKED_ACCESS`]. Without it saving is refused
-    /// there; Linux checks everything and ignores it.
+    /// Whether the user has accepted what saving does not check where the
+    /// toolkit cannot check everything ([`crate::Preview::unchecked_access`]):
+    /// on macOS and Windows, and on Linux for trees on file systems that
+    /// hide their access control lists. Without it, saving there stops with
+    /// [`Error::NeedsConsent`].
     pub unchecked_access: bool,
 }
 
@@ -168,6 +170,12 @@ impl Session {
     #[must_use]
     pub const fn options(&self) -> Options {
         self.options
+    }
+
+    /// Records whether the user accepts what saving here does not check,
+    /// as when they answer [`Error::NeedsConsent`].
+    pub const fn set_unchecked_access(&mut self, accepted: bool) {
+        self.options.unchecked_access = accepted;
     }
 
     /// The terrain of `plane` with the session's unsaved edits, for the
@@ -496,6 +504,13 @@ impl Session {
     /// world it produced as the session's and rebuilds the preview.
     fn publish(&mut self, text: &str) -> Result<Preview, Error> {
         let planned = preview(&self.document, "editor.jsonc", text).map_err(Error::Rejected)?;
+        if !self.options.unchecked_access
+            && let Some(unchecked) = planned
+                .unchecked_access()
+                .map_err(|problems| Error::Rejected(PreviewError::Rejected(problems)))?
+        {
+            return Err(Error::NeedsConsent(unchecked));
+        }
         planned
             .publish(self.options.unchecked_access)
             .map_err(Error::Publish)?;
@@ -572,6 +587,9 @@ pub enum Error {
     NoStroke,
     /// The step was never saved, so it has no inverse to publish.
     Unsaved,
+    /// Saving here would not check what the text says, and the user has not
+    /// accepted that ([`Options::unchecked_access`]); nothing was written.
+    NeedsConsent(String),
 }
 
 impl fmt::Display for Error {
@@ -586,6 +604,10 @@ impl fmt::Display for Error {
             Self::Idle => write!(formatter, "no interaction is running"),
             Self::NoStroke => write!(formatter, "no brush stroke is running"),
             Self::Unsaved => write!(formatter, "the step was never saved"),
+            Self::NeedsConsent(unchecked) => write!(
+                formatter,
+                "saving here does not check everything and waits for your consent: {unchecked}"
+            ),
         }
     }
 }

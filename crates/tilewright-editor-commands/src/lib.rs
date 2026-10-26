@@ -19,10 +19,6 @@ use tilewright_edit::{
     FileChange, Options, Plan, PublishError, PublishOptions, Published, Transaction,
 };
 
-/// What publishing on this platform does not check, to tell the user once
-/// before they accept it; `None` where publishing checks everything, as on
-/// Linux. Publishing where it is `Some` is refused unless accepted.
-pub const UNCHECKED_ACCESS: Option<&str> = tilewright_edit::UNCHECKED_ACCESS;
 use tilewright_editor_document::WorldDocument;
 use tilewright_jsonc::write_json_string;
 use tilewright_source::{Diagnostic, World};
@@ -124,8 +120,19 @@ impl Preview {
         tilewright_edit::write_new(path, self.plan.inverse())
     }
 
+    /// What publishing this transaction would not check, in words to show
+    /// the user before they accept it: on macOS and Windows, and on Linux
+    /// for a tree on a file system whose access control lists Linux does not
+    /// show. `None` where publishing checks everything.
+    ///
+    /// # Errors
+    /// The toolkit's diagnostics for a directory it could not read.
+    pub fn unchecked_access(&self) -> Result<Option<String>, Vec<Diagnostic>> {
+        self.plan.unchecked_access()
+    }
+
     /// Publishes the transaction's files to the tree, through the toolkit.
-    /// Where [`UNCHECKED_ACCESS`] names what this platform does not check,
+    /// Where [`Preview::unchecked_access`] names what would not be checked,
     /// that is refused unless `unchecked_access` accepts it.
     ///
     /// # Errors

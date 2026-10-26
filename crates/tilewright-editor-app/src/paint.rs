@@ -6,7 +6,6 @@
 
 use std::{ffi::OsString, fmt::Write as _, path::Path};
 use tilewright_editor_commands::{
-    UNCHECKED_ACCESS,
     brush::{Brush, MAXIMUM_RADIUS, Shape, Stroke},
     preview, transaction,
 };
@@ -19,9 +18,10 @@ the profile's transitions on LAYER (default 0) of PLANE. Without --save it
 prints the transaction and the files it would change, writing nothing. With
 --save it writes the transaction's inverse to INVERSE, which must not exist,
 and then publishes the change; applying INVERSE with `tilewright tx apply`
-undoes it. On macOS and Windows, which do not check everything publishing
-checks on Linux, saving also needs --unchecked-access, accepting what it
-says is not checked.";
+undoes it. Where publishing cannot check everything, on macOS and Windows
+and on Linux for a tree on a file system that hides its access control
+lists, saving also needs --unchecked-access, accepting what it says is not
+checked.";
 
 struct Request {
     root: OsString,
@@ -152,7 +152,14 @@ pub fn run(arguments: &[OsString]) -> Result<(), String> {
     match &request.inverse {
         None => print!("{text}{summary}"),
         Some(path) => {
-            if let Some(unchecked) = UNCHECKED_ACCESS {
+            let unchecked = planned.unchecked_access().map_err(|problems| {
+                problems
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })?;
+            if let Some(unchecked) = unchecked {
                 if !request.unchecked_access {
                     return Err(format!(
                         "saving here does not check everything: {unchecked}; pass --unchecked-access to accept that"
