@@ -59,6 +59,7 @@ cargo build --locked --workspace
 cargo test --locked --workspace --all-targets
 cargo run --locked --package tilewright-editor -- version
 cargo run --locked --package tilewright-editor -- open crates/tilewright-editor-testkit/fixtures/meadow
+cargo run --locked --package tilewright-editor -- paint crates/tilewright-editor-testkit/fixtures/meadow --plane meadow --terrain sand 30,3 33,3
 SDL_VIDEO_DRIVER=dummy cargo run --locked --package tilewright-editor -- window
 tools/validate.sh
 ```
@@ -71,6 +72,19 @@ on Windows and exposes one required aggregate check named `Editor validation`.
 
 The editor never launches a game server; playtests are run by the consuming
 game's own tooling.
+
+## Editing and saving
+
+Edits are world toolkit transactions. A session keeps the edits of the
+current interaction in memory, where the preview shows them with the
+profile's terrain transitions resolved, and saves them to the source tree
+when the interaction ends: a pointer or key is released and no other
+interaction begins within the coalescing window, 2 seconds by default.
+Everything from the first press to that save is one transaction and one undo
+step; undo publishes the toolkit's exact inverse of the save, and redo the
+transaction again. The `paint` command strokes the terrain brush from the
+command line: it prints the transaction, or with `--save INVERSE` keeps the
+inverse in `INVERSE` and then publishes the change.
 
 ## Safety and releases
 

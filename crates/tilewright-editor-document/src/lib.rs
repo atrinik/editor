@@ -7,6 +7,8 @@
 //! validates the tree; this crate keeps the validated world and describes it
 //! for panels and the command line. It parses and writes nothing itself.
 
+pub mod terrain;
+
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -50,6 +52,16 @@ impl WorldDocument {
             root: root.to_path_buf(),
             world: Arc::new(world),
         })
+    }
+
+    /// The same root holding `world`: the world a transaction carried out
+    /// on this tree produced and published, so the tree is not read again.
+    #[must_use]
+    pub fn with_world(&self, world: World) -> Self {
+        Self {
+            root: self.root.clone(),
+            world: Arc::new(world),
+        }
     }
 
     /// The root the world was opened from.

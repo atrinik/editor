@@ -6,13 +6,75 @@
 //! Editor commands are world toolkit transactions (`tilewright.transaction/1`).
 //! [`preview`] carries one out against an open world in memory: the toolkit
 //! edits the files losslessly, validates the result and returns the sealed
-//! transaction and its exact inverse. Nothing is written. Publishing, and
-//! the history built on previews, come with the commands that need them.
+//! transaction and its exact inverse, writing nothing. The [`brush`] turns
+//! strokes into terrain operations, and a [`session`] collects the edits of
+//! an interaction and saves them through the toolkit when it ends, keeping
+//! each save's inverse for undo.
 
-use std::fmt;
-use tilewright_edit::{FileChange, Options, Plan, Transaction};
+pub mod brush;
+pub mod session;
+
+use std::{fmt, path::Path};
+use tilewright_edit::{
+    FileChange, Options, Plan, PublishError, PublishOptions, Published, Transaction,
+};
+
+/// What publishing on this platform does not check, to tell the user once
+/// before they accept it; `None` where publishing checks everything, as on
+/// Linux. Publishing where it is `Some` is refused unless accepted.
+pub const UNCHECKED_ACCESS: Option<&str> = tilewright_edit::UNCHECKED_ACCESS;
 use tilewright_editor_document::WorldDocument;
+use tilewright_jsonc::write_json_string;
 use tilewright_source::{Diagnostic, World};
+
+/// `text` as a JSON string, quoted and escaped, for operations that carry
+/// text.
+#[must_use]
+pub fn json_string(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    write_json_string(text, &mut quoted);
+    quoted
+}
+
+/// Who the transactions the editor writes name as their actor.
+pub const ACTOR: &str = "editor:tilewright-editor";
+
+/// Longest transaction title, in characters (TRANSACTIONS.md section 1).
+pub const MAXIMUM_TITLE: usize = 256;
+
+/// A transaction document that carries out `operations`, each the text of
+/// one operation, in order. Its title is `title`, cut to
+/// [`MAXIMUM_TITLE`] characters; its actor is [`ACTOR`]; and its `custom`
+/// data records `commands`, each the JSON text of an editor command and its
+/// parameters, under [`brush::NAMESPACE`].
+#[must_use]
+pub fn transaction(title: &str, operations: &[String], commands: &[String]) -> String {
+    let title: String = title.chars().take(MAXIMUM_TITLE).collect();
+    let mut text = String::from("{\n  \"format\": \"tilewright.transaction/1\",\n  \"title\": ");
+    write_json_string(&title, &mut text);
+    text.push_str(",\n  \"actor\": ");
+    write_json_string(ACTOR, &mut text);
+    text.push_str(",\n  \"operations\": [\n");
+    // Each operation one level in; their lines are structure only, since
+    // strings hold no raw line breaks.
+    let indented: Vec<String> = operations
+        .iter()
+        .map(|operation| {
+            operation
+                .lines()
+                .map(|line| format!("    {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect();
+    text.push_str(&indented.join(",\n"));
+    text.push_str("\n  ],\n  \"custom\": {");
+    write_json_string(brush::NAMESPACE, &mut text);
+    text.push_str(": {\"commands\": [");
+    text.push_str(&commands.join(", "));
+    text.push_str("]}}\n}\n");
+    text
+}
 
 /// A transaction carried out in memory against the tree of an open world.
 #[derive(Debug)]
@@ -50,6 +112,26 @@ impl Preview {
     #[must_use]
     pub fn inverse(&self) -> &str {
         self.plan.inverse()
+    }
+
+    /// Writes the inverse to a new file at `path`, atomically, through the
+    /// toolkit: the recovery record to keep before publishing. Returns
+    /// whether the new name is durable too.
+    ///
+    /// # Errors
+    /// Fails if `path` exists or cannot be written.
+    pub fn record_inverse(&self, path: &Path) -> std::io::Result<bool> {
+        tilewright_edit::write_new(path, self.plan.inverse())
+    }
+
+    /// Publishes the transaction's files to the tree, through the toolkit.
+    /// Where [`UNCHECKED_ACCESS`] names what this platform does not check,
+    /// that is refused unless `unchecked_access` accepts it.
+    ///
+    /// # Errors
+    /// Fails as the toolkit's publish does, saying whether the tree changed.
+    pub fn publish(&self, unchecked_access: bool) -> Result<Published, PublishError> {
+        self.plan.publish_with(&PublishOptions { unchecked_access })
     }
 }
 

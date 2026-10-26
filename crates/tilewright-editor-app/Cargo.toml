@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+tilewright-editor-commands.workspace = true
 tilewright-editor-document.workspace = true
 tilewright-editor-preview.workspace = true
 sdl3.workspace = true

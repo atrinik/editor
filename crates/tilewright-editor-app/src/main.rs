@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+mod paint;
+
 fn main() {
     let command = std::env::args()
         .nth(1)
@@ -41,6 +43,12 @@ fn main() {
                 }
             }
         }
+        "paint" => {
+            let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
+            if let Err(error) = paint::run(&arguments) {
+                fail(&error);
+            }
+        }
         "window" => {
             let sdl = sdl3::init().unwrap_or_else(|error| fail(&error));
             let video = sdl.video().unwrap_or_else(|error| fail(&error));
@@ -62,7 +70,10 @@ fn main() {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: tilewright-editor [version | open ROOT | window]");
+    eprintln!(
+        "usage: tilewright-editor [version | open ROOT | paint ROOT OPTIONS X,Y... | window]\n\n{}",
+        paint::USAGE
+    );
     std::process::exit(2);
 }
 

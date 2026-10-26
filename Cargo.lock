@@ -308,6 +308,7 @@ name = "tilewright-editor"
 version = "0.1.0"
 dependencies = [
  "sdl3",
+ "tilewright-editor-commands",
  "tilewright-editor-document",
  "tilewright-editor-preview",
 ]
@@ -316,9 +317,11 @@ dependencies = [
 name = "tilewright-editor-commands"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "tilewright-edit",
  "tilewright-editor-document",
  "tilewright-editor-testkit",
+ "tilewright-jsonc",
  "tilewright-source",
 ]
 
