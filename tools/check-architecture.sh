@@ -13,7 +13,7 @@ jq -e '
   deps("tilewright-editor-ui") == ["tilewright-editor-project"] and
   deps("tilewright-editor-preview") == ["tilewright-render-api","tilewright-render-resources","tilewright-render-testkit","tilewright-scene"] and
   deps("tilewright-editor-testkit") == ["tilewright-editor-project"] and
-  deps("tilewright-editor") == ["sdl3","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-preview"] and
+  deps("tilewright-editor") == ["sdl3","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-preview","tilewright-editor-testkit","tilewright-source"] and
   ([.packages[].name | select(test("(client|protocol|server)"; "i"))] | length == 0) and
   all(.packages[].dependencies[];
     (.source // "") as $source |

@@ -1,0 +1,7 @@
+// A world whose profile has no terrain transitions: the brush has nothing
+// to paint.
+{
+  "format": "tilewright.world/1",
+  "profile": "profile/profile.jsonc",
+  "planes": ["flat"]
+}

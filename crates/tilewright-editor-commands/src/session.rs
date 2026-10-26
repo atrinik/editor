@@ -1,37 +1,41 @@
 // Copyright 2026 Seraphina Studios
 // SPDX-License-Identifier: MIT
 
-//! An editing session: the changeset of one open world, saved as the user
-//! works.
+//! An editing session: the changes made to one open world, saved as the
+//! user works.
 //!
-//! Edits accumulate in memory, where the live preview shows them, and are
-//! published to the source tree automatically when an interaction ends: a
-//! pointer or key is released and no other interaction begins within the
-//! session's coalescing window ([`Options::coalesce`], 2 seconds by
-//! default). Everything from the first press to that point is one
-//! transaction, one save and one undo step. A window of zero saves on every
-//! release.
+//! Each interaction, from a pointer or key press to its release, is saved to
+//! the source tree when it ends: its edits become one transaction, which
+//! the toolkit carries out, validates and publishes. Undo steps coalesce:
+//! an interaction that begins within the session's window
+//! ([`Options::coalesce`], 2 seconds by default) of the last saved one
+//! joins its undo step, so a burst of strokes undoes and redoes as one. A
+//! window of zero makes each interaction its own step.
 //!
-//! Precisely, the edits pending since the last save are published:
+//! - Undo publishes the inverses of a step's saves, the last first; redo
+//!   publishes its transactions again, the first first. A step that fails
+//!   partway is split: what was undone or redone moves to the other stack,
+//!   the rest stays, and the error says why.
+//! - A save the toolkit rejects, such as one whose tiles changed outside
+//!   the editor, drops that interaction's edits alone. The session reloads
+//!   the world from disk, so the next edit expects what is there now, and
+//!   keeps what it dropped in [`Session::rejected`].
+//! - A save that cannot be published keeps its edits pending, and no
+//!   interaction begins until [`Session::flush`] saves them or
+//!   [`Session::discard`] drops them. That includes a save waiting for the
+//!   user's consent ([`Error::NeedsConsent`]). The transaction's inverse is
+//!   kept in [`Session::recovery`], since a publish that fails partway may
+//!   leave files to restore with it.
+//! - A publish that reports a problem after every file was published, such
+//!   as a directory it could not sync, counts as saved, with the problem in
+//!   [`Saved::warning`].
 //!
-//! - by [`Session::tick`] once no interaction is running and the window has
-//!   passed since the last one ended;
-//! - by [`Session::begin_interaction`] when the window had already passed,
-//!   so a late tick never merges two interactions it should have
-//!   separated;
-//! - by [`Session::end_interaction`] when the window is zero, or the
-//!   pending edits have grown past [`MAXIMUM_PENDING_CELLS`];
-//! - by [`Session::flush`], on demand.
-//!
-//! Undo publishes the last save's inverse, which the toolkit returned when
-//! it carried the save out, and redo publishes the forward transaction
-//! again; each is one step. Undo with edits still pending drops them
-//! instead, writing nothing, and redo publishes them. Time is passed in by
-//! the caller, so the rules are deterministic under test.
+//! Time is passed in by the caller, so the rules are deterministic under
+//! test.
 
 use crate::{
-    Error as PreviewError, Preview,
-    brush::{self, Brush, Stroke},
+    Error as PreviewError, MAXIMUM_TRANSACTION_CELLS, Preview,
+    brush::{self, Brush, StampError, Stroke},
     preview, transaction,
 };
 use std::{
@@ -46,26 +50,22 @@ use tilewright_editor_document::{
     terrain::{self, ChunkKey, PlaneTerrain},
 };
 
-/// How long after an interaction ends its edits wait for the next one to
-/// join them.
+/// How soon after the last saved interaction another one joins its undo
+/// step.
 pub const DEFAULT_COALESCE: Duration = Duration::from_secs(2);
-
-/// Pending terrain cells past which an interaction's end saves at once,
-/// whatever the window: a transaction holds at most 1,000,000.
-pub const MAXIMUM_PENDING_CELLS: usize = 500_000;
 
 /// Longest coalescing window; a longer one counts as this.
 pub const MAXIMUM_COALESCE: Duration = Duration::from_mins(1);
 
-/// Most undo steps a session keeps; the oldest goes first.
-pub const MAXIMUM_HISTORY: usize = 1_024;
+/// Undo steps a session keeps by default; the oldest goes first.
+pub const DEFAULT_HISTORY: usize = 1_024;
 
-/// How a session saves.
+/// How a session saves and keeps history.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Options {
-    /// How long the edits of an ended interaction wait for the next one
-    /// to join them in the same save and undo step, at most
-    /// [`MAXIMUM_COALESCE`]. Zero saves on every release.
+    /// How soon after the last saved interaction another one joins its undo
+    /// step, at most [`MAXIMUM_COALESCE`]. Zero makes each interaction its
+    /// own step.
     pub coalesce: Duration,
     /// Whether the user has accepted what saving does not check where the
     /// toolkit cannot check everything ([`crate::Preview::unchecked_access`]):
@@ -73,6 +73,8 @@ pub struct Options {
     /// hide their access control lists. Without it, saving there stops with
     /// [`Error::NeedsConsent`].
     pub unchecked_access: bool,
+    /// Most undo steps kept, at least one.
+    pub history: usize,
 }
 
 impl Default for Options {
@@ -80,6 +82,7 @@ impl Default for Options {
         Self {
             coalesce: DEFAULT_COALESCE,
             unchecked_access: false,
+            history: DEFAULT_HISTORY,
         }
     }
 }
@@ -98,23 +101,62 @@ pub struct Command {
     pub cells: usize,
 }
 
-/// A saved change: one undo step.
+/// A save, undo or redo that reached the tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Saved {
+    /// The undo step's title.
     pub title: String,
     /// The files it changed, by path.
     pub files: Vec<String>,
+    /// A problem the toolkit reported after every file was published.
+    pub warning: Option<String>,
 }
 
-/// An undo or redo step.
+/// Edits a save could not keep, which the session dropped.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Rejected {
+    pub title: String,
+    /// The transaction they would have been.
+    pub transaction: String,
+    /// Why the toolkit rejected it.
+    pub reason: String,
+}
+
+/// One published transaction of an undo step.
+#[derive(Clone, Debug)]
+struct Save {
+    title: String,
+    /// The sealed transaction, with the digests of its files before and
+    /// after: redo checks them.
+    forward: String,
+    /// The transaction that reverts it.
+    inverse: String,
+}
+
+/// An undo or redo step: the saves of the interactions it coalesced, in
+/// the order they were made.
 #[derive(Clone, Debug)]
 struct Step {
-    title: String,
-    /// The transaction that makes the change: the sealed one, with the
-    /// digests of the files before and after, once it has been published.
-    forward: String,
-    /// The transaction that reverts it, once it has been published.
-    inverse: Option<String>,
+    saves: Vec<Save>,
+}
+
+impl Step {
+    fn title(&self) -> String {
+        match self.saves.as_slice() {
+            [] => String::new(),
+            [only] => only.title.clone(),
+            [first, rest @ ..] => {
+                let plural = if rest.len() == 1 { "" } else { "s" };
+                format!("{} and {} more edit{plural}", first.title, rest.len())
+            }
+        }
+    }
+}
+
+/// A transaction the toolkit published.
+struct Published {
+    planned: Preview,
+    warning: Option<String>,
 }
 
 /// An editing session over one world.
@@ -127,11 +169,17 @@ pub struct Session {
     terrains: BTreeMap<String, PlaneTerrain>,
     stroke: Option<Stroke>,
     active: bool,
+    /// The running interaction's edits, or those of a save that could not
+    /// be published.
     pending: Vec<Command>,
-    /// When the pending edits are saved if no interaction begins first.
-    deadline: Option<Instant>,
+    /// Whether the running or pending interaction joins the last undo step.
+    joining: bool,
+    /// When the last saved interaction ended, while its step can grow.
+    last_end: Option<Instant>,
     undo: Vec<Step>,
     redo: Vec<Step>,
+    rejected: Option<Rejected>,
+    recovery: Option<String>,
 }
 
 impl Session {
@@ -155,13 +203,16 @@ impl Session {
             stroke: None,
             active: false,
             pending: Vec::new(),
-            deadline: None,
+            joining: false,
+            last_end: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            rejected: None,
+            recovery: None,
         }
     }
 
-    /// The world as last saved or opened.
+    /// The world as last saved, opened or reloaded.
     #[must_use]
     pub fn document(&self) -> &WorldDocument {
         &self.document
@@ -198,7 +249,8 @@ impl Session {
             .ok_or_else(|| Error::Terrain(terrain::Error::UnknownPlane(plane.to_owned())))
     }
 
-    /// Whether edits are waiting to be saved, or a stroke is running.
+    /// Whether edits are not saved yet: a stroke is running, or a save
+    /// could not be published.
     #[must_use]
     pub fn is_dirty(&self) -> bool {
         !self.pending.is_empty()
@@ -214,23 +266,19 @@ impl Session {
         self.active
     }
 
-    /// When the pending edits will be saved if no interaction begins first.
+    /// Whether a save could not be published and waits for
+    /// [`Session::flush`] or [`Session::discard`].
     #[must_use]
-    pub const fn deadline(&self) -> Option<Instant> {
-        self.deadline
+    pub fn is_waiting(&self) -> bool {
+        !self.active && !self.pending.is_empty()
     }
 
     /// The titles of the undo steps, oldest first, and of the redo steps,
     /// next first.
     #[must_use]
-    pub fn history(&self) -> (Vec<&str>, Vec<&str>) {
-        let undo = self.undo.iter().map(|step| step.title.as_str()).collect();
-        let redo = self
-            .redo
-            .iter()
-            .rev()
-            .map(|step| step.title.as_str())
-            .collect();
+    pub fn history(&self) -> (Vec<String>, Vec<String>) {
+        let undo = self.undo.iter().map(Step::title).collect();
+        let redo = self.redo.iter().rev().map(Step::title).collect();
         (undo, redo)
     }
 
@@ -240,49 +288,69 @@ impl Session {
         compose(&self.pending)
     }
 
-    /// Starts an interaction at `now`: a pointer or key press. If the
-    /// coalescing window of the last one has passed, its edits are saved
-    /// first, as their own step.
+    /// The edits the last rejected save dropped, until another save
+    /// succeeds or [`Session::take_rejected`] takes them.
+    #[must_use]
+    pub const fn rejected(&self) -> Option<&Rejected> {
+        self.rejected.as_ref()
+    }
+
+    pub const fn take_rejected(&mut self) -> Option<Rejected> {
+        self.rejected.take()
+    }
+
+    /// The inverse of the last transaction whose publishing failed: applied
+    /// to the tree, it restores any file that failed publish left changed.
+    #[must_use]
+    pub fn recovery(&self) -> Option<&str> {
+        self.recovery.as_deref()
+    }
+
+    /// Starts an interaction at `now`: a pointer or key press.
     ///
     /// # Errors
-    /// Fails if an interaction is already running, or saving fails; then the
-    /// interaction does not start.
-    pub fn begin_interaction(&mut self, now: Instant) -> Result<Option<Saved>, Error> {
+    /// Fails if an interaction is running, or a save waits to be published
+    /// or discarded.
+    pub fn begin_interaction(&mut self, now: Instant) -> Result<(), Error> {
         if self.active {
             return Err(Error::Busy);
         }
-        let saved = if self.deadline.is_some_and(|deadline| now >= deadline) {
-            self.flush()?
-        } else {
-            None
-        };
+        if !self.pending.is_empty() {
+            return Err(Error::Waiting);
+        }
+        let window = self.options.coalesce.min(MAXIMUM_COALESCE);
+        self.joining = !window.is_zero()
+            && !self.undo.is_empty()
+            && self
+                .last_end
+                .is_some_and(|end| now.saturating_duration_since(end) <= window);
         self.active = true;
-        self.deadline = None;
-        Ok(saved)
+        Ok(())
     }
 
-    /// Adds `command` to the pending edits. Its operation must already be
-    /// reflected in the session's terrain, as a stroke's is.
+    /// Adds `command` to the running interaction. Its operation must already
+    /// be reflected in the session's terrain, as a stroke's is.
     ///
     /// # Errors
-    /// Fails outside an interaction.
+    /// Fails outside an interaction, or when the interaction would hold more
+    /// than [`MAXIMUM_TRANSACTION_CELLS`] cells.
     pub fn record(&mut self, command: Command) -> Result<(), Error> {
         if !self.active {
             return Err(Error::Idle);
         }
+        let cells: usize = self.pending.iter().map(|pending| pending.cells).sum();
+        if cells.saturating_add(command.cells) > MAXIMUM_TRANSACTION_CELLS {
+            return Err(Error::TooLarge);
+        }
         self.pending.push(command);
-        self.redo.clear();
         Ok(())
     }
 
-    /// Ends the interaction at `now`: the release. Its edits are saved at
-    /// once when the window is zero or they have grown past
-    /// [`MAXIMUM_PENDING_CELLS`]; otherwise when the window has passed.
+    /// Ends the interaction at `now`, the release, and saves its edits.
     ///
     /// # Errors
-    /// Fails outside an interaction, while a stroke is running, or when
-    /// saving fails; the interaction has ended then, and its edits stay
-    /// pending.
+    /// Fails outside an interaction, while a stroke is running, or when the
+    /// save fails, as [`Session::flush`] says.
     pub fn end_interaction(&mut self, now: Instant) -> Result<Option<Saved>, Error> {
         if !self.active {
             return Err(Error::Idle);
@@ -291,125 +359,22 @@ impl Session {
             return Err(Error::Busy);
         }
         self.active = false;
-        if self.pending.is_empty() {
-            return Ok(None);
-        }
-        let cells: usize = self.pending.iter().map(|command| command.cells).sum();
-        if self.options.coalesce.is_zero() || cells > MAXIMUM_PENDING_CELLS {
-            return self.flush();
-        }
-        let window = self.options.coalesce.min(MAXIMUM_COALESCE);
-        match now.checked_add(window) {
-            Some(deadline) => {
-                self.deadline = Some(deadline);
-                Ok(None)
-            }
-            None => self.flush(),
-        }
+        self.store(now)
     }
 
-    /// Saves the pending edits if the window has passed at `now`.
+    /// Saves edits whose save could not be published before, at `now`.
     ///
     /// # Errors
-    /// Fails when saving fails; the edits stay pending and are tried again
-    /// when the next interaction ends.
-    pub fn tick(&mut self, now: Instant) -> Result<Option<Saved>, Error> {
-        if self.active || self.deadline.is_none_or(|deadline| now < deadline) {
-            return Ok(None);
-        }
-        self.flush()
-    }
-
-    /// Starts a brush stroke at `now` on `layer` of `plane`, painting
-    /// `terrain`; it begins an interaction.
-    ///
-    /// # Errors
-    /// Fails as [`Session::begin_interaction`] and [`Stroke::begin`] do.
-    pub fn begin_stroke(
-        &mut self,
-        now: Instant,
-        plane: &str,
-        layer: i32,
-        terrain: &str,
-        brush: Brush,
-    ) -> Result<Option<Saved>, Error> {
-        // Check the stroke before anything is saved.
-        Stroke::begin(self.plane_terrain(plane)?, layer, terrain, brush).map_err(Error::Brush)?;
-        let saved = self.begin_interaction(now)?;
-        let stroke = Stroke::begin(self.plane_terrain(plane)?, layer, terrain, brush)
-            .map_err(Error::Brush)?;
-        self.stroke = Some(stroke);
-        Ok(saved)
-    }
-
-    /// Stamps the running stroke at plane tile `point`. Returns the chunks
-    /// whose preview may have changed.
-    ///
-    /// # Errors
-    /// Fails without a running stroke, or as [`Stroke::stamp`] does.
-    pub fn stamp(&mut self, point: [i64; 2]) -> Result<BTreeSet<ChunkKey>, Error> {
-        let mut stroke = self.stroke.take().ok_or(Error::NoStroke)?;
-        let result = match self.plane_terrain(stroke.plane()) {
-            Ok(terrain) => stroke.stamp(terrain, point).map_err(Error::Brush),
-            Err(error) => Err(error),
-        };
-        self.stroke = Some(stroke);
-        result
-    }
-
-    /// Ends the running stroke and its interaction at `now`.
-    ///
-    /// # Errors
-    /// Fails without a running stroke, or as [`Session::end_interaction`]
-    /// does.
-    pub fn end_stroke(&mut self, now: Instant) -> Result<Option<Saved>, Error> {
-        let stroke = self.stroke.take().ok_or(Error::NoStroke)?;
-        if let Some(operation) = stroke.operation().map_err(Error::Brush)? {
-            self.record(Command {
-                title: stroke.title(),
-                operation,
-                record: stroke.record(),
-                cells: stroke.len(),
-            })?;
-        }
-        self.end_interaction(now)
-    }
-
-    /// Cancels the running stroke: its tiles go back, and its interaction
-    /// ends without an edit. Returns the chunks whose preview changed.
-    ///
-    /// # Errors
-    /// Fails without a running stroke.
-    pub fn cancel_stroke(&mut self, now: Instant) -> Result<BTreeSet<ChunkKey>, Error> {
-        let stroke = self.stroke.take().ok_or(Error::NoStroke)?;
-        let terrain = self.plane_terrain(stroke.plane())?;
-        let dirty = stroke.chunks().flat_map(terrain::neighbourhood).collect();
-        stroke.revert(terrain).map_err(Error::Brush)?;
-        self.end_interaction(now)?;
-        Ok(dirty)
-    }
-
-    /// Saves the pending edits now, as one transaction and one undo step.
-    ///
-    /// # Errors
-    /// Fails while an interaction runs, or when the toolkit rejects or
-    /// cannot publish the transaction; the edits stay pending, and the tree
-    /// is as the error says.
-    pub fn flush(&mut self) -> Result<Option<Saved>, Error> {
+    /// Fails while an interaction runs. A rejected save drops its edits
+    /// and reloads the world; one that cannot be published keeps them.
+    pub fn flush(&mut self, now: Instant) -> Result<Option<Saved>, Error> {
         if self.active {
             return Err(Error::Busy);
         }
-        self.deadline = None;
-        let Some(text) = compose(&self.pending) else {
-            return Ok(None);
-        };
-        let title = title(&self.pending);
-        let planned = self.publish(&text)?;
-        self.pending.clear();
-        Ok(Some(self.push_undo(title, &planned)))
+        self.store(now)
     }
 
-    /// Drops the pending edits without saving them, and rebuilds the
+    /// Drops edits whose save could not be published, and rebuilds the
     /// preview from the world as saved.
     ///
     /// # Errors
@@ -419,121 +384,303 @@ impl Session {
             return Err(Error::Busy);
         }
         self.pending.clear();
-        self.deadline = None;
         self.terrains.clear();
         Ok(())
     }
 
-    /// Undoes the last step: drops the pending edits, or publishes the last
-    /// save's inverse. Returns what was undone.
+    /// Starts a brush stroke at `now` on `layer` of `plane`, painting
+    /// `terrain`; it begins an interaction.
     ///
     /// # Errors
-    /// Fails while an interaction runs, or when the inverse cannot be
-    /// published, such as after the files changed outside the editor; the
-    /// step stays in the history then.
+    /// Fails as [`Session::begin_interaction`] and [`Stroke::begin`] do;
+    /// nothing has started then.
+    pub fn begin_stroke(
+        &mut self,
+        now: Instant,
+        plane: &str,
+        layer: i32,
+        terrain: &str,
+        brush: Brush,
+    ) -> Result<(), Error> {
+        if self.active {
+            return Err(Error::Busy);
+        }
+        if !self.pending.is_empty() {
+            return Err(Error::Waiting);
+        }
+        let stroke = Stroke::begin(self.plane_terrain(plane)?, layer, terrain, brush)
+            .map_err(Error::Brush)?;
+        self.begin_interaction(now)?;
+        self.stroke = Some(stroke);
+        Ok(())
+    }
+
+    /// Stamps the running stroke at plane tile `point`. Returns the chunks
+    /// whose preview may have changed.
+    ///
+    /// # Errors
+    /// Fails without a running stroke, or as [`Stroke::stamp`] does; then
+    /// [`Error::Stamp`] names the chunks the stamp changed before it failed.
+    pub fn stamp(&mut self, point: [i64; 2]) -> Result<BTreeSet<ChunkKey>, Error> {
+        let mut stroke = self.stroke.take().ok_or(Error::NoStroke)?;
+        let result = match self.plane_terrain(stroke.plane()) {
+            Ok(terrain) => stroke.stamp(terrain, point).map_err(Error::Stamp),
+            Err(error) => Err(error),
+        };
+        self.stroke = Some(stroke);
+        result
+    }
+
+    /// Ends the running stroke and its interaction at `now`, and saves it.
+    ///
+    /// # Errors
+    /// Fails without a running stroke, or as [`Session::end_interaction`]
+    /// does. A stroke that cannot become an operation is cancelled.
+    pub fn end_stroke(&mut self, now: Instant) -> Result<Option<Saved>, Error> {
+        let stroke = self.stroke.take().ok_or(Error::NoStroke)?;
+        let command = stroke.operation().map(|operation| {
+            operation.map(|operation| Command {
+                title: stroke.title(),
+                operation,
+                record: stroke.record(),
+                cells: stroke.len(),
+            })
+        });
+        let recorded = match command {
+            Ok(Some(command)) => self.record(command),
+            Ok(None) => Ok(()),
+            Err(error) => Err(Error::Brush(error)),
+        };
+        if let Err(error) = recorded {
+            self.abandon(&stroke)?;
+            return Err(error);
+        }
+        self.end_interaction(now)
+    }
+
+    /// Cancels the running stroke and its interaction: the stroke's tiles go
+    /// back and nothing is saved. Returns the chunks whose preview changed.
+    ///
+    /// # Errors
+    /// Fails without a running stroke.
+    pub fn cancel_stroke(&mut self) -> Result<BTreeSet<ChunkKey>, Error> {
+        let stroke = self.stroke.take().ok_or(Error::NoStroke)?;
+        let dirty = stroke.chunks().flat_map(terrain::neighbourhood).collect();
+        self.abandon(&stroke)?;
+        Ok(dirty)
+    }
+
+    /// Puts a stroke's tiles back and ends its interaction without saving.
+    fn abandon(&mut self, stroke: &Stroke) -> Result<(), Error> {
+        self.active = false;
+        self.pending.clear();
+        let terrain = self.plane_terrain(stroke.plane())?;
+        stroke.revert(terrain).map_err(Error::Brush)
+    }
+
+    /// Saves the pending edits as one transaction.
+    fn store(&mut self, now: Instant) -> Result<Option<Saved>, Error> {
+        let Some(text) = compose(&self.pending) else {
+            return Ok(None);
+        };
+        let title = title(&self.pending);
+        let published = match self.publish(&text) {
+            Ok(published) => published,
+            Err(Error::Rejected(reason)) => {
+                self.pending.clear();
+                self.rejected = Some(Rejected {
+                    title,
+                    transaction: text,
+                    reason: reason.to_string(),
+                });
+                self.reload();
+                return Err(Error::Rejected(reason));
+            }
+            Err(error) => return Err(error),
+        };
+        self.pending.clear();
+        self.rejected = None;
+        let save = Save {
+            title,
+            forward: published.planned.sealed().to_owned(),
+            inverse: published.planned.inverse().to_owned(),
+        };
+        match self.undo.last_mut() {
+            Some(step) if self.joining => step.saves.push(save),
+            _ => self.push_undo(Step { saves: vec![save] }),
+        }
+        self.redo.clear();
+        self.last_end = Some(now);
+        let step = self.undo.last().map(Step::title).unwrap_or_default();
+        Ok(Some(Saved {
+            title: step,
+            files: changed(&published.planned),
+            warning: published.warning,
+        }))
+    }
+
+    /// Undoes the last step by publishing its saves' inverses, the last
+    /// first, or drops edits whose save could not be published. Returns
+    /// what was undone.
+    ///
+    /// # Errors
+    /// Fails while an interaction runs, or when an inverse cannot be
+    /// published, such as after its files changed outside the editor; what
+    /// was undone by then moves to redo, and the rest stays.
     pub fn undo(&mut self) -> Result<Option<Saved>, Error> {
         if self.active {
             return Err(Error::Busy);
         }
-        if let Some(forward) = compose(&self.pending) {
+        if !self.pending.is_empty() {
             let title = title(&self.pending);
             self.discard()?;
-            self.redo.push(Step {
-                title: title.clone(),
-                forward,
-                inverse: None,
-            });
             return Ok(Some(Saved {
                 title,
                 files: Vec::new(),
+                warning: None,
             }));
         }
-        let Some(step) = self.undo.pop() else {
+        let Some(mut step) = self.undo.pop() else {
             return Ok(None);
         };
-        let Some(inverse) = step.inverse.as_deref() else {
-            self.undo.push(step);
-            return Err(Error::Unsaved);
-        };
-        let planned = match self.publish(inverse) {
-            Ok(planned) => planned,
-            Err(error) => {
-                self.undo.push(step);
-                return Err(error);
+        self.last_end = None;
+        let title = step.title();
+        let (mut files, mut warning, mut undone) = (BTreeSet::new(), None, Vec::new());
+        while let Some(save) = step.saves.pop() {
+            match self.publish(&save.inverse) {
+                Ok(published) => {
+                    files.extend(changed(&published.planned));
+                    warning = warning.or(published.warning);
+                    undone.push(save);
+                }
+                Err(error) => {
+                    step.saves.push(save);
+                    self.undo.push(step);
+                    if !undone.is_empty() {
+                        undone.reverse();
+                        self.redo.push(Step { saves: undone });
+                    }
+                    if matches!(error, Error::Rejected(_)) {
+                        self.reload();
+                    }
+                    return Err(error);
+                }
             }
-        };
-        let saved = Saved {
-            title: step.title.clone(),
-            files: changed(&planned),
-        };
-        self.redo.push(Step {
-            inverse: None,
-            ..step
-        });
-        Ok(Some(saved))
+        }
+        undone.reverse();
+        self.redo.push(Step { saves: undone });
+        Ok(Some(Saved {
+            title,
+            files: files.into_iter().collect(),
+            warning,
+        }))
     }
 
-    /// Redoes the last undone step by publishing its forward transaction.
-    /// Returns what was redone.
+    /// Redoes the last undone step by publishing its transactions again,
+    /// the first first. Returns what was redone.
     ///
     /// # Errors
-    /// Fails while an interaction runs or edits are pending, or when the
-    /// transaction cannot be published; the step stays undone then.
+    /// Fails while an interaction runs or a save waits, or when a
+    /// transaction cannot be published; what was redone by then moves to
+    /// undo, and the rest stays.
     pub fn redo(&mut self) -> Result<Option<Saved>, Error> {
-        if self.active || !self.pending.is_empty() {
+        if self.active {
             return Err(Error::Busy);
         }
-        let Some(step) = self.redo.pop() else {
+        if !self.pending.is_empty() {
+            return Err(Error::Waiting);
+        }
+        let Some(mut step) = self.redo.pop() else {
             return Ok(None);
         };
-        match self.publish(&step.forward) {
-            Ok(planned) => {
-                let redo = std::mem::take(&mut self.redo);
-                let saved = self.push_undo(step.title, &planned);
-                self.redo = redo;
-                Ok(Some(saved))
-            }
-            Err(error) => {
-                self.redo.push(step);
-                Err(error)
+        self.last_end = None;
+        let title = step.title();
+        let (mut files, mut warning, mut redone) = (BTreeSet::new(), None, Vec::new());
+        step.saves.reverse();
+        while let Some(save) = step.saves.pop() {
+            match self.publish(&save.forward) {
+                Ok(published) => {
+                    files.extend(changed(&published.planned));
+                    warning = warning.or(published.warning);
+                    redone.push(Save {
+                        title: save.title,
+                        forward: published.planned.sealed().to_owned(),
+                        inverse: published.planned.inverse().to_owned(),
+                    });
+                }
+                Err(error) => {
+                    step.saves.push(save);
+                    step.saves.reverse();
+                    self.redo.push(step);
+                    if !redone.is_empty() {
+                        self.push_undo(Step { saves: redone });
+                    }
+                    if matches!(error, Error::Rejected(_)) {
+                        self.reload();
+                    }
+                    return Err(error);
+                }
             }
         }
+        self.push_undo(Step { saves: redone });
+        Ok(Some(Saved {
+            title,
+            files: files.into_iter().collect(),
+            warning,
+        }))
     }
 
     /// Carries out and publishes `text` against the tree, then takes the
     /// world it produced as the session's and rebuilds the preview.
-    fn publish(&mut self, text: &str) -> Result<Preview, Error> {
+    fn publish(&mut self, text: &str) -> Result<Published, Error> {
         let planned = preview(&self.document, "editor.jsonc", text).map_err(Error::Rejected)?;
+        // A directory that cannot be read here is a problem of the disk, not
+        // of the edits, so they wait like any save that was not published.
+        let unchecked = planned.unchecked_access().map_err(|problems| {
+            Error::Publish(PublishError {
+                applied: false,
+                durable: true,
+                cleaned: true,
+                problems,
+            })
+        })?;
         if !self.options.unchecked_access
-            && let Some(unchecked) = planned
-                .unchecked_access()
-                .map_err(|problems| Error::Rejected(PreviewError::Rejected(problems)))?
+            && let Some(unchecked) = unchecked
         {
             return Err(Error::NeedsConsent(unchecked));
         }
-        planned
-            .publish(self.options.unchecked_access)
-            .map_err(Error::Publish)?;
+        let warning = match planned.publish(self.options.unchecked_access) {
+            Ok(published) => (!published.durable).then(|| {
+                "the saved files' names may not be durable until the system syncs them".to_owned()
+            }),
+            // Every file was published; what went wrong after is a warning.
+            Err(error) if error.applied => Some(error.to_string()),
+            Err(error) => {
+                self.recovery = Some(planned.inverse().to_owned());
+                return Err(Error::Publish(error));
+            }
+        };
+        self.recovery = None;
         self.document = self.document.with_world(planned.world().clone());
         self.terrains.clear();
-        Ok(planned)
+        Ok(Published { planned, warning })
     }
 
-    fn push_undo(&mut self, title: String, planned: &Preview) -> Saved {
-        let saved = Saved {
-            title: title.clone(),
-            files: changed(planned),
-        };
-        if self.undo.len() >= MAXIMUM_HISTORY {
+    /// Reads the world from disk again, after a rejected save, so the next
+    /// edit expects what is there now. A tree that no longer loads keeps
+    /// the world as it was.
+    fn reload(&mut self) {
+        if let Ok(document) = WorldDocument::open(self.document.root()) {
+            self.document = document;
+        }
+        self.terrains.clear();
+    }
+
+    fn push_undo(&mut self, step: Step) {
+        if self.undo.len() >= self.options.history.max(1) {
             self.undo.remove(0);
         }
-        self.undo.push(Step {
-            title,
-            forward: planned.sealed().to_owned(),
-            inverse: Some(planned.inverse().to_owned()),
-        });
-        self.redo.clear();
-        saved
+        self.undo.push(step);
     }
 }
 
@@ -576,17 +723,23 @@ pub enum Error {
     Document(DocumentError),
     Terrain(terrain::Error),
     Brush(brush::Error),
+    /// A stamp failed partway; its tiles stay painted.
+    Stamp(StampError),
     /// The toolkit rejected the transaction: its diagnostics.
     Rejected(PreviewError),
-    /// Publishing failed; the error says whether the tree changed.
+    /// Publishing failed before every file was published; the error says
+    /// whether files were left to restore.
     Publish(PublishError),
     /// An interaction or stroke is running.
     Busy,
     /// No interaction is running.
     Idle,
     NoStroke,
-    /// The step was never saved, so it has no inverse to publish.
-    Unsaved,
+    /// A save could not be published and waits for a flush or a discard.
+    Waiting,
+    /// The interaction would hold more than [`MAXIMUM_TRANSACTION_CELLS`]
+    /// cells.
+    TooLarge,
     /// Saving here would not check what the text says, and the user has not
     /// accepted that ([`Options::unchecked_access`]); nothing was written.
     NeedsConsent(String),
@@ -598,12 +751,20 @@ impl fmt::Display for Error {
             Self::Document(error) => error.fmt(formatter),
             Self::Terrain(error) => error.fmt(formatter),
             Self::Brush(error) => error.fmt(formatter),
+            Self::Stamp(error) => error.fmt(formatter),
             Self::Rejected(error) => error.fmt(formatter),
             Self::Publish(error) => write!(formatter, "saving failed: {error}"),
             Self::Busy => write!(formatter, "an interaction is running"),
             Self::Idle => write!(formatter, "no interaction is running"),
             Self::NoStroke => write!(formatter, "no brush stroke is running"),
-            Self::Unsaved => write!(formatter, "the step was never saved"),
+            Self::Waiting => write!(
+                formatter,
+                "unsaved edits wait to be saved again or discarded"
+            ),
+            Self::TooLarge => write!(
+                formatter,
+                "one interaction saves at most {MAXIMUM_TRANSACTION_CELLS} cells"
+            ),
             Self::NeedsConsent(unchecked) => write!(
                 formatter,
                 "saving here does not check everything and waits for your consent: {unchecked}"

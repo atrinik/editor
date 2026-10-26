@@ -21,9 +21,13 @@ use tilewright_source::is_identifier;
 /// Largest brush radius, in tiles.
 pub const MAXIMUM_RADIUS: u16 = 32;
 
-/// Most tiles one stroke paints. A transaction holds at most 1,000,000
-/// terrain cells; a stroke stays well within it.
-pub const MAXIMUM_STROKE_TILES: usize = 250_000;
+/// Most tiles one stroke paints: within the cells one save can hold,
+/// [`crate::MAXIMUM_TRANSACTION_CELLS`].
+pub const MAXIMUM_STROKE_TILES: usize = 100_000;
+
+/// Most chunks one stroke paints in: the toolkit's bound on the chunks one
+/// terrain operation names.
+pub const MAXIMUM_STROKE_CHUNKS: usize = 10_000;
 
 /// Most tiles between two pointer samples that a stroke fills in. A jump
 /// further than this paints only where the pointer lands.
@@ -130,6 +134,16 @@ pub struct Stroke {
     last: Option<[i64; 2]>,
     /// Each tile the stroke changed, with the value it had before.
     before: BTreeMap<[i64; 2], Option<String>>,
+    /// The chunks of those tiles.
+    chunks: BTreeSet<ChunkKey>,
+}
+
+/// A stamp that failed partway: why, and the chunks whose resolved tiles
+/// may have changed before it did, since the tiles it painted stay painted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StampError {
+    pub error: Error,
+    pub dirty: BTreeSet<ChunkKey>,
 }
 
 impl Stroke {
@@ -167,6 +181,7 @@ impl Stroke {
             brush,
             last: None,
             before: BTreeMap::new(),
+            chunks: BTreeSet::new(),
         })
     }
 
@@ -177,16 +192,20 @@ impl Stroke {
     ///
     /// # Errors
     /// Fails if the stroke would paint more than [`MAXIMUM_STROKE_TILES`]
-    /// tiles, a grid has no room for the terrain's prototype, or `unsaved`
-    /// holds another plane than the stroke began on. Tiles painted before the
-    /// failure stay painted and recorded.
+    /// tiles or in more than [`MAXIMUM_STROKE_CHUNKS`] chunks, a grid has no
+    /// room for the terrain's prototype, or `unsaved` holds another plane
+    /// than the stroke began on. Tiles painted before the failure stay
+    /// painted and recorded, and the error names the chunks they changed.
     pub fn stamp(
         &mut self,
         unsaved: &mut PlaneTerrain,
         point: [i64; 2],
-    ) -> Result<BTreeSet<ChunkKey>, Error> {
+    ) -> Result<BTreeSet<ChunkKey>, StampError> {
         if unsaved.plane() != self.plane {
-            return Err(Error::OtherPlane(unsaved.plane().to_owned()));
+            return Err(StampError {
+                error: Error::OtherPlane(unsaved.plane().to_owned()),
+                dirty: BTreeSet::new(),
+            });
         }
         let path = segment(self.last.unwrap_or(point), point);
         self.last = Some(point);
@@ -203,13 +222,26 @@ impl Stroke {
                 if unsaved.value(self.layer, tile, self.ground.0) == Some(self.paint.as_str()) {
                     continue;
                 }
-                if self.before.len() >= MAXIMUM_STROKE_TILES {
-                    return Err(Error::TooLarge);
+                let new_chunk = !self.chunks.contains(&chunk);
+                if self.before.len() >= MAXIMUM_STROKE_TILES
+                    || (new_chunk && self.chunks.len() >= MAXIMUM_STROKE_CHUNKS)
+                {
+                    return Err(StampError {
+                        error: Error::TooLarge,
+                        dirty,
+                    });
                 }
-                let before = unsaved
-                    .set(self.layer, tile, self.ground.0, Some(&self.paint))
-                    .map_err(Error::Terrain)?;
+                let before = match unsaved.set(self.layer, tile, self.ground.0, Some(&self.paint)) {
+                    Ok(before) => before,
+                    Err(error) => {
+                        return Err(StampError {
+                            error: Error::Terrain(error),
+                            dirty,
+                        });
+                    }
+                };
                 self.before.insert(tile, before);
+                self.chunks.insert(chunk);
                 dirty.extend(neighbourhood(chunk));
             }
         }
@@ -224,12 +256,7 @@ impl Stroke {
 
     /// The chunks the stroke changed tiles in, in address order.
     pub fn chunks(&self) -> impl Iterator<Item = ChunkKey> + '_ {
-        let chunks: BTreeSet<ChunkKey> = self
-            .before
-            .keys()
-            .filter_map(|tile| terrain::chunk_of(self.layer, *tile).map(|(chunk, _)| chunk))
-            .collect();
-        chunks.into_iter()
+        self.chunks.iter().copied()
     }
 
     /// How many tiles the stroke changed.
@@ -350,7 +377,7 @@ impl fmt::Display for Error {
             }
             Self::TooLarge => write!(
                 formatter,
-                "a stroke paints at most {MAXIMUM_STROKE_TILES} tiles"
+                "a stroke paints at most {MAXIMUM_STROKE_TILES} tiles in at most {MAXIMUM_STROKE_CHUNKS} chunks"
             ),
             Self::NotIdentifier(name) => write!(formatter, "{name:?} is not an identifier"),
             Self::Terrain(error) => error.fmt(formatter),
@@ -360,9 +387,19 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl fmt::Display for StampError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for StampError {}
+
 #[cfg(test)]
 mod tests {
-    use super::{Brush, Error, MAXIMUM_SEGMENT, Shape, Stroke, segment};
+    use super::{
+        Brush, Error, MAXIMUM_RADIUS, MAXIMUM_SEGMENT, MAXIMUM_STROKE_TILES, Shape, Stroke, segment,
+    };
     use std::collections::BTreeSet;
     use tilewright_editor_document::{WorldDocument, terrain::PlaneTerrain};
     use tilewright_editor_testkit::fixture_world;
@@ -476,6 +513,54 @@ mod tests {
         assert_eq!(
             Stroke::begin(&unsaved, 0, "lava", brush).unwrap_err(),
             Error::UnknownTerrain("lava".to_owned())
+        );
+        let plain = WorldDocument::open(&fixture_world("plain")).unwrap();
+        let unsaved = PlaneTerrain::new(plain.world().clone(), "flat").unwrap();
+        assert_eq!(unsaved.resolve((0, 0, 0)), None);
+        assert_eq!(
+            Stroke::begin(&unsaved, 0, "stone", brush).unwrap_err(),
+            Error::NoTransitions
+        );
+    }
+
+    #[test]
+    fn a_stroke_stops_at_its_cap_and_keeps_what_it_painted() {
+        let mut unsaved = meadow();
+        let wide = Brush {
+            shape: Shape::Square,
+            radius: MAXIMUM_RADIUS,
+        };
+        let mut stroke = Stroke::begin(&unsaved, 0, "water", wide).unwrap();
+        stroke.stamp(&mut unsaved, [0, 0]).unwrap();
+        let partial = stroke.stamp(&mut unsaved, [4_000, 0]).unwrap_err();
+        assert_eq!(partial.error, Error::TooLarge);
+        assert!(partial.dirty.contains(&(0, 2, 0)));
+        assert_eq!(stroke.len(), MAXIMUM_STROKE_TILES);
+        assert_eq!(unsaved.value(0, [64, 0], 0), Some("water"));
+        assert!(stroke.operation().unwrap().is_some());
+    }
+
+    #[test]
+    fn an_operation_holds_identifiers_only() {
+        let mut unsaved = meadow();
+        // Only the toolkit's validation keeps such a value out of a world.
+        unsaved
+            .set(0, [3, 3], 0, Some("Not an identifier"))
+            .unwrap();
+        let mut stroke = Stroke::begin(
+            &unsaved,
+            0,
+            "sand",
+            Brush {
+                shape: Shape::Square,
+                radius: 0,
+            },
+        )
+        .unwrap();
+        stroke.stamp(&mut unsaved, [3, 3]).unwrap();
+        assert_eq!(
+            stroke.operation().unwrap_err(),
+            Error::NotIdentifier("Not an identifier".to_owned())
         );
     }
 }

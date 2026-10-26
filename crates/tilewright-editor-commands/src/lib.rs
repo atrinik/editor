@@ -35,6 +35,13 @@ pub fn json_string(text: &str) -> String {
 /// Who the transactions the editor writes name as their actor.
 pub const ACTOR: &str = "editor:tilewright-editor";
 
+/// Most terrain cells one save holds. The toolkit parses a transaction
+/// under the JSONC limits of FORMAT.md section 3: 1,000,000 values and
+/// 250,000 lines. A brush cell takes 6 values and a line, which would allow
+/// about 166,000; this leaves room for the header, the operations around
+/// the cells and the `base` and `result` digests the toolkit seals in.
+pub const MAXIMUM_TRANSACTION_CELLS: usize = 120_000;
+
 /// Longest transaction title, in characters (TRANSACTIONS.md section 1).
 pub const MAXIMUM_TITLE: usize = 256;
 

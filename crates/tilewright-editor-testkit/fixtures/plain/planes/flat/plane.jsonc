@@ -1,0 +1,6 @@
+{
+  "format": "tilewright.plane/1",
+  "id": "flat",
+  "kind": "shared",
+  "chunk_size": 32
+}

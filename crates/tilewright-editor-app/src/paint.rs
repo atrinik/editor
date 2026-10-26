@@ -9,7 +9,7 @@ use tilewright_editor_commands::{
     brush::{Brush, MAXIMUM_RADIUS, Shape, Stroke},
     preview, transaction,
 };
-use tilewright_editor_document::{WorldDocument, terrain::PlaneTerrain};
+use tilewright_editor_document::{WorldDocument, terminal_safe, terrain::PlaneTerrain};
 
 pub const USAGE: &str = "paint ROOT --plane PLANE --terrain TERRAIN [--layer LAYER] [--brush square:R|circle:R] [--save INVERSE [--unchecked-access]] X,Y...
 
@@ -123,8 +123,40 @@ fn request(arguments: &[OsString]) -> Result<Request, String> {
 
 pub fn run(arguments: &[OsString]) -> Result<(), String> {
     let request = request(arguments)?;
-    let document =
-        WorldDocument::open(Path::new(&request.root)).map_err(|error| error.to_string())?;
+    let report = execute(&request, &mut |notice| {
+        eprintln!("tilewright-editor: {}", terminal_safe(notice));
+    })?;
+    print!("{}", terminal_safe(&report));
+    Ok(())
+}
+
+/// The inverse is a recovery record, so it is kept outside the world's
+/// source tree, where the toolkit would read it as a stray file.
+fn outside(root: &Path, inverse: &Path) -> Result<(), String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the world's root: {error}"))?;
+    let folder = match inverse.parent() {
+        Some(folder) if !folder.as_os_str().is_empty() => folder,
+        _ => Path::new("."),
+    };
+    let folder = folder
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the inverse's folder: {error}"))?;
+    if folder.starts_with(&root) {
+        return Err("the inverse must be written outside the world's source tree".to_owned());
+    }
+    Ok(())
+}
+
+/// Carries out `request` and returns what to print; `notice` receives
+/// warnings as they arise.
+fn execute(request: &Request, notice: &mut dyn FnMut(&str)) -> Result<String, String> {
+    let root = Path::new(&request.root);
+    if let Some(inverse) = &request.inverse {
+        outside(root, Path::new(inverse))?;
+    }
+    let document = WorldDocument::open(root).map_err(|error| error.to_string())?;
     let mut unsaved = PlaneTerrain::new(document.world().clone(), &request.plane)
         .map_err(|error| error.to_string())?;
     let mut stroke = Stroke::begin(&unsaved, request.layer, &request.terrain, request.brush)
@@ -135,8 +167,7 @@ pub fn run(arguments: &[OsString]) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
     let Some(operation) = stroke.operation().map_err(|error| error.to_string())? else {
-        println!("the stroke changes no tile");
-        return Ok(());
+        return Ok("the stroke changes no tile\n".to_owned());
     };
     let text = transaction(&stroke.title(), &[operation], &[stroke.record()]);
     let planned = preview(&document, "paint.jsonc", &text).map_err(|error| error.to_string())?;
@@ -149,35 +180,185 @@ pub fn run(arguments: &[OsString]) -> Result<(), String> {
         };
         let _ = writeln!(summary, "{mark} {}", file.path);
     }
-    match &request.inverse {
-        None => print!("{text}{summary}"),
-        Some(path) => {
-            let unchecked = planned.unchecked_access().map_err(|problems| {
-                problems
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })?;
-            if let Some(unchecked) = unchecked {
-                if !request.unchecked_access {
-                    return Err(format!(
-                        "saving here does not check everything: {unchecked}; pass --unchecked-access to accept that"
-                    ));
-                }
-                eprintln!("tilewright-editor: saving without these checks: {unchecked}");
-            }
-            let durable = planned
-                .record_inverse(Path::new(path))
-                .map_err(|error| format!("cannot write the inverse: {error}"))?;
-            if !durable {
-                eprintln!("tilewright-editor: the inverse's name may not be durable yet");
-            }
-            planned
-                .publish(request.unchecked_access)
-                .map_err(|error| format!("saving failed: {error}"))?;
-            print!("{}\n{summary}", stroke.title());
+    let Some(path) = &request.inverse else {
+        return Ok(format!("{text}{summary}"));
+    };
+    let unchecked = planned.unchecked_access().map_err(|problems| {
+        problems
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    if let Some(unchecked) = unchecked {
+        if !request.unchecked_access {
+            return Err(format!(
+                "saving here does not check everything: {unchecked}; pass --unchecked-access to accept that"
+            ));
+        }
+        notice(&format!("saving without these checks: {unchecked}"));
+    }
+    let durable = planned
+        .record_inverse(Path::new(path))
+        .map_err(|error| format!("cannot write the inverse: {error}"))?;
+    if !durable {
+        notice("the inverse's name may not be durable yet");
+    }
+    match planned.publish(request.unchecked_access) {
+        Ok(_) => {}
+        // Every file was published; what went wrong after is a warning.
+        Err(error) if error.applied => notice(&error.to_string()),
+        Err(error) => return Err(format!("saving failed: {error}")),
+    }
+    Ok(format!("{}\n{summary}", stroke.title()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Request, execute, request};
+    use std::{ffi::OsString, path::Path};
+    use tilewright_edit::{Options, PublishOptions, Transaction};
+    use tilewright_editor_commands::{json_string, transaction};
+    use tilewright_editor_document::WorldDocument;
+    use tilewright_editor_testkit::{MEADOW_FILES, fixture_world};
+
+    /// Copies are made in a temporary directory no one else changes, so the
+    /// tests accept what the toolkit cannot check on some platforms.
+    const ACCEPTED: PublishOptions = PublishOptions {
+        unchecked_access: true,
+    };
+
+    fn arguments(words: &[&str]) -> Vec<OsString> {
+        words.iter().map(OsString::from).collect()
+    }
+
+    fn apply(root: &Path, text: &str) {
+        let parsed = Transaction::parse("apply.jsonc", text).unwrap();
+        tilewright_edit::plan(root, &parsed, &Options::default())
+            .unwrap()
+            .publish_with(&ACCEPTED)
+            .unwrap();
+    }
+
+    fn meadow_copy() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let operations: Vec<String> = MEADOW_FILES
+            .iter()
+            .map(|(path, text)| {
+                format!(
+                    "{{\"op\": \"document.create\", \"path\": {}, \"text\": {}}}",
+                    json_string(path),
+                    json_string(text)
+                )
+            })
+            .collect();
+        apply(
+            directory.path(),
+            &transaction("Copy the meadow", &operations, &[]),
+        );
+        directory
+    }
+
+    fn revision(root: &Path) -> [u8; 32] {
+        WorldDocument::open(root).unwrap().revision()
+    }
+
+    fn painting(root: &Path, extra: &[&str]) -> Request {
+        let mut words = vec![
+            root.to_str().unwrap(),
+            "--plane",
+            "meadow",
+            "--terrain",
+            "sand",
+            "--brush",
+            "circle:1",
+            "30,3",
+            "33,3",
+        ];
+        words.extend_from_slice(extra);
+        request(&arguments(&words)).unwrap()
+    }
+
+    #[test]
+    fn arguments_are_checked() {
+        for (words, problem) in [
+            (&["root"][..], "at least one tile"),
+            (&["root", "1,1"][..], "--plane"),
+            (&["root", "--plane", "p", "1,1"][..], "--terrain"),
+            (&["root", "--plane"][..], "needs a value"),
+            (&["root", "--colour", "red", "1,1"][..], "unknown option"),
+            (&["root", "--brush", "hex:1", "1,1"][..], "square or circle"),
+            (&["root", "--brush", "circle:33", "1,1"][..], "0 to 32"),
+            (&["root", "--layer", "deep", "1,1"][..], "32-bit"),
+            (&["root", "one,two"][..], "two integers"),
+        ] {
+            let Err(error) = request(&arguments(words)) else {
+                panic!("{words:?} was accepted");
+            };
+            assert!(error.contains(problem), "{words:?}: {error}");
         }
     }
-    Ok(())
+
+    #[test]
+    fn a_dry_run_prints_the_transaction_and_writes_nothing() {
+        let root = fixture_world("meadow");
+        let opened = revision(&root);
+        let report = execute(&painting(&root, &[]), &mut |_| {}).unwrap();
+        assert!(report.contains("\"op\": \"terrain.set\""));
+        assert!(
+            report.ends_with("A planes/meadow/layers/0/1_0.jsonc\n"),
+            "{report}"
+        );
+        assert_eq!(revision(&root), opened);
+    }
+
+    #[test]
+    fn saving_keeps_the_inverse_first_and_the_inverse_undoes_it() {
+        let root = meadow_copy();
+        let outside = tempfile::tempdir().unwrap();
+        let inverse = outside.path().join("undo.jsonc");
+        let opened = revision(root.path());
+        let request = painting(
+            root.path(),
+            &["--save", inverse.to_str().unwrap(), "--unchecked-access"],
+        );
+        let report = execute(&request, &mut |_| {}).unwrap();
+        assert!(report.starts_with("Paint sand on"), "{report}");
+        let painted = revision(root.path());
+        assert_ne!(painted, opened);
+        // Another stroke saved to the same INVERSE is refused before
+        // anything is written.
+        let mut other = painting(
+            root.path(),
+            &["--save", inverse.to_str().unwrap(), "--unchecked-access"],
+        );
+        other.terrain = "water".to_owned();
+        let again = execute(&other, &mut |_| {}).unwrap_err();
+        assert!(again.contains("cannot write the inverse"), "{again}");
+        assert_eq!(revision(root.path()), painted);
+        // Read through the toolkit's confined reader, as editor code does.
+        let bytes = tilewright_source::SourceRoot::new(outside.path())
+            .read("undo.jsonc", 64 << 20)
+            .unwrap()
+            .unwrap();
+        apply(root.path(), &String::from_utf8(bytes).unwrap());
+        assert_eq!(revision(root.path()), opened);
+    }
+
+    #[test]
+    fn the_inverse_is_never_written_inside_the_world() {
+        let root = meadow_copy();
+        let opened = revision(root.path());
+        for inside in ["undo.jsonc", "planes/meadow/undo.jsonc"] {
+            let path = root.path().join(inside);
+            let request = painting(
+                root.path(),
+                &["--save", path.to_str().unwrap(), "--unchecked-access"],
+            );
+            let error = execute(&request, &mut |_| {}).unwrap_err();
+            assert!(error.contains("outside the world"), "{error}");
+            assert!(!path.exists());
+        }
+        assert_eq!(revision(root.path()), opened);
+    }
 }

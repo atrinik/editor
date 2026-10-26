@@ -24,7 +24,10 @@ wrapper alone may provision or supervise a server playtest.
   symlinks and special files. Require canonical root containment.
 - Capture file identity and content revision at inspection, then canonicalize
   and revalidate both immediately before toolkit publication. An external edit,
-  replacement, permission change, or path retarget produces a conflict.
+  replacement, permission change, or path retarget produces a conflict. A brush
+  save is the exception for content: it expects the values of the cells it
+  paints, so an outside edit to other cells of a file it changes is kept rather
+  than refused (`docs/MUTABLE_PATHS.md`).
 - Preview validation/diffs before publication. Multi-file publication is one
   toolkit transaction; disk-full, permission, rename, crash, and validation
   faults publish all intended revisions or none.

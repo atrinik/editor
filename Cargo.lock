@@ -308,9 +308,13 @@ name = "tilewright-editor"
 version = "0.1.0"
 dependencies = [
  "sdl3",
+ "tempfile",
+ "tilewright-edit",
  "tilewright-editor-commands",
  "tilewright-editor-document",
  "tilewright-editor-preview",
+ "tilewright-editor-testkit",
+ "tilewright-source",
 ]
 
 [[package]]

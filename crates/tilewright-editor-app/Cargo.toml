@@ -13,5 +13,11 @@ tilewright-editor-document.workspace = true
 tilewright-editor-preview.workspace = true
 sdl3.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+tilewright-edit.workspace = true
+tilewright-editor-testkit.workspace = true
+tilewright-source.workspace = true
+
 [lints]
 workspace = true

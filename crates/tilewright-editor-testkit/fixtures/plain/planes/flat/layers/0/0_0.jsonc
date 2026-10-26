@@ -1,0 +1,9 @@
+{
+  "format": "tilewright.chunk/1",
+  "plane": "flat",
+  "layer": 0,
+  "chunk": [0, 0],
+  "terrain": {
+    "floor": {"palette": {"s": "stone"}, "fill": "s"}
+  }
+}
