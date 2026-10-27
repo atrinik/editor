@@ -32,9 +32,13 @@ pub const MAXIMUM_VIEW_TILES: usize = 30_000;
 /// empty tiles, within the renderer's quad budget.
 pub const MAXIMUM_VIEW_OBJECTS: usize = 120_000;
 
-/// Largest swatch side, in pixels: tile sizes above it draw scaled swatches
-/// no larger than this.
+/// Largest top-down swatch side, in pixels. Top-down ground is drawn at the
+/// tile size whatever its art's, so a larger tile draws this swatch scaled.
 pub const MAXIMUM_SWATCH_SIDE: u32 = 256;
+
+/// Largest isometric tile, in pixels: isometric ground is drawn at its art's
+/// size, so its swatch is the tile's size, and wider tiles are refused.
+pub const MAXIMUM_ISOMETRIC_TILE: u32 = 1_024;
 
 /// Background of the view, outside the plane's tiles.
 const CLEAR: [f32; 4] = [0.04, 0.05, 0.07, 1.0];
@@ -153,16 +157,17 @@ fn hsl(hue: f64, saturation: f64, lightness: f64) -> [u8; 3] {
     [red, green, blue].map(|channel| ((channel + base) * 255.0).round().clamp(0.0, 255.0) as u8)
 }
 
-/// The swatch textures of a scene, served to the renderer.
+/// The swatch textures of a scene, served to the renderer, each with its
+/// digest.
 #[derive(Debug, Default)]
 pub struct Swatches {
-    textures: BTreeMap<ResourceId, Vec<u8>>,
+    textures: BTreeMap<ResourceId, (Vec<u8>, Digest256)>,
 }
 
 impl ResourceProvider for Swatches {
     fn load(&self, request: ResourceRequest) -> Result<ResourceBlob, ResourceError> {
         let request = request.validate()?;
-        let bytes = self
+        let (bytes, _) = self
             .textures
             .get(&request.id)
             .filter(|_| request.revision == 1)
@@ -181,26 +186,87 @@ fn texture_id(key: &str, pattern: Pattern, width: u32, height: u32) -> ResourceI
     ResourceId(fnv1a(&bytes).max(1))
 }
 
-/// The swatch size for a projection: the tile's art size, at most
-/// [`MAXIMUM_SWATCH_SIDE`] on a side.
-fn swatch_size(projection: Projection) -> (u32, u32) {
-    let (width, height) = match projection {
+/// The swatch size for a projection: an isometric tile's own size, which is
+/// how large the renderer draws it, or a top-down tile's at most
+/// [`MAXIMUM_SWATCH_SIDE`], which the renderer scales to the tile.
+fn swatch_size(projection: Projection) -> Result<(u32, u32), Error> {
+    match projection {
         Projection::Isometric {
             tile_width,
             tile_height,
-        } => (tile_width, tile_height),
-        Projection::TopDown { tile_size } => (tile_size, tile_size),
-    };
-    (
-        width.clamp(1, MAXIMUM_SWATCH_SIDE),
-        height.clamp(1, MAXIMUM_SWATCH_SIDE),
-    )
+        } if tile_width.max(tile_height) <= MAXIMUM_ISOMETRIC_TILE => {
+            Ok((tile_width.max(1), tile_height.max(1)))
+        }
+        Projection::Isometric { .. } => Err(Error::TileTooLarge),
+        Projection::TopDown { tile_size } => {
+            let side = tile_size.clamp(1, MAXIMUM_SWATCH_SIDE);
+            Ok((side, side))
+        }
+    }
+}
+
+const fn gcd(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        let rest = left % right;
+        left = right;
+        right = rest;
+    }
+    left
+}
+
+/// The step zoom moves in, so that every tile spans whole pixels: a
+/// top-down tile's side, and an isometric tile's half width and half
+/// height, each a whole number of pixels. Between such zooms neighbouring
+/// tiles can leave a pixel uncovered, which would show as a seam and pick
+/// nothing.
+#[must_use]
+pub fn zoom_step(projection: Projection) -> f64 {
+    match projection {
+        Projection::TopDown { tile_size } => 1.0 / f64::from(tile_size.max(1)),
+        Projection::Isometric {
+            tile_width,
+            tile_height,
+        } => 2.0 / f64::from(gcd(tile_width.max(1), tile_height.max(1))),
+    }
+}
+
+/// `wanted` snapped to the nearest [`zoom_step`] within `range`, moving at
+/// least one step from `current` when `wanted` differs from it.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+pub fn snap_zoom(
+    projection: Projection,
+    current: f32,
+    wanted: f32,
+    range: std::ops::RangeInclusive<f32>,
+) -> f32 {
+    let step = zoom_step(projection);
+    let steps = |zoom: f32| f64::from(zoom) / step;
+    let lowest = steps(*range.start()).ceil().max(1.0);
+    let highest = steps(*range.end()).floor().max(lowest);
+    // Whole numbers of steps, as integers, so they compare exactly.
+    let mut chosen = steps(wanted).round() as i64;
+    let now = steps(current).round() as i64;
+    if chosen == now {
+        if wanted > current {
+            chosen = now + 1;
+        } else if wanted < current {
+            chosen = now - 1;
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let chosen = (chosen as f64).clamp(lowest, highest);
+    (chosen * step) as f32
 }
 
 /// The `ATX1` envelope of a swatch: `color` where the pattern covers the
 /// tile's shape, a diamond in isometric projection, and clear elsewhere.
-fn swatch_pixels(projection: Projection, pattern: Pattern, color: [u8; 4]) -> Vec<u8> {
-    let (width, height) = swatch_size(projection);
+fn swatch_pixels(
+    projection: Projection,
+    (width, height): (u32, u32),
+    pattern: Pattern,
+    color: [u8; 4],
+) -> Vec<u8> {
     let diamond = matches!(projection, Projection::Isometric { .. });
     let mut bytes = Vec::with_capacity(12 + 4 * usize::try_from(width * height).unwrap_or(0));
     bytes.extend_from_slice(b"ATX1");
@@ -286,10 +352,12 @@ pub fn view_bounds(camera: &GroundCamera) -> ([i64; 2], [i64; 2]) {
             tile_height,
         } => {
             // A screen point at (sx, sy) from the centre lies on tile
-            // offsets (sx / w + sy / h, sy / h - sx / w) for the half sizes
-            // w and h, so each offset is at most the sum of the two.
-            let reach = width / 2.0 / (f64::from(tile_width.max(1)) * zoom / 2.0)
-                + height / 2.0 / (f64::from(tile_height.max(1)) * zoom / 2.0);
+            // offsets ((sx / w + sy / h) / 2, (sy / h - sx / w) / 2) for
+            // the half sizes w and h, so each offset is at most half the sum
+            // of the two.
+            let across = width / 2.0 / (f64::from(tile_width.max(1)) * zoom / 2.0);
+            let down = height / 2.0 / (f64::from(tile_height.max(1)) * zoom / 2.0);
+            let reach = f64::midpoint(across, down);
             (reach, reach)
         }
     };
@@ -337,18 +405,20 @@ pub fn ground_scene(
         return Err(Error::TooManyTiles);
     }
     shown.sort_by_key(|tile| (tile.at[1], tile.at[0], tile.ground));
-    let (width, height) = swatch_size(camera.projection);
+    let (width, height) = swatch_size(camera.projection)?;
     let mut swatches = Swatches::default();
+    // Each texture is made and hashed once, however many tiles show it.
     let mut texture = |key: &str, pattern: Pattern, color: [u8; 4]| -> TextureRef {
         let id = texture_id(key, pattern, width, height);
-        let bytes = swatches
-            .textures
-            .entry(id)
-            .or_insert_with(|| swatch_pixels(camera.projection, pattern, color));
+        let (_, digest) = swatches.textures.entry(id).or_insert_with(|| {
+            let bytes = swatch_pixels(camera.projection, (width, height), pattern, color);
+            let digest = Digest256(Sha256::digest(bytes.as_slice()).into());
+            (bytes, digest)
+        });
         TextureRef {
             id,
             revision: 1,
-            digest: Digest256(Sha256::digest(bytes.as_slice()).into()),
+            digest: *digest,
             width,
             height,
         }
@@ -368,7 +438,11 @@ pub fn ground_scene(
         );
         let id = picks.push(tile.at).ok_or(Error::TooManyTiles)?;
         objects.push(WorldObject::new(id, tile.at, rank, Anchor::Ground, texture));
-        covered.insert(tile.at);
+        // Only a solid swatch covers its whole tile; under the others an
+        // empty tile keeps every pixel of the tile pickable.
+        if Pattern::of(tile.ground) == Pattern::Solid {
+            covered.insert(tile.at);
+        }
     }
     let empty = texture("", Pattern::Solid, EMPTY);
     let lowest = ranks.iter().copied().min().unwrap_or(0);
@@ -417,6 +491,8 @@ pub fn ground_scene(
 pub enum Error {
     /// The view would hold more than [`MAXIMUM_VIEW_TILES`] tiles.
     TooManyTiles,
+    /// Isometric tiles wider or taller than [`MAXIMUM_ISOMETRIC_TILE`].
+    TileTooLarge,
     UnknownGround(usize),
     Render(tilewright_render_world::Error),
 }
@@ -427,6 +503,10 @@ impl fmt::Display for Error {
             Self::TooManyTiles => write!(
                 formatter,
                 "the view holds more than {MAXIMUM_VIEW_TILES} tiles; zoom in"
+            ),
+            Self::TileTooLarge => write!(
+                formatter,
+                "the view shows isometric tiles up to {MAXIMUM_ISOMETRIC_TILE} pixels across"
             ),
             Self::UnknownGround(ground) => {
                 write!(formatter, "ground layer {ground} has no render layer")
@@ -441,8 +521,8 @@ impl std::error::Error for Error {}
 #[cfg(test)]
 mod tests {
     use super::{
-        Error, GroundCamera, GroundTile, MAXIMUM_VIEW_TILES, ground_scene, swatch_color,
-        view_bounds,
+        Error, GroundCamera, GroundTile, MAXIMUM_VIEW_TILES, ground_scene, snap_zoom, swatch_color,
+        view_bounds, zoom_step,
     };
     use tilewright_render_api::{
         BackendPreference, FrameOutput, RenderRequest, Renderer, TargetDescriptor, TargetKind,
@@ -592,6 +672,99 @@ mod tests {
         // down, where tile (1, 0)'s diamond was.
         let (frame, picks) = render(&moved, &tiles);
         assert_eq!(picks.tile_at(&frame, 48 + 24, 48 + 12), Some([0, 0]));
+    }
+
+    /// How many pixels of a frame no tile covers.
+    fn holes(frame: &FrameOutput) -> usize {
+        frame.semantic_ids.iter().filter(|id| **id == 0).count()
+    }
+
+    fn sized(projection: Projection, zoom: f32, width: u32, height: u32) -> GroundCamera {
+        GroundCamera {
+            projection,
+            center: [0.5, 0.5],
+            zoom,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn isometric_bounds_stay_close_to_what_is_visible() {
+        let iso = Projection::Isometric {
+            tile_width: 48,
+            tile_height: 24,
+        };
+        let view = sized(iso, 1.0, 960, 640);
+        let (low, high) = view_bounds(&view);
+        let area = (high[0] - low[0] + 1) * (high[1] - low[1] + 1);
+        let built = ground_scene(&view, &[0], &[], 1).unwrap();
+        let visible = i64::try_from(built.scene.quads().len()).unwrap();
+        // The bounds are a square around a diamond of visible tiles, about
+        // twice its area, with a margin.
+        assert!(area < visible * 3, "area {area}, visible {visible}");
+        // A large window at zoom 1 fits within the cap.
+        let large = sized(iso, 1.0, 2_340, 1_500);
+        assert!(ground_scene(&large, &[0], &[], 1).is_ok());
+    }
+
+    #[test]
+    fn snapped_zooms_leave_no_seams() {
+        let iso = Projection::Isometric {
+            tile_width: 48,
+            tile_height: 24,
+        };
+        for (projection, wanted) in [
+            (iso, 1.13),
+            (iso, 0.7),
+            (iso, 0.61),
+            (TOP_DOWN, 0.7),
+            (TOP_DOWN, 1.7),
+        ] {
+            let zoom = snap_zoom(projection, 1.0, wanted, 0.25..=8.0);
+            let step = zoom_step(projection);
+            let steps = f64::from(zoom) / step;
+            assert!((steps - steps.round()).abs() < 1e-3, "{zoom}");
+            let (frame, _) = render(&sized(projection, zoom, 200, 160), &[]);
+            assert_eq!(holes(&frame), 0, "{projection:?} at {zoom}");
+        }
+        // A small wheel step still moves one step, within the range.
+        let step = 1.0 / 32.0;
+        assert!((snap_zoom(TOP_DOWN, 1.0, 1.001, 0.25..=8.0) - (1.0 + step)).abs() < 1e-6);
+        assert!((snap_zoom(TOP_DOWN, 0.25, 0.1, 0.25..=8.0) - 0.25).abs() < 1e-6);
+        assert!((snap_zoom(TOP_DOWN, 8.0, 100.0, 0.25..=8.0) - 8.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn large_isometric_tiles_are_covered_or_refused() {
+        let wide = Projection::Isometric {
+            tile_width: 320,
+            tile_height: 160,
+        };
+        let (frame, _) = render(&sized(wide, 1.0, 600, 400), &[]);
+        assert_eq!(holes(&frame), 0);
+        let huge = Projection::Isometric {
+            tile_width: 2_048,
+            tile_height: 1_024,
+        };
+        assert_eq!(
+            ground_scene(&sized(huge, 0.25, 600, 400), &[0], &[], 1).unwrap_err(),
+            Error::TileTooLarge
+        );
+    }
+
+    #[test]
+    fn upper_layer_tiles_alone_stay_pickable_everywhere() {
+        for ground in [1, 2] {
+            let tiles = [GroundTile {
+                at: [2, 2],
+                ground,
+                proto: "grass_edge_e",
+            }];
+            let (frame, picks) = render(&camera(TOP_DOWN, [2.5, 2.5], 1.0), &tiles);
+            assert_eq!(picks.tile_at(&frame, 34, 34), Some([2, 2]));
+            assert_eq!(picks.tile_at(&frame, 48, 48), Some([2, 2]));
+        }
     }
 
     #[test]

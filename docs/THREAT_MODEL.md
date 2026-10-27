@@ -37,6 +37,14 @@ wrapper alone may provision or supervise a server playtest.
   history shows the split.
 - Keep bounded recovery journals outside the project. Recovery is explicit,
   visible, expiring, and never silently written over source.
+- On Windows, never let a project's folder supply a DLL. The GPU libraries
+  load some by name (`dxcompiler.dll`, `vulkan-1.dll`), and Windows searches
+  the current directory for them, so `edit` resolves its paths and then moves
+  the process into the editor's own folder before any GPU library loads, and
+  pins eframe's DX12 shader compiler to FXC, which ships with Windows. The
+  renderer's instance keeps wgpu's default compiler choice, as
+  tilewright-renderer 0.3 offers no option for it; the directory change
+  covers it.
 - Never execute project scripts, shell fragments, plugins, macros, or build
   instructions merely by opening a project. Automation is an explicit bounded
   command with dry-run defaults.

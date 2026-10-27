@@ -12,7 +12,9 @@ allow = ["Apache-2.0", "MIT", "Unicode-3.0", "Zlib"]
 # Narrow exceptions, each for one crate of the window's dependency graph;
 # THIRD_PARTY_NOTICES.md carries their notices.
 exceptions = [
-  # The fonts egui draws its text with: Hack, Ubuntu-Light and Noto Emoji.
+  # The fonts egui draws its text with. The editor ships Hack, Ubuntu-Light
+  # and an icon subset; OFL-1.1 is allowed because the crate's licence
+  # expression names it for Noto Emoji, which the editor does not build.
   { allow = ["OFL-1.1", "Ubuntu-font-1.0"], crate = "epaint_default_fonts" },
   # Loads the platform's graphics and windowing libraries at run time.
   { allow = ["ISC"], crate = "libloading" },

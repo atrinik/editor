@@ -62,7 +62,9 @@ cargo run --locked --package tilewright-editor -- version
 cargo run --locked --package tilewright-editor -- open crates/tilewright-editor-testkit/fixtures/meadow
 cargo run --locked --package tilewright-editor -- paint crates/tilewright-editor-testkit/fixtures/meadow --plane meadow --terrain sand 30,3 33,3
 cargo run --locked --package tilewright-editor -- headless crates/tilewright-editor-testkit/fixtures/meadow
-cargo run --locked --package tilewright-editor -- edit crates/tilewright-editor-testkit/fixtures/meadow
+# The window saves as you paint, so open a copy of the fixture, not the fixture.
+cp -r crates/tilewright-editor-testkit/fixtures/meadow /tmp/meadow
+cargo run --locked --package tilewright-editor -- edit /tmp/meadow
 tools/validate.sh
 ```
 

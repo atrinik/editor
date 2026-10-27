@@ -14,7 +14,8 @@ use tilewright_editor_commands::{
 };
 use tilewright_editor_document::terrain::{ChunkKey, PlaneTerrain};
 use tilewright_editor_preview::ground::{
-    GroundCamera, GroundScene, GroundTile, PickMap, ground_scene, swatch_color, view_bounds,
+    GroundCamera, GroundScene, GroundTile, PickMap, ground_scene, snap_zoom, swatch_color,
+    view_bounds,
 };
 use tilewright_editor_ui::editor::{Action, BrushShape, PaletteEntry, Status};
 use tilewright_render_api::FrameOutput;
@@ -47,6 +48,21 @@ pub struct Workbench {
     stale: bool,
     revision: u64,
     message: Option<String>,
+    /// Whether the interaction the interface began is a stroke the session
+    /// started; when it refused one, what follows it is ignored.
+    stroking: bool,
+    closing: Closing,
+}
+
+/// Where a request to close the window stands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Closing {
+    /// Nobody asked to close.
+    Open,
+    /// The user asked while edits were unsaved, and is being asked first.
+    Asking,
+    /// The window may close.
+    Now,
 }
 
 impl Workbench {
@@ -149,6 +165,8 @@ impl Workbench {
             stale: true,
             revision: 0,
             message: None,
+            stroking: false,
+            closing: Closing::Open,
         })
     }
 
@@ -180,27 +198,13 @@ impl Workbench {
                 shape,
                 radius,
                 layer,
-            } => {
-                if layer != self.layer {
-                    self.layer = layer;
-                    self.stale = true;
-                }
-                let brush = Brush {
-                    shape: match shape {
-                        BrushShape::Square => Shape::Square,
-                        BrushShape::Circle => Shape::Circle,
-                    },
-                    radius,
-                };
-                let result = self
-                    .session
-                    .begin_stroke(now, &self.plane, layer, &terrain, brush);
-                self.checked(result)?;
-                self.message = None;
-                self.stamp(tile)?;
-            }
+            } => self.begin(now, tile, &terrain, (shape, radius), layer)?,
+            // A stroke the session refused has nothing to stamp, end or
+            // cancel, and its reason stays shown.
+            Action::StrokeMove(_) | Action::StrokeEnd | Action::StrokeCancel if !self.stroking => {}
             Action::StrokeMove(tile) => self.stamp(tile)?,
             Action::StrokeEnd => {
+                self.stroking = false;
                 self.stale = true;
                 let result = self.session.end_stroke(now);
                 if let Some(saved) = self.checked(result)? {
@@ -208,25 +212,13 @@ impl Workbench {
                 }
             }
             Action::StrokeCancel => {
+                self.stroking = false;
                 self.stale = true;
                 let result = self.session.cancel_stroke();
                 self.checked(result)?;
             }
-            Action::Undo => {
-                self.stale = true;
-                let result = self.session.undo();
-                if let Some(undone) = self.checked(result)? {
-                    self.consent = None;
-                    self.message = Some(format!("Undid {}", undone.title));
-                }
-            }
-            Action::Redo => {
-                self.stale = true;
-                let result = self.session.redo();
-                if let Some(redone) = self.checked(result)? {
-                    self.message = Some(format!("Redid {}", redone.title));
-                }
-            }
+            Action::Undo => self.undo_or_redo(false)?,
+            Action::Redo => self.undo_or_redo(true)?,
             Action::SaveNow => {
                 self.stale = true;
                 let result = self.session.flush(now);
@@ -241,6 +233,24 @@ impl Workbench {
                 self.message = Some("Dropped the unsaved edits".to_owned());
                 self.stale = true;
             }
+            Action::DiscardAndClose => {
+                if self.session.is_interacting() {
+                    self.stroking = false;
+                    let result = self.session.cancel_stroke();
+                    self.checked(result)?;
+                }
+                let result = self.session.discard();
+                self.checked(result)?;
+                self.consent = None;
+                self.closing = Closing::Now;
+            }
+            Action::KeepEditing => self.closing = Closing::Open,
+            Action::Layer(layer) => {
+                if layer != self.layer {
+                    self.layer = layer;
+                    self.stale = true;
+                }
+            }
             Action::Pan(delta) => {
                 self.camera.pan([
                     delta.x * self.pixels_per_point(),
@@ -249,7 +259,11 @@ impl Workbench {
                 self.stale = true;
             }
             Action::Zoom(factor) => {
-                self.camera.zoom = (self.camera.zoom * factor).clamp(*ZOOM.start(), *ZOOM.end());
+                // Zoom moves in steps at which every tile spans whole
+                // pixels, so no seam opens between tiles.
+                let current = self.camera.zoom;
+                self.camera.zoom =
+                    snap_zoom(self.camera.projection, current, current * factor, ZOOM);
                 self.stale = true;
             }
             Action::AcceptUncheckedAccess => {
@@ -264,6 +278,80 @@ impl Workbench {
         Ok(())
     }
 
+    fn begin(
+        &mut self,
+        now: Instant,
+        tile: [i64; 2],
+        terrain: &str,
+        (shape, radius): (BrushShape, u16),
+        layer: i32,
+    ) -> Result<(), String> {
+        if layer != self.layer {
+            self.layer = layer;
+            self.stale = true;
+        }
+        self.stroking = false;
+        let brush = Brush {
+            shape: match shape {
+                BrushShape::Square => Shape::Square,
+                BrushShape::Circle => Shape::Circle,
+            },
+            radius,
+        };
+        let result = self
+            .session
+            .begin_stroke(now, &self.plane, layer, terrain, brush);
+        self.checked(result)?;
+        self.stroking = true;
+        self.message = None;
+        self.stamp(tile)
+    }
+
+    fn undo_or_redo(&mut self, redo: bool) -> Result<(), String> {
+        self.stale = true;
+        let (undo, redone) = self.session.history();
+        let (what, verb, title, result) = if redo {
+            (
+                "redo",
+                "Redid",
+                redone.first().cloned(),
+                self.session.redo(),
+            )
+        } else {
+            ("undo", "Undid", undo.last().cloned(), self.session.undo())
+        };
+        match self.step(result, what, title)? {
+            Some(saved) => {
+                if !redo {
+                    self.consent = None;
+                }
+                self.message = Some(described(verb, &saved));
+            }
+            None => self.message = Some(format!("Nothing to {what}")),
+        }
+        Ok(())
+    }
+
+    /// An undo or redo result in words: a rejected one says which step it
+    /// could not `what`, and that the world was read again.
+    fn step(
+        &mut self,
+        result: Result<Option<Saved>, SessionError>,
+        what: &str,
+        title: Option<String>,
+    ) -> Result<Option<Saved>, String> {
+        match result {
+            Err(SessionError::Rejected(reason)) => {
+                self.stale = true;
+                Err(format!(
+                    "Could not {what} {}, so it stays in the history and the world was read again: {reason}",
+                    title.unwrap_or_default()
+                ))
+            }
+            other => self.checked(other),
+        }
+    }
+
     /// A session result in words; a save that waits for consent shows the
     /// notice instead, and a rejected one says what it dropped.
     fn checked<T>(&mut self, result: Result<T, SessionError>) -> Result<T, String> {
@@ -274,7 +362,7 @@ impl Workbench {
             }
             SessionError::Rejected(reason) => {
                 self.stale = true;
-                match self.session.rejected() {
+                match self.session.take_rejected() {
                     Some(rejected) => format!(
                         "Could not save {}, so it was dropped and the world read again: {reason}",
                         rejected.title
@@ -294,10 +382,33 @@ impl Workbench {
 
     /// Notes a save, and a problem the toolkit reported after it.
     fn saved(&mut self, saved: &Saved) {
-        self.message = Some(match &saved.warning {
-            Some(warning) => format!("Saved {}, but: {warning}", saved.title),
-            None => format!("Saved {}", saved.title),
-        });
+        self.message = Some(described("Saved", saved));
+    }
+
+    /// Asks to close the window: it may close at once when nothing is
+    /// unsaved, and otherwise asks the user first.
+    pub fn request_close(&mut self) -> bool {
+        if self.closing == Closing::Now || !self.session.is_dirty() {
+            return true;
+        }
+        self.closing = Closing::Asking;
+        false
+    }
+
+    /// Whether the window may close now: the user discarded the unsaved
+    /// edits, or they were saved while the question was open.
+    pub fn may_close(&mut self) -> bool {
+        if self.closing == Closing::Asking && !self.session.is_dirty() {
+            self.closing = Closing::Now;
+        }
+        self.closing == Closing::Now
+    }
+
+    /// Forgets the frame shown last, as when the view could not be drawn,
+    /// so the pointer picks nothing until a new one is.
+    pub fn forget_frame(&mut self) {
+        self.frame = None;
+        self.picks = PickMap::default();
     }
 
     fn stamp(&mut self, tile: [i64; 2]) -> Result<(), String> {
@@ -329,6 +440,7 @@ impl Workbench {
             unchecked_access: self.consent.clone(),
             view,
             view_error,
+            closing: self.closing == Closing::Asking,
         }
     }
 
@@ -354,6 +466,8 @@ impl Workbench {
     /// # Errors
     /// Fails when the view holds too many tiles or the renderer rejects it.
     pub fn scene(&mut self, width: u32, height: u32) -> Result<GroundScene, String> {
+        // Until this view is rendered, nothing may be picked from the last.
+        self.forget_frame();
         self.camera.width = width.max(1);
         self.camera.height = height.max(1);
         self.stale = false;
@@ -396,7 +510,6 @@ impl Workbench {
         };
         let built = built.map_err(|error| error.to_string())?;
         self.picks = built.picks.clone();
-        self.frame = None;
         Ok(built)
     }
 
@@ -416,6 +529,15 @@ impl Workbench {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let (x, y) = (x as u32, y as u32);
         self.picks.tile_at(frame, x, y)
+    }
+}
+
+/// A save, undo or redo in words, with a problem the toolkit reported after
+/// it published every file.
+fn described(verb: &str, saved: &Saved) -> String {
+    match &saved.warning {
+        Some(warning) => format!("{verb} {}, but: {warning}", saved.title),
+        None => format!("{verb} {}", saved.title),
     }
 }
 
@@ -601,5 +723,143 @@ mod tests {
     #[test]
     fn an_unknown_plane_is_an_error() {
         assert!(Workbench::open(&fixture_world("meadow"), Some("nowhere"), false).is_err());
+    }
+
+    /// An outside program sets ground tile `at` of the meadow to `value`.
+    fn outside_edit(root: &std::path::Path, at: [i64; 2], value: &str) {
+        let operation = format!(
+            "{{\"op\": \"terrain.set\", \"plane\": \"meadow\", \"layer\": 0, \"grid\": \"ground\", \"cells\": [{{\"at\": [{}, {}], \"value\": \"{value}\"}}]}}",
+            at[0], at[1]
+        );
+        let text = transaction("Outside edit", &[operation], &[]);
+        let parsed = tilewright_edit::Transaction::parse("outside.jsonc", text).unwrap();
+        tilewright_edit::plan(root, &parsed, &tilewright_edit::Options::default())
+            .unwrap()
+            .publish_with(&tilewright_edit::PublishOptions {
+                unchecked_access: true,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_view_that_cannot_be_drawn_picks_nothing() {
+        let mut workbench = Workbench::open(&fixture_world("meadow"), None, false).unwrap();
+        workbench.set_view_size(egui::vec2(1_600.0, 1_000.0));
+        let built = workbench.scene(3_200, 2_000);
+        assert!(built.is_ok());
+        workbench.rendered(FrameOutput {
+            width: 1,
+            height: 1,
+            rgba8: vec![0; 4],
+            semantic_ids: vec![1],
+            depth: vec![0],
+            coverage: vec![0],
+            metrics: tilewright_render_api::RecoveryMetrics::default(),
+        });
+        // Zoomed out past what a view holds, the view fails to build.
+        workbench.apply(vec![Action::Zoom(0.01)], Instant::now());
+        assert!(workbench.scene(3_200, 2_000).is_err());
+        assert_eq!(workbench.pick(egui::vec2(0.0, 0.0)), None);
+        // So does forgetting the frame after a failed render.
+        workbench.apply(vec![Action::Zoom(4.0)], Instant::now());
+        workbench.set_view_size(egui::vec2(160.0, 160.0));
+        draw(&mut workbench);
+        assert!(workbench.pick(egui::vec2(80.0, 80.0)).is_some());
+        workbench.forget_frame();
+        assert_eq!(workbench.pick(egui::vec2(80.0, 80.0)), None);
+    }
+
+    #[test]
+    fn the_layer_control_switches_the_view() {
+        let mut workbench = Workbench::open(&fixture_world("meadow"), None, false).unwrap();
+        workbench.set_view_size(egui::vec2(160.0, 160.0));
+        draw(&mut workbench);
+        workbench.apply(vec![Action::Layer(1)], Instant::now());
+        assert!(workbench.is_stale(SIZE, SIZE));
+        assert!(workbench.status(None, None).title.ends_with("layer 1"));
+        // Layer 1 has no chunks, so the view shows empty tiles.
+        assert_ne!(center(&draw(&mut workbench)), swatch_color("grass"));
+    }
+
+    #[test]
+    fn zoom_moves_in_whole_pixel_steps() {
+        let mut workbench = Workbench::open(&fixture_world("meadow"), None, false).unwrap();
+        workbench.apply(vec![Action::Zoom(1.13)], Instant::now());
+        let tile = f64::from(workbench.camera.zoom) * 32.0;
+        assert!((tile - tile.round()).abs() < 1e-3, "{tile}");
+        assert!(workbench.camera.zoom > 1.0);
+    }
+
+    #[test]
+    fn a_refused_stroke_keeps_its_reason() {
+        let mut workbench = Workbench::open(&fixture_world("meadow"), None, false).unwrap();
+        let now = Instant::now();
+        workbench.apply(vec![begin([1, 1], "lava")], now);
+        let refused = workbench.status(None, None).message.unwrap();
+        assert!(refused.contains("lava"), "{refused}");
+        workbench.apply(vec![Action::StrokeMove([2, 1]), Action::StrokeEnd], now);
+        assert_eq!(workbench.status(None, None).message.unwrap(), refused);
+    }
+
+    #[test]
+    fn rejected_saves_and_undos_say_what_happened() {
+        let root = meadow_copy();
+        let mut workbench = Workbench::open(root.path(), None, true).unwrap();
+        let now = Instant::now();
+        workbench.apply(vec![begin([20, 20], "sand"), Action::StrokeEnd], now);
+        outside_edit(root.path(), [1, 1], "water");
+        // A save over the outside change is dropped and says so.
+        let later = now + std::time::Duration::from_secs(5);
+        workbench.apply(vec![begin([1, 1], "sand"), Action::StrokeEnd], later);
+        let message = workbench.status(None, None).message.unwrap();
+        assert!(
+            message.starts_with("Could not save Paint sand on 1 tile, so it was dropped"),
+            "{message}"
+        );
+        // An undo over it names the step it could not undo, not the save.
+        workbench.apply(vec![Action::Undo], later);
+        let message = workbench.status(None, None).message.unwrap();
+        assert!(
+            message.starts_with("Could not undo Paint sand on 1 tile, so it stays"),
+            "{message}"
+        );
+        assert_eq!(workbench.status(None, None).history.0.len(), 1);
+    }
+
+    #[test]
+    fn closing_with_unsaved_edits_asks_first() {
+        let mut workbench = Workbench::open(&fixture_world("meadow"), None, false).unwrap();
+        assert!(workbench.request_close(), "nothing unsaved");
+        let now = Instant::now();
+        // A stroke still being painted is unsaved.
+        workbench.apply(vec![begin([16, 16], "water")], now);
+        assert!(!workbench.request_close());
+        assert!(workbench.status(None, None).closing);
+        assert!(!workbench.may_close());
+        workbench.apply(vec![Action::KeepEditing], now);
+        assert!(!workbench.status(None, None).closing);
+        assert!(!workbench.request_close());
+        // Discarding drops the stroke, so the fixture is never written.
+        workbench.apply(vec![Action::DiscardAndClose], now);
+        assert!(workbench.may_close());
+        assert!(!workbench.status(None, None).dirty);
+    }
+
+    #[test]
+    fn saving_asks_for_consent_where_it_cannot_check_everything() {
+        let root = meadow_copy();
+        let mut workbench = Workbench::open(root.path(), None, false).unwrap();
+        let now = Instant::now();
+        workbench.apply(vec![begin([1, 1], "sand"), Action::StrokeEnd], now);
+        let status = workbench.status(None, None);
+        if let Some(unchecked) = status.unchecked_access {
+            // macOS, Windows, or a file system that hides access lists.
+            assert!(!unchecked.is_empty());
+            assert!(status.waiting);
+            workbench.apply(vec![Action::AcceptUncheckedAccess], now);
+        }
+        let status = workbench.status(None, None);
+        assert!(!status.waiting && status.unchecked_access.is_none());
+        assert_eq!(status.history.0, ["Paint sand on 1 tile"]);
     }
 }

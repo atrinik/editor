@@ -60,6 +60,7 @@ impl EditorWindow {
             Err(error) => {
                 self.view_error = Some(error);
                 self.texture = None;
+                self.workbench.forget_frame();
             }
         }
     }
@@ -105,11 +106,22 @@ impl eframe::App for EditorWindow {
             .texture
             .as_ref()
             .map(|texture| (texture.id(), self.drawn));
+        // Closing with unsaved edits asks first; the window stays open
+        // until they are saved or discarded.
+        if ui.ctx().input(|input| input.viewport().close_requested())
+            && !self.workbench.request_close()
+        {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         let status = self.workbench.status(view, self.view_error.clone());
         let workbench = &self.workbench;
         let actions = self.ui.show(ui, &status, &|at| workbench.pick(at));
         self.workbench.set_view_size(self.ui.view_size);
         self.workbench.apply(actions, now);
+        if self.workbench.may_close() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         self.draw_view(ui.ctx());
     }
 }
@@ -119,12 +131,27 @@ impl eframe::App for EditorWindow {
 /// # Errors
 /// Fails when the world does not open or the window cannot be created.
 pub fn run(root: &Path, plane: Option<&str>, accepted: bool) -> Result<(), String> {
-    let workbench = Workbench::open(root, plane, accepted)?;
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve the world's root: {error}"))?;
+    leave_world_directory()?;
+    let workbench = Workbench::open(&root, plane, accepted)?;
+    let mut wgpu_options = eframe::WgpuConfiguration::default();
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+        // FXC ships with Windows; the default would look for the DXC
+        // compiler's DLL by name, and so in the current directory too.
+        setup
+            .instance_descriptor
+            .backend_options
+            .dx12
+            .shader_compiler = eframe::wgpu::Dx12Compiler::Fxc;
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Tilewright editor")
             .with_inner_size([1280.0, 800.0]),
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options,
         ..eframe::NativeOptions::default()
     };
     eframe::run_native(
@@ -142,4 +169,25 @@ pub fn run(root: &Path, plane: Option<&str>, accepted: bool) -> Result<(), Strin
         }),
     )
     .map_err(|error| format!("the window failed: {error}"))
+}
+
+/// On Windows, moves the process out of the directory it was started in,
+/// into the editor's own: the GPU libraries load DLLs such as
+/// `dxcompiler.dll` and `vulkan-1.dll` by name, and Windows searches the
+/// current directory for those, so a world opened from its own folder could
+/// otherwise plant one. Paths the editor was given are resolved first.
+/// Elsewhere libraries are not searched for in the current directory.
+#[cfg_attr(not(windows), allow(clippy::unnecessary_wraps))]
+fn leave_world_directory() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("cannot find the editor's own folder: {error}"))?;
+        let folder = executable
+            .parent()
+            .ok_or("cannot find the editor's own folder")?;
+        std::env::set_current_dir(folder)
+            .map_err(|error| format!("cannot leave the current folder: {error}"))?;
+    }
+    Ok(())
 }

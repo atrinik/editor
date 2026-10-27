@@ -54,6 +54,12 @@ pub enum Action {
     Zoom(f32),
     /// The user accepted what saving here does not check.
     AcceptUncheckedAccess,
+    /// Show and paint another layer.
+    Layer(i32),
+    /// Drop edits whose save could not be published, and close the window.
+    DiscardAndClose,
+    /// Keep the window open after a request to close it.
+    KeepEditing,
 }
 
 /// One terrain of the palette, with the colour its swatch draws.
@@ -84,6 +90,8 @@ pub struct Status {
     pub view: Option<(TextureId, Vec2)>,
     /// Why there is no rendered view.
     pub view_error: Option<String>,
+    /// Whether the user asked to close the window while edits are unsaved.
+    pub closing: bool,
 }
 
 /// The interface state of the editor window.
@@ -99,6 +107,10 @@ pub struct EditorUi {
     pub view_size: Vec2,
     stroking: bool,
     last_tile: Option<[i64; 2]>,
+    /// Where the open dialog's buttons were last drawn, first to last.
+    dialog_buttons: Vec<Rect>,
+    /// Where the layer field was last drawn.
+    layer_field: Rect,
 }
 
 impl EditorUi {
@@ -114,6 +126,8 @@ impl EditorUi {
             view_size: Vec2::ZERO,
             stroking: false,
             last_tile: None,
+            dialog_buttons: Vec::new(),
+            layer_field: Rect::NOTHING,
         }
     }
 
@@ -172,34 +186,42 @@ impl EditorUi {
             });
         });
         egui::Panel::bottom("tilewright.status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let state = if status.waiting {
-                    "Unsaved: the last save failed"
-                } else if status.dirty {
-                    "Painting"
-                } else {
-                    "Saved"
-                };
-                ui.label(state);
-                if let Some(message) = &status.message {
-                    ui.separator();
-                    ui.label(message);
-                }
-            });
+            let state = if status.waiting {
+                "Unsaved: the last save failed"
+            } else if status.dirty {
+                "Painting"
+            } else {
+                "Saved"
+            };
+            ui.label(state);
+            // A reason can be long; it wraps rather than run off the window.
+            if let Some(message) = &status.message {
+                ui.add(egui::Label::new(message).wrap());
+            }
         });
         egui::Panel::left("tilewright.tools").show(ui, |ui| {
-            self.tools(ui, status);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                self.tools(ui, status, &mut actions);
+            });
         });
         egui::CentralPanel::default().show(ui, |ui| {
             self.view(ui, status, pick, &mut actions);
         });
+        self.dialog_buttons.clear();
         if let Some(unchecked) = &status.unchecked_access {
-            Self::notice(ui, unchecked, &mut actions);
+            self.notice(ui, unchecked, &mut actions);
+        } else if status.closing {
+            self.closing(ui, status, &mut actions);
         }
         actions
     }
 
     fn shortcuts(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        // A focused text field, such as the layer being typed, keeps its
+        // own undo, redo and keys.
+        if ui.ctx().egui_wants_keyboard_input() {
+            return;
+        }
         let undo = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
         let redo = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
         let redo_y = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
@@ -222,7 +244,7 @@ impl EditorUi {
         });
     }
 
-    fn tools(&mut self, ui: &mut Ui, status: &Status) {
+    fn tools(&mut self, ui: &mut Ui, status: &Status, actions: &mut Vec<Action>) {
         ui.heading("Terrain");
         if self.palette.is_empty() {
             ui.label("The profile has no terrain transitions to paint.");
@@ -250,18 +272,22 @@ impl EditorUi {
         ui.add(egui::Slider::new(&mut self.radius, 0..=MAXIMUM_RADIUS).text("radius"));
         ui.horizontal(|ui| {
             ui.label("Layer");
-            ui.add(egui::DragValue::new(&mut self.layer));
+            let layer = self.layer;
+            self.layer_field = ui
+                .add_enabled(!self.stroking, egui::DragValue::new(&mut self.layer))
+                .rect;
+            if self.layer != layer {
+                actions.push(Action::Layer(self.layer));
+            }
         });
         ui.separator();
         ui.heading("History");
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for title in status.history.1.iter().take(HISTORY_SHOWN).rev() {
-                ui.weak(title);
-            }
-            for title in status.history.0.iter().rev().take(HISTORY_SHOWN) {
-                ui.label(title);
-            }
-        });
+        for title in status.history.1.iter().take(HISTORY_SHOWN).rev() {
+            ui.weak(title);
+        }
+        for title in status.history.0.iter().rev().take(HISTORY_SHOWN) {
+            ui.label(title);
+        }
     }
 
     fn view(
@@ -309,7 +335,10 @@ impl EditorUi {
         let tile = position
             .filter(|position| rect.contains(*position))
             .and_then(|position| pick(position - rect.min));
-        if !self.stroking && pressed && response.hovered() {
+        // While a save waits, painting would only add to what cannot be
+        // saved, so the view takes no strokes until it is answered.
+        let blocked = status.waiting || status.unchecked_access.is_some() || status.closing;
+        if !self.stroking && !blocked && pressed && response.hovered() {
             if let (Some(tile), Some(entry)) =
                 (tile, self.terrain.and_then(|index| self.palette.get(index)))
             {
@@ -345,20 +374,50 @@ impl EditorUi {
         }
     }
 
-    fn notice(ui: &Ui, unchecked: &str, actions: &mut Vec<Action>) {
+    /// Adds a dialog button and remembers where it was drawn.
+    fn dialog_button(&mut self, ui: &mut Ui, text: &str) -> bool {
+        let response = ui.button(text);
+        self.dialog_buttons.push(response.rect);
+        response.clicked()
+    }
+
+    fn notice(&mut self, ui: &Ui, unchecked: &str, actions: &mut Vec<Action>) {
         egui::Modal::new(egui::Id::unique("tilewright.unchecked-access")).show(ui.ctx(), |ui| {
             ui.set_max_width(420.0);
             ui.heading("Saving here is not fully checked");
-            ui.label(format!(
+            ui.add(egui::Label::new(format!(
                 "The editor saves through the world toolkit, which cannot check everything for this world here: {unchecked}."
-            ));
+            )).wrap());
             ui.label("Your edits stay unsaved until you accept this.");
             ui.horizontal(|ui| {
-                if ui.button("Accept and save").clicked() {
+                if self.dialog_button(ui, "Accept and save") {
                     actions.push(Action::AcceptUncheckedAccess);
                 }
-                if ui.button("Discard the unsaved edits").clicked() {
+                if self.dialog_button(ui, "Discard the unsaved edits") {
                     actions.push(Action::Discard);
+                }
+            });
+        });
+    }
+
+    fn closing(&mut self, ui: &Ui, status: &Status, actions: &mut Vec<Action>) {
+        egui::Modal::new(egui::Id::unique("tilewright.closing")).show(ui.ctx(), |ui| {
+            ui.set_max_width(420.0);
+            ui.heading("Unsaved edits");
+            ui.label(if status.waiting {
+                "The last save failed, so its edits are not in the world yet."
+            } else {
+                "A stroke is still being painted."
+            });
+            ui.horizontal(|ui| {
+                if status.waiting && self.dialog_button(ui, "Save again") {
+                    actions.push(Action::SaveNow);
+                }
+                if self.dialog_button(ui, "Discard and close") {
+                    actions.push(Action::DiscardAndClose);
+                }
+                if self.dialog_button(ui, "Keep editing") {
+                    actions.push(Action::KeepEditing);
                 }
             });
         });
@@ -415,6 +474,15 @@ mod tests {
             output.textures_delta.clear();
             actions
         }
+
+        /// Clicks at `at`: a move, a press and a release, in three frames,
+        /// returning what all three asked for.
+        fn click(&mut self, at: Pos2) -> Vec<Action> {
+            let mut actions = self.frame(vec![Event::PointerMoved(at)]);
+            actions.extend(self.frame(vec![button(at, true)]));
+            actions.extend(self.frame(vec![button(at, false)]));
+            actions
+        }
     }
 
     fn button(at: Pos2, pressed: bool) -> Event {
@@ -436,13 +504,15 @@ mod tests {
         }
     }
 
+    const IN_VIEW: Pos2 = Pos2::new(600.0, 300.0);
+
     #[test]
     fn a_drag_over_the_view_is_one_stroke() {
         let mut window = Window::new(palette());
         window.ui.terrain = Some(1);
         window.ui.shape = BrushShape::Square;
         window.ui.radius = 2;
-        let at = Pos2::new(600.0, 300.0);
+        let at = IN_VIEW;
         window.frame(vec![Event::PointerMoved(at)]);
         let begun = window.frame(vec![button(at, true)]);
         let [
@@ -475,26 +545,33 @@ mod tests {
     #[test]
     fn escape_cancels_a_stroke() {
         let mut window = Window::new(palette());
-        let at = Pos2::new(600.0, 300.0);
-        window.frame(vec![Event::PointerMoved(at)]);
+        window.frame(vec![Event::PointerMoved(IN_VIEW)]);
         assert!(matches!(
-            window.frame(vec![button(at, true)]).as_slice(),
+            window.frame(vec![button(IN_VIEW, true)]).as_slice(),
             [Action::StrokeBegin { .. }]
         ));
         assert_eq!(
             window.frame(vec![key(Key::Escape, Modifiers::NONE)]),
             [Action::StrokeCancel]
         );
-        assert_eq!(window.frame(vec![button(at, false)]), []);
+        assert_eq!(window.frame(vec![button(IN_VIEW, false)]), []);
     }
 
     #[test]
     fn without_terrains_the_view_does_not_paint() {
         let mut window = Window::new(Vec::new());
-        let at = Pos2::new(600.0, 300.0);
-        window.frame(vec![Event::PointerMoved(at)]);
-        assert_eq!(window.frame(vec![button(at, true)]), []);
+        assert_eq!(window.click(IN_VIEW), []);
         assert!(!window.ui.is_stroking());
+    }
+
+    #[test]
+    fn the_view_takes_no_strokes_while_a_save_waits() {
+        let mut window = Window::new(palette());
+        window.status.waiting = true;
+        assert_eq!(window.click(IN_VIEW), []);
+        window.status.waiting = false;
+        window.status.unchecked_access = Some("lists are not checked".to_owned());
+        assert_eq!(window.click(IN_VIEW), []);
     }
 
     #[test]
@@ -519,11 +596,103 @@ mod tests {
     }
 
     #[test]
-    fn the_platform_notice_draws_over_the_window() {
+    fn the_layer_field_changes_the_layer_and_keeps_its_keys() {
         let mut window = Window::new(palette());
-        window.status.dirty = true;
-        window.status.unchecked_access = Some("access control lists are not checked".to_owned());
-        window.status.message = Some("Saving needs your consent".to_owned());
-        assert_eq!(window.frame(Vec::new()), []);
+        window.frame(Vec::new());
+        let field = window.ui.layer_field.center();
+        // Clicking the field edits it as text; then Ctrl+Z belongs to it.
+        window.click(field);
+        assert!(window.context.egui_wants_keyboard_input());
+        let typed = window.frame(vec![
+            Event::Key {
+                key: Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::COMMAND,
+            },
+            Event::Text("3".to_owned()),
+            key(Key::Z, Modifiers::COMMAND),
+        ]);
+        assert!(!typed.contains(&Action::Undo), "{typed:?}");
+        let entered = window.frame(vec![
+            Event::Text("3".to_owned()),
+            key(Key::Enter, Modifiers::NONE),
+        ]);
+        let all: Vec<Action> = typed.into_iter().chain(entered).collect();
+        assert!(
+            all.iter().any(|action| matches!(action, Action::Layer(_))),
+            "{all:?}"
+        );
+        assert_ne!(window.ui.layer, 0);
+    }
+
+    #[test]
+    fn the_consent_notice_asks_before_saving() {
+        for (choice, expected) in [(0, Action::AcceptUncheckedAccess), (1, Action::Discard)] {
+            let mut window = Window::new(palette());
+            window.status.dirty = true;
+            window.status.waiting = true;
+            window.status.unchecked_access =
+                Some("access control lists are not checked".to_owned());
+            // The dialog settles its size and position over its first frames.
+            for _ in 0..5 {
+                window.frame(Vec::new());
+            }
+            assert_eq!(window.ui.dialog_buttons.len(), 2);
+            let at = window.ui.dialog_buttons[choice].center();
+            assert_eq!(window.click(at), [expected]);
+        }
+    }
+
+    #[test]
+    fn closing_with_unsaved_edits_asks_first() {
+        for (choice, expected) in [
+            (0, Action::SaveNow),
+            (1, Action::DiscardAndClose),
+            (2, Action::KeepEditing),
+        ] {
+            let mut window = Window::new(palette());
+            window.status.dirty = true;
+            window.status.waiting = true;
+            window.status.closing = true;
+            for _ in 0..5 {
+                window.frame(Vec::new());
+            }
+            assert_eq!(window.ui.dialog_buttons.len(), 3);
+            let at = window.ui.dialog_buttons[choice].center();
+            assert_eq!(window.click(at), [expected]);
+        }
+    }
+
+    #[test]
+    fn a_long_palette_scrolls_instead_of_hiding_the_brush() {
+        let many: Vec<PaletteEntry> = (0..60)
+            .map(|index| PaletteEntry {
+                terrain: format!("terrain{index}"),
+                color: [1, 2, 3],
+            })
+            .collect();
+        let mut window = Window::new(many);
+        window.frame(Vec::new());
+        // The layer field is laid out below every terrain, in the scrolled
+        // area, not cut off by the panel.
+        assert!(window.ui.layer_field.top() > 600.0);
+        let scroll = Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, -5_000.0),
+            modifiers: Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        };
+        window.frame(vec![Event::PointerMoved(Pos2::new(40.0, 300.0))]);
+        for _ in 0..10 {
+            window.frame(vec![scroll.clone()]);
+        }
+        assert!(
+            window.ui.layer_field.bottom() < 600.0,
+            "{:?}",
+            window.ui.layer_field
+        );
     }
 }
