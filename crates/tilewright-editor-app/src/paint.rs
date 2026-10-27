@@ -149,25 +149,34 @@ fn outside(root: &Path, inverse: &Path) -> Result<(), String> {
     let folder = folder
         .canonicalize()
         .map_err(|error| format!("cannot resolve the inverse's folder: {error}"))?;
-    let mut inside = folder.starts_with(&root);
-    #[cfg(unix)]
-    if !inside {
-        use std::os::unix::fs::MetadataExt as _;
-        let unreadable =
-            |error: std::io::Error| format!("cannot inspect the inverse's folder: {error}");
-        let target = root.metadata().map_err(unreadable)?;
-        for ancestor in folder.ancestors() {
-            let found = ancestor.metadata().map_err(unreadable)?;
-            if found.dev() == target.dev() && found.ino() == target.ino() {
-                inside = true;
-                break;
-            }
-        }
-    }
+    let inside = folder.starts_with(&root) || same_folder_above(&root, &folder)?;
     if inside {
         return Err("the inverse must be written outside the world's source tree".to_owned());
     }
     Ok(())
+}
+
+/// Whether `folder` or a folder above it is `root` itself, by identity.
+#[cfg(unix)]
+fn same_folder_above(root: &Path, folder: &Path) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let unreadable =
+        |error: std::io::Error| format!("cannot inspect the inverse's folder: {error}");
+    let target = root.metadata().map_err(unreadable)?;
+    for ancestor in folder.ancestors() {
+        let found = ancestor.metadata().map_err(unreadable)?;
+        if found.dev() == target.dev() && found.ino() == target.ino() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Elsewhere canonical names already show the stored spelling.
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
+fn same_folder_above(_root: &Path, _folder: &Path) -> Result<bool, String> {
+    Ok(false)
 }
 
 /// Carries out `request` and returns what to print; `notice` receives
