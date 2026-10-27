@@ -44,7 +44,9 @@ wrapper alone may provision or supervise a server playtest.
   pins eframe's DX12 shader compiler to FXC, which ships with Windows. The
   renderer's instance keeps wgpu's default compiler choice, as
   tilewright-renderer 0.3 offers no option for it; the directory change
-  covers it.
+  covers it. Renderer pin pending: a later renderer release defaults its
+  instance to FXC on Windows, and the editor adopts it then, keeping the
+  directory change.
 - Never execute project scripts, shell fragments, plugins, macros, or build
   instructions merely by opening a project. Automation is an explicit bounded
   command with dry-run defaults.
