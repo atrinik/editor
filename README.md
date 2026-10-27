@@ -83,7 +83,8 @@ begin within 2 seconds of the last saved one join its undo step, so a burst
 of strokes undoes as one; undo publishes the toolkit's exact inverses of the
 step's saves, and redo the transactions again. A save whose tiles changed
 outside the editor is dropped and the world read again; a save that cannot be
-published waits to be saved again or discarded. The `paint` command strokes
+made now, because a file cannot be read or written or the world has a problem
+elsewhere, waits to be saved again or discarded. The `paint` command strokes
 the terrain brush from the command line: it prints the transaction, or with
 `--save INVERSE` keeps the inverse outside the source tree and then
 publishes the change.

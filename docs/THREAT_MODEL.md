@@ -30,7 +30,10 @@ wrapper alone may provision or supervise a server playtest.
   than refused (`docs/MUTABLE_PATHS.md`).
 - Preview validation/diffs before publication. Multi-file publication is one
   toolkit transaction; disk-full, permission, rename, crash, and validation
-  faults publish all intended revisions or none.
+  faults publish all intended revisions or none. An undo step that coalesced
+  several saves is several transactions: each is all or none, and a fault
+  partway splits the step, leaving the part not yet undone or redone in place
+  and named in the error.
 - Keep bounded recovery journals outside the project. Recovery is explicit,
   visible, expiring, and never silently written over source.
 - Never execute project scripts, shell fragments, plugins, macros, or build

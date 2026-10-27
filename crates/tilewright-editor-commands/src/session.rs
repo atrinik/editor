@@ -16,16 +16,19 @@
 //!   publishes its transactions again, the first first. A step that fails
 //!   partway is split: what was undone or redone moves to the other stack,
 //!   the rest stays, and the error says why.
-//! - A save the toolkit rejects, such as one whose tiles changed outside
-//!   the editor, drops that interaction's edits alone. The session reloads
-//!   the world from disk, so the next edit expects what is there now, and
-//!   keeps what it dropped in [`Session::rejected`].
-//! - A save that cannot be published keeps its edits pending, and no
+//! - A save the toolkit rejects as a transaction, such as one whose tiles
+//!   changed outside the editor or one past its limits, drops that
+//!   interaction's edits alone. The session reloads the world from disk, so
+//!   the next edit expects what is there now, and keeps what it dropped in
+//!   [`Session::rejected`].
+//! - A save that cannot be made now keeps its edits pending, and no
 //!   interaction begins until [`Session::flush`] saves them or
-//!   [`Session::discard`] drops them. That includes a save waiting for the
-//!   user's consent ([`Error::NeedsConsent`]). The transaction's inverse is
-//!   kept in [`Session::recovery`], since a publish that fails partway may
-//!   leave files to restore with it.
+//!   [`Session::discard`] drops them. That covers a file that cannot be read
+//!   or written, a world that does not validate for reasons elsewhere in the
+//!   tree, and a save waiting for the user's consent
+//!   ([`Error::NeedsConsent`]). When publishing itself fails, the
+//!   transaction's inverse is kept in [`Session::recovery`] until taken,
+//!   since a publish that fails partway may leave files to restore with it.
 //! - A publish that reports a problem after every file was published, such
 //!   as a directory it could not sync, counts as saved, with the problem in
 //!   [`Saved::warning`].
@@ -34,7 +37,8 @@
 //! test.
 
 use crate::{
-    Error as PreviewError, MAXIMUM_TRANSACTION_CELLS, Preview,
+    Error as PreviewError, MAXIMUM_TRANSACTION_CELLS, MAXIMUM_TRANSACTION_CHUNKS,
+    MAXIMUM_TRANSACTION_ROWS, Preview,
     brush::{self, Brush, StampError, Stroke},
     preview, transaction,
 };
@@ -99,6 +103,10 @@ pub struct Command {
     pub record: String,
     /// Terrain cells the operation sets.
     pub cells: usize,
+    /// Chunk rows it changes, which its inverse restores one by one.
+    pub rows: usize,
+    /// Chunks it changes.
+    pub chunks: usize,
 }
 
 /// A save, undo or redo that reached the tree.
@@ -301,9 +309,14 @@ impl Session {
 
     /// The inverse of the last transaction whose publishing failed: applied
     /// to the tree, it restores any file that failed publish left changed.
+    /// It is kept until [`Session::take_recovery`] takes it.
     #[must_use]
     pub fn recovery(&self) -> Option<&str> {
         self.recovery.as_deref()
+    }
+
+    pub const fn take_recovery(&mut self) -> Option<String> {
+        self.recovery.take()
     }
 
     /// Starts an interaction at `now`: a pointer or key press.
@@ -332,14 +345,24 @@ impl Session {
     /// be reflected in the session's terrain, as a stroke's is.
     ///
     /// # Errors
-    /// Fails outside an interaction, or when the interaction would hold more
-    /// than [`MAXIMUM_TRANSACTION_CELLS`] cells.
+    /// Fails outside an interaction, or when the interaction would change
+    /// more than [`MAXIMUM_TRANSACTION_CELLS`] cells,
+    /// [`MAXIMUM_TRANSACTION_ROWS`] chunk rows or
+    /// [`MAXIMUM_TRANSACTION_CHUNKS`] chunks.
     pub fn record(&mut self, command: Command) -> Result<(), Error> {
         if !self.active {
             return Err(Error::Idle);
         }
-        let cells: usize = self.pending.iter().map(|pending| pending.cells).sum();
-        if cells.saturating_add(command.cells) > MAXIMUM_TRANSACTION_CELLS {
+        let total = |part: fn(&Command) -> usize| -> usize {
+            self.pending
+                .iter()
+                .map(part)
+                .fold(part(&command), usize::saturating_add)
+        };
+        if total(|command| command.cells) > MAXIMUM_TRANSACTION_CELLS
+            || total(|command| command.rows) > MAXIMUM_TRANSACTION_ROWS
+            || total(|command| command.chunks) > MAXIMUM_TRANSACTION_CHUNKS
+        {
             return Err(Error::TooLarge);
         }
         self.pending.push(command);
@@ -444,6 +467,8 @@ impl Session {
                 operation,
                 record: stroke.record(),
                 cells: stroke.len(),
+                rows: stroke.rows(),
+                chunks: stroke.chunks().count(),
             })
         });
         let recorded = match command {
@@ -633,7 +658,26 @@ impl Session {
     /// Carries out and publishes `text` against the tree, then takes the
     /// world it produced as the session's and rebuilds the preview.
     fn publish(&mut self, text: &str) -> Result<Published, Error> {
-        let planned = preview(&self.document, "editor.jsonc", text).map_err(Error::Rejected)?;
+        let planned = match preview(&self.document, "editor.jsonc", text) {
+            Ok(planned) => planned,
+            // Only a problem with the transaction itself drops its edits:
+            // a conflict, its shape or a limit. A file that cannot be read,
+            // or a world that does not validate for reasons elsewhere in the
+            // tree, is a problem of the disk, so the edits wait.
+            Err(PreviewError::Rejected(problems))
+                if !problems
+                    .iter()
+                    .any(|problem| problem.code.starts_with("tx.") && problem.code != "tx.io") =>
+            {
+                return Err(Error::Publish(PublishError {
+                    applied: false,
+                    durable: true,
+                    cleaned: true,
+                    problems,
+                }));
+            }
+            Err(error) => return Err(Error::Rejected(error)),
+        };
         // A directory that cannot be read here is a problem of the disk, not
         // of the edits, so they wait like any save that was not published.
         let unchecked = planned.unchecked_access().map_err(|problems| {
@@ -660,7 +704,6 @@ impl Session {
                 return Err(Error::Publish(error));
             }
         };
-        self.recovery = None;
         self.document = self.document.with_world(planned.world().clone());
         self.terrains.clear();
         Ok(Published { planned, warning })
@@ -737,8 +780,8 @@ pub enum Error {
     NoStroke,
     /// A save could not be published and waits for a flush or a discard.
     Waiting,
-    /// The interaction would hold more than [`MAXIMUM_TRANSACTION_CELLS`]
-    /// cells.
+    /// The interaction would change more than one save can hold: see
+    /// [`Session::record`].
     TooLarge,
     /// Saving here would not check what the text says, and the user has not
     /// accepted that ([`Options::unchecked_access`]); nothing was written.
@@ -763,7 +806,7 @@ impl fmt::Display for Error {
             ),
             Self::TooLarge => write!(
                 formatter,
-                "one interaction saves at most {MAXIMUM_TRANSACTION_CELLS} cells"
+                "one interaction saves at most {MAXIMUM_TRANSACTION_CELLS} cells, {MAXIMUM_TRANSACTION_ROWS} chunk rows and {MAXIMUM_TRANSACTION_CHUNKS} chunks"
             ),
             Self::NeedsConsent(unchecked) => write!(
                 formatter,

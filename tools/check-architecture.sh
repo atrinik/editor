@@ -21,7 +21,9 @@ jq -e '
       $source == "registry+https://github.com/rust-lang/crates.io-index"))
 ' "${metadata}" >/dev/null
 
-if grep -RnE --include='*.rs' \
+# Integration tests may set up file system faults themselves; editor source
+# may not touch the file system.
+if grep -RnE --include='*.rs' --exclude-dir=tests \
   'std::(fs|net|process::Command)|tokio::|fn[[:space:]]+(parse|serialize|write|save)[[:space:]]*\(' \
   crates >/dev/null; then
   echo "editor source duplicates a forbidden parser/writer or direct I/O authority" >&2

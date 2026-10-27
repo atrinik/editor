@@ -9,7 +9,9 @@ use tilewright_editor_commands::{
     brush::{Brush, MAXIMUM_RADIUS, Shape, Stroke},
     preview, transaction,
 };
-use tilewright_editor_document::{WorldDocument, terminal_safe, terrain::PlaneTerrain};
+use tilewright_editor_document::{
+    WorldDocument, terminal_field, terminal_safe, terrain::PlaneTerrain,
+};
 
 pub const USAGE: &str = "paint ROOT --plane PLANE --terrain TERRAIN [--layer LAYER] [--brush square:R|circle:R] [--save INVERSE [--unchecked-access]] X,Y...
 
@@ -124,14 +126,18 @@ fn request(arguments: &[OsString]) -> Result<Request, String> {
 pub fn run(arguments: &[OsString]) -> Result<(), String> {
     let request = request(arguments)?;
     let report = execute(&request, &mut |notice| {
-        eprintln!("tilewright-editor: {}", terminal_safe(notice));
+        eprintln!("tilewright-editor: {}", terminal_field(notice));
     })?;
     print!("{}", terminal_safe(&report));
     Ok(())
 }
 
 /// The inverse is a recovery record, so it is kept outside the world's
-/// source tree, where the toolkit would read it as a stray file.
+/// source tree, where the toolkit would read it as a stray file. The folder
+/// is compared by identity, not by name, on Unix: a name can reach the tree
+/// through another spelling on a file system that ignores case, or through
+/// a bind mount. Windows and macOS resolve names to how the disk stores
+/// them, so there the canonical names compare.
 fn outside(root: &Path, inverse: &Path) -> Result<(), String> {
     let root = root
         .canonicalize()
@@ -143,7 +149,22 @@ fn outside(root: &Path, inverse: &Path) -> Result<(), String> {
     let folder = folder
         .canonicalize()
         .map_err(|error| format!("cannot resolve the inverse's folder: {error}"))?;
-    if folder.starts_with(&root) {
+    let mut inside = folder.starts_with(&root);
+    #[cfg(unix)]
+    if !inside {
+        use std::os::unix::fs::MetadataExt as _;
+        let unreadable =
+            |error: std::io::Error| format!("cannot inspect the inverse's folder: {error}");
+        let target = root.metadata().map_err(unreadable)?;
+        for ancestor in folder.ancestors() {
+            let found = ancestor.metadata().map_err(unreadable)?;
+            if found.dev() == target.dev() && found.ino() == target.ino() {
+                inside = true;
+                break;
+            }
+        }
+    }
+    if inside {
         return Err("the inverse must be written outside the world's source tree".to_owned());
     }
     Ok(())
@@ -153,9 +174,6 @@ fn outside(root: &Path, inverse: &Path) -> Result<(), String> {
 /// warnings as they arise.
 fn execute(request: &Request, notice: &mut dyn FnMut(&str)) -> Result<String, String> {
     let root = Path::new(&request.root);
-    if let Some(inverse) = &request.inverse {
-        outside(root, Path::new(inverse))?;
-    }
     let document = WorldDocument::open(root).map_err(|error| error.to_string())?;
     let mut unsaved = PlaneTerrain::new(document.world().clone(), &request.plane)
         .map_err(|error| error.to_string())?;
@@ -188,7 +206,7 @@ fn execute(request: &Request, notice: &mut dyn FnMut(&str)) -> Result<String, St
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("; ")
     })?;
     if let Some(unchecked) = unchecked {
         if !request.unchecked_access {
@@ -198,6 +216,8 @@ fn execute(request: &Request, notice: &mut dyn FnMut(&str)) -> Result<String, St
         }
         notice(&format!("saving without these checks: {unchecked}"));
     }
+    // Checked just before the write, so the folder is what it names now.
+    outside(root, Path::new(path))?;
     let durable = planned
         .record_inverse(Path::new(path))
         .map_err(|error| format!("cannot write the inverse: {error}"))?;
@@ -343,6 +363,27 @@ mod tests {
             .unwrap();
         apply(root.path(), &String::from_utf8(bytes).unwrap());
         assert_eq!(revision(root.path()), opened);
+    }
+
+    #[test]
+    fn saving_without_consent_writes_nothing_where_saving_cannot_check_everything() {
+        let root = meadow_copy();
+        let outside = tempfile::tempdir().unwrap();
+        let inverse = outside.path().join("undo.jsonc");
+        let opened = revision(root.path());
+        let request = painting(root.path(), &["--save", inverse.to_str().unwrap()]);
+        match execute(&request, &mut |_| {}) {
+            // Linux, on a file system that shows its access control lists.
+            Ok(report) => {
+                assert!(tilewright_edit::UNCHECKED_ACCESS.is_none(), "{report}");
+                assert!(inverse.exists());
+            }
+            Err(error) => {
+                assert!(error.contains("--unchecked-access"), "{error}");
+                assert!(!inverse.exists());
+                assert_eq!(revision(root.path()), opened);
+            }
+        }
     }
 
     #[test]

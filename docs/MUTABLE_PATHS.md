@@ -20,4 +20,6 @@ A save expects the values it replaces, not a revision of the whole file: an
 outside change to a tile the save paints is a conflict, and the session drops
 that save and reads the world again, while an outside change elsewhere in the
 same file is kept. Undo and redo expect the exact files their save left, so any
-outside change to those files is a conflict for them.
+outside change to those files is a conflict for them. Each save is one
+transaction; an undo step that coalesced several saves undoes and redoes them
+one transaction at a time (`docs/THREAT_MODEL.md`).

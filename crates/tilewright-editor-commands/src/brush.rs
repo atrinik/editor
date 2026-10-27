@@ -25,9 +25,13 @@ pub const MAXIMUM_RADIUS: u16 = 32;
 /// [`crate::MAXIMUM_TRANSACTION_CELLS`].
 pub const MAXIMUM_STROKE_TILES: usize = 100_000;
 
-/// Most chunks one stroke paints in: the toolkit's bound on the chunks one
-/// terrain operation names.
-pub const MAXIMUM_STROKE_CHUNKS: usize = 10_000;
+/// Most chunk rows one stroke changes: what one save's inverse can hold,
+/// [`crate::MAXIMUM_TRANSACTION_ROWS`]. A thin stroke along a column
+/// reaches it first.
+pub const MAXIMUM_STROKE_ROWS: usize = crate::MAXIMUM_TRANSACTION_ROWS;
+
+/// Most chunks one stroke paints in, [`crate::MAXIMUM_TRANSACTION_CHUNKS`].
+pub const MAXIMUM_STROKE_CHUNKS: usize = crate::MAXIMUM_TRANSACTION_CHUNKS;
 
 /// Most tiles between two pointer samples that a stroke fills in. A jump
 /// further than this paints only where the pointer lands.
@@ -136,6 +140,8 @@ pub struct Stroke {
     before: BTreeMap<[i64; 2], Option<String>>,
     /// The chunks of those tiles.
     chunks: BTreeSet<ChunkKey>,
+    /// The chunk rows of those tiles: each chunk and a row of it.
+    rows: BTreeSet<(ChunkKey, i64)>,
 }
 
 /// A stamp that failed partway: why, and the chunks whose resolved tiles
@@ -182,6 +188,7 @@ impl Stroke {
             last: None,
             before: BTreeMap::new(),
             chunks: BTreeSet::new(),
+            rows: BTreeSet::new(),
         })
     }
 
@@ -192,9 +199,10 @@ impl Stroke {
     ///
     /// # Errors
     /// Fails if the stroke would paint more than [`MAXIMUM_STROKE_TILES`]
-    /// tiles or in more than [`MAXIMUM_STROKE_CHUNKS`] chunks, a grid has no
-    /// room for the terrain's prototype, or `unsaved` holds another plane
-    /// than the stroke began on. Tiles painted before the failure stay
+    /// tiles, in more than [`MAXIMUM_STROKE_ROWS`] chunk rows or more than
+    /// [`MAXIMUM_STROKE_CHUNKS`] chunks, a grid has no room for the
+    /// terrain's prototype, or `unsaved` holds another plane than the stroke
+    /// began on. Tiles painted before the failure stay
     /// painted and recorded, and the error names the chunks they changed.
     pub fn stamp(
         &mut self,
@@ -222,9 +230,15 @@ impl Stroke {
                 if unsaved.value(self.layer, tile, self.ground.0) == Some(self.paint.as_str()) {
                     continue;
                 }
+                let row = (
+                    chunk,
+                    tile[1].rem_euclid(i64::from(tilewright_source::CHUNK_SIZE)),
+                );
                 let new_chunk = !self.chunks.contains(&chunk);
+                let new_row = !self.rows.contains(&row);
                 if self.before.len() >= MAXIMUM_STROKE_TILES
                     || (new_chunk && self.chunks.len() >= MAXIMUM_STROKE_CHUNKS)
+                    || (new_row && self.rows.len() >= MAXIMUM_STROKE_ROWS)
                 {
                     return Err(StampError {
                         error: Error::TooLarge,
@@ -242,6 +256,7 @@ impl Stroke {
                 };
                 self.before.insert(tile, before);
                 self.chunks.insert(chunk);
+                self.rows.insert(row);
                 dirty.extend(neighbourhood(chunk));
             }
         }
@@ -257,6 +272,12 @@ impl Stroke {
     /// The chunks the stroke changed tiles in, in address order.
     pub fn chunks(&self) -> impl Iterator<Item = ChunkKey> + '_ {
         self.chunks.iter().copied()
+    }
+
+    /// How many chunk rows the stroke changed.
+    #[must_use]
+    pub fn rows(&self) -> usize {
+        self.rows.len()
     }
 
     /// How many tiles the stroke changed.
@@ -377,7 +398,7 @@ impl fmt::Display for Error {
             }
             Self::TooLarge => write!(
                 formatter,
-                "a stroke paints at most {MAXIMUM_STROKE_TILES} tiles in at most {MAXIMUM_STROKE_CHUNKS} chunks"
+                "a stroke paints at most {MAXIMUM_STROKE_TILES} tiles, in at most {MAXIMUM_STROKE_ROWS} chunk rows and {MAXIMUM_STROKE_CHUNKS} chunks"
             ),
             Self::NotIdentifier(name) => write!(formatter, "{name:?} is not an identifier"),
             Self::Terrain(error) => error.fmt(formatter),
@@ -398,7 +419,8 @@ impl std::error::Error for StampError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        Brush, Error, MAXIMUM_RADIUS, MAXIMUM_SEGMENT, MAXIMUM_STROKE_TILES, Shape, Stroke, segment,
+        Brush, Error, MAXIMUM_RADIUS, MAXIMUM_SEGMENT, MAXIMUM_STROKE_CHUNKS, MAXIMUM_STROKE_TILES,
+        Shape, Stroke, segment,
     };
     use std::collections::BTreeSet;
     use tilewright_editor_document::{WorldDocument, terrain::PlaneTerrain};
@@ -538,6 +560,31 @@ mod tests {
         assert_eq!(stroke.len(), MAXIMUM_STROKE_TILES);
         assert_eq!(unsaved.value(0, [64, 0], 0), Some("water"));
         assert!(stroke.operation().unwrap().is_some());
+    }
+
+    #[test]
+    fn a_stroke_paints_in_at_most_its_chunk_cap() {
+        let mut unsaved = meadow();
+        let dot = Brush {
+            shape: Shape::Square,
+            radius: 0,
+        };
+        let mut stroke = Stroke::begin(&unsaved, 0, "sand", dot).unwrap();
+        // Jumps longer than a segment paint only where they land, one new
+        // chunk each.
+        let far = i64::try_from(MAXIMUM_SEGMENT).unwrap() + 1;
+        let mut failed = None;
+        for step in 0..=i64::try_from(MAXIMUM_STROKE_CHUNKS).unwrap() {
+            if let Err(error) = stroke.stamp(&mut unsaved, [step * far, 100]) {
+                failed = Some((step, error));
+                break;
+            }
+        }
+        let (step, error) = failed.unwrap();
+        assert_eq!(step, i64::try_from(MAXIMUM_STROKE_CHUNKS).unwrap());
+        assert_eq!(error.error, Error::TooLarge);
+        assert!(error.dirty.is_empty());
+        assert_eq!(stroke.chunks().count(), MAXIMUM_STROKE_CHUNKS);
     }
 
     #[test]

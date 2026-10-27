@@ -15,7 +15,7 @@ use std::{
 };
 use tilewright_edit::{Options as PlanOptions, PublishOptions, Transaction};
 use tilewright_editor_commands::{
-    MAXIMUM_TRANSACTION_CELLS,
+    MAXIMUM_TRANSACTION_CELLS, MAXIMUM_TRANSACTION_CHUNKS, MAXIMUM_TRANSACTION_ROWS,
     brush::{Brush, MAXIMUM_STROKE_TILES, Shape},
     json_string,
     session::{Command, Error, MAXIMUM_COALESCE, Options, Session},
@@ -125,7 +125,16 @@ fn each_release_saves_and_undo_restores_every_byte() {
     let saved = session.end_stroke(now).unwrap().unwrap();
     assert_eq!(saved.title, "Paint sand on 3 tiles");
     assert_eq!(saved.files, ["planes/meadow/layers/0/0_0.jsonc"]);
-    assert_eq!(saved.warning, None);
+    // Windows cannot sync a directory, so there every save warns that its
+    // names may not be durable yet.
+    assert!(
+        saved
+            .warning
+            .as_deref()
+            .is_none_or(|warning| warning.contains("durable")),
+        "{saved:?}"
+    );
+    assert_eq!(saved.warning.is_some(), cfg!(windows));
     assert!(!session.is_dirty());
     assert_eq!(on_disk(root.path(), [11, 10]).as_deref(), Some("sand"));
     let first = revision(root.path());
@@ -409,22 +418,224 @@ fn a_maximum_stroke_saves_and_one_past_it_saves_what_it_painted() {
 }
 
 #[test]
-fn an_interaction_holds_at_most_one_save() {
+fn an_interaction_changes_at_most_what_one_save_holds() {
     let root = meadow_copy();
     let mut session = Session::open(root.path(), accepted()).unwrap();
     let now = Instant::now();
     session.begin_interaction(now).unwrap();
-    let command = |cells| Command {
+    let command = |cells, rows, chunks| Command {
         title: "Big".to_owned(),
         operation: String::new(),
         record: "{}".to_owned(),
         cells,
+        rows,
+        chunks,
     };
+    // Each limit counts the interaction's commands together.
+    let half = MAXIMUM_TRANSACTION_CELLS / 2;
+    session.record(command(half, 1, 1)).unwrap();
     assert!(matches!(
-        session.record(command(MAXIMUM_TRANSACTION_CELLS + 1)),
+        session.record(command(half + 1, 1, 1)),
         Err(Error::TooLarge)
     ));
-    session.end_interaction(now).unwrap();
+    assert!(matches!(
+        session.record(command(1, MAXIMUM_TRANSACTION_ROWS, 1)),
+        Err(Error::TooLarge)
+    ));
+    assert!(matches!(
+        session.record(command(1, 1, MAXIMUM_TRANSACTION_CHUNKS)),
+        Err(Error::TooLarge)
+    ));
+    session.cancel_stroke().unwrap_err();
+    assert!(session.discard().is_err(), "the interaction still runs");
+}
+
+#[test]
+fn a_thin_stroke_over_painted_chunks_saves_within_its_inverse() {
+    // A column of 700 chunks below the meadow, each with rows of terrain,
+    // so the inverse sets every changed row back.
+    let root = meadow_copy();
+    let row = format!("\"{}\"", "gggs".repeat(8));
+    let rows = vec![row; 32].join(", ");
+    let operations: Vec<String> = (1..=700)
+        .map(|cy| {
+            let text = format!(
+                "{{\"format\": \"tilewright.chunk/1\", \"plane\": \"meadow\", \"layer\": 0, \"chunk\": [0, {cy}], \"terrain\": {{\"ground\": {{\"palette\": {{\"g\": \"grass\", \"s\": \"sand\"}}, \"rows\": [{rows}]}}}}}}\n"
+            );
+            format!(
+                "{{\"op\": \"document.create\", \"path\": \"planes/meadow/layers/0/0_{cy}.jsonc\", \"text\": {}}}",
+                json_string(&text)
+            )
+        })
+        .collect();
+    let created = transaction("Column", &operations, &[]);
+    let created = Transaction::parse("column.jsonc", created).unwrap();
+    tilewright_edit::plan(root.path(), &created, &PlanOptions::default())
+        .unwrap()
+        .publish_with(&ACCEPTED)
+        .unwrap();
+    let opened = revision(root.path());
+    let options = Options {
+        coalesce: Duration::ZERO,
+        ..accepted()
+    };
+    let mut session = Session::open(root.path(), options).unwrap();
+    let now = Instant::now();
+    session
+        .begin_stroke(now, "meadow", 0, "water", DOT)
+        .unwrap();
+    // One tile a row, straight down: the row cap stops it first.
+    let mut stopped = None;
+    for step in 0..7 {
+        if let Err(error) = session.stamp([3, 32 + step * 4_000]) {
+            stopped = Some(error);
+            break;
+        }
+    }
+    assert!(matches!(stopped, Some(Error::Stamp(_))), "{stopped:?}");
+    let saved = session.end_stroke(now).unwrap().unwrap();
+    assert_eq!(
+        saved.title,
+        format!("Paint water on {MAXIMUM_TRANSACTION_ROWS} tiles")
+    );
+    assert_eq!(
+        on_disk(root.path(), [3, 32 + 19_999]).as_deref(),
+        Some("water")
+    );
+    session.undo().unwrap().unwrap();
+    assert_eq!(revision(root.path()), opened);
+}
+
+#[test]
+fn an_outside_edit_elsewhere_in_a_saved_file_is_kept() {
+    let root = meadow_copy();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
+    // The session read the world before this edit to the same chunk.
+    outside_edit(root.path(), [2, 2], "water");
+    stroke(&mut session, Instant::now(), "sand", &[[1, 1]]);
+    assert_eq!(on_disk(root.path(), [1, 1]).as_deref(), Some("sand"));
+    assert_eq!(on_disk(root.path(), [2, 2]).as_deref(), Some("water"));
+}
+
+#[test]
+fn a_coalesced_step_that_fails_partway_is_split() {
+    let root = meadow_copy();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
+    let start = Instant::now();
+    stroke(&mut session, start, "sand", &[[1, 1]]);
+    stroke(
+        &mut session,
+        start + Duration::from_secs(1),
+        "sand",
+        &[[40, 1]],
+    );
+    assert_eq!(session.history().0.len(), 1);
+    // An outside edit to the first save's chunk blocks undoing it, not the
+    // second save, which undoes first.
+    outside_edit(root.path(), [5, 5], "water");
+    assert!(matches!(session.undo(), Err(Error::Rejected(_))));
+    assert_eq!(session.history().0, ["Paint sand on 1 tile"]);
+    assert_eq!(session.history().1, ["Paint sand on 1 tile"]);
+    assert_eq!(on_disk(root.path(), [40, 1]), None);
+    assert_eq!(on_disk(root.path(), [1, 1]).as_deref(), Some("sand"));
+    // Redo gives the second save back.
+    session.redo().unwrap().unwrap();
+    assert_eq!(on_disk(root.path(), [40, 1]).as_deref(), Some("sand"));
+}
+
+/// File system faults that keep a save from being made, which the session
+/// keeps waiting. Permissions do not stop a privileged user, so such a run
+/// proves nothing and stops early.
+#[cfg(unix)]
+mod faults {
+    use super::{DOT, Error, Options, Session, accepted, meadow_copy, on_disk, paint, stroke};
+    use std::{
+        os::unix::fs::PermissionsExt as _,
+        path::Path,
+        time::{Duration, Instant},
+    };
+
+    fn set_mode(path: &Path, mode: u32) {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn a_save_that_cannot_be_published_waits_until_flushed_or_dropped() {
+        let root = meadow_copy();
+        let options = Options {
+            coalesce: Duration::ZERO,
+            ..accepted()
+        };
+        let mut session = Session::open(root.path(), options).unwrap();
+        let now = Instant::now();
+        let layer = root.path().join("planes/meadow/layers/0");
+        set_mode(&layer, 0o555);
+        paint(&mut session, now, "sand", &[[1, 1]]);
+        let result = session.end_stroke(now);
+        if result.is_ok() {
+            set_mode(&layer, 0o755);
+            return;
+        }
+        let Err(Error::Publish(error)) = result else {
+            panic!("unexpected outcome: {result:?}");
+        };
+        assert!(!error.applied);
+        assert!(session.is_waiting() && session.is_dirty());
+        assert!(session.recovery().is_some());
+        assert!(matches!(
+            session.begin_stroke(now, "meadow", 0, "sand", DOT),
+            Err(Error::Waiting)
+        ));
+        assert!(matches!(session.redo(), Err(Error::Waiting)));
+        assert!(matches!(session.flush(now), Err(Error::Publish(_))));
+        // Undo drops the waiting edits, and the preview with them.
+        let undone = session.undo().unwrap().unwrap();
+        assert!(undone.files.is_empty());
+        assert!(!session.is_waiting());
+        assert_eq!(
+            session.terrain("meadow").unwrap().value(0, [1, 1], 0),
+            Some("grass")
+        );
+        // So does discard.
+        paint(&mut session, now, "sand", &[[2, 2]]);
+        assert!(session.end_stroke(now).is_err());
+        session.discard().unwrap();
+        assert!(!session.is_waiting());
+        assert_eq!(
+            session.terrain("meadow").unwrap().value(0, [2, 2], 0),
+            Some("grass")
+        );
+        // A flush once the folder can be written saves what waited.
+        paint(&mut session, now, "sand", &[[3, 3]]);
+        assert!(session.end_stroke(now).is_err());
+        set_mode(&layer, 0o755);
+        session.flush(now).unwrap().unwrap();
+        assert_eq!(on_disk(root.path(), [3, 3]).as_deref(), Some("sand"));
+        // The inverse of the failed publish stays until it is taken.
+        stroke(&mut session, now, "sand", &[[4, 4]]);
+        assert!(session.take_recovery().is_some());
+        assert_eq!(session.recovery(), None);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_keeps_the_save_waiting() {
+        let root = meadow_copy();
+        let mut session = Session::open(root.path(), accepted()).unwrap();
+        let now = Instant::now();
+        let chunk = root.path().join("planes/meadow/layers/0/0_0.jsonc");
+        set_mode(&chunk, 0o000);
+        paint(&mut session, now, "sand", &[[1, 1]]);
+        let result = session.end_stroke(now);
+        set_mode(&chunk, 0o644);
+        if result.is_ok() {
+            return;
+        }
+        assert!(matches!(result, Err(Error::Publish(_))), "{result:?}");
+        assert!(session.is_waiting());
+        assert_eq!(session.rejected(), None);
+        session.flush(now).unwrap().unwrap();
+        assert_eq!(on_disk(root.path(), [1, 1]).as_deref(), Some("sand"));
+    }
 }
 
 #[test]

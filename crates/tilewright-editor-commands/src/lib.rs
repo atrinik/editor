@@ -42,6 +42,18 @@ pub const ACTOR: &str = "editor:tilewright-editor";
 /// the cells and the `base` and `result` digests the toolkit seals in.
 pub const MAXIMUM_TRANSACTION_CELLS: usize = 120_000;
 
+/// Most chunk rows one save changes. The toolkit checks a transaction's
+/// inverse under the same limits, and the inverse sets each changed row of
+/// a chunk back with an operation of about 8 lines, so 31,000 rows would
+/// already fill 250,000 lines; this keeps room for the chunks' palettes.
+pub const MAXIMUM_TRANSACTION_ROWS: usize = 20_000;
+
+/// Most chunks one save changes. The inverse restores each chunk's palette
+/// with a few operations of its own, and the sealed transaction and the
+/// inverse each list every chunk's digests, so together with
+/// [`MAXIMUM_TRANSACTION_ROWS`] this keeps the inverse within the limits.
+pub const MAXIMUM_TRANSACTION_CHUNKS: usize = 2_000;
+
 /// Longest transaction title, in characters (TRANSACTIONS.md section 1).
 pub const MAXIMUM_TITLE: usize = 256;
 

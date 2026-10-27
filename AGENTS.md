@@ -24,17 +24,19 @@
 
 - Toolkit documents remain authoritative. UI state holds views/selections and
   semantic commands, not alternate serialized truth or direct file writers.
-- Every edit carries document/file revision preconditions and uses toolkit
-  transactions so dry-run, diff, undo/redo, validation, and atomic publication
-  share one path.
+- Every edit carries preconditions and uses toolkit transactions so dry-run,
+  diff, undo/redo, validation, and atomic publication share one path. A save
+  expects the values it replaces; undo and redo expect the exact files their
+  save left (`docs/MUTABLE_PATHS.md`).
 - Preserve comments, unknown fields, ordering, whitespace, line endings,
   nesting, and untouched bytes. Opening/saving unchanged data is byte-identical
   and targeted edits do not churn unrelated source.
 - Use explicit project roots and write allowlists. Canonicalize/revalidate at
   the operation boundary; reject traversal, symlink escape, special files,
   generated/runtime targets, ambiguous case, and paths changed after review.
-- Detect external edits and stale revisions. Validation, conflict, disk,
-  permission, rename, or crash failure leaves source unchanged and recoverable.
+- Detect external edits to what an edit changes, and stale revisions.
+  Validation, conflict, disk, permission, rename, or crash failure leaves
+  source unchanged and recoverable.
   Keep bounded autosave outside source and never execute project code.
 - Keep GPU handles renderer-private and filesystem authority toolkit-owned.
   Document-to-scene adaptation is read-only/deterministic; selection uses exact
