@@ -100,20 +100,26 @@ impl EditorWindow {
 }
 
 impl eframe::App for EditorWindow {
+    /// Runs also while the window is minimized or hidden, when `ui` does
+    /// not, so a request to close is always answered here.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Closing with unsaved edits asks first: the window stays open, and
+        // comes back into view to ask, until they are saved or discarded.
+        if ctx.input(|input| input.viewport().close_requested())
+            && !self.workbench.request_close(Instant::now())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = Instant::now();
         let view = self
             .texture
             .as_ref()
             .map(|texture| (texture.id(), self.drawn));
-        // Closing with unsaved edits asks first; the window stays open
-        // until they are saved or discarded.
-        if ui.ctx().input(|input| input.viewport().close_requested())
-            && !self.workbench.request_close(now)
-        {
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
         let status = self.workbench.status(view, self.view_error.clone());
         let workbench = &self.workbench;
         let actions = self.ui.show(ui, &status, &|at| workbench.pick(at));
