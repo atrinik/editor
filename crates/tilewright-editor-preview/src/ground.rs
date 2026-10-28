@@ -264,6 +264,9 @@ fn swatch_size(projection: Projection) -> Result<(u32, u32), Error> {
 
 /// The `ATX1` envelope of a swatch: `color` where the pattern covers the
 /// tile's shape, a diamond in isometric projection, and clear elsewhere.
+/// The diamond reaches half a texel past its edge: a tile of odd width or
+/// height has its neighbours half a texel off its own texel grid, and
+/// their staircase edges would otherwise leave gaps that grow with zoom.
 fn swatch_pixels(
     projection: Projection,
     (width, height): (u32, u32),
@@ -271,6 +274,7 @@ fn swatch_pixels(
     color: [u8; 4],
 ) -> Vec<u8> {
     let diamond = matches!(projection, Projection::Isometric { .. });
+    let bleed = 1.0 / f64::from(width.min(height).max(1));
     let mut bytes = Vec::with_capacity(12 + 4 * usize::try_from(width * height).unwrap_or(0));
     bytes.extend_from_slice(b"ATX1");
     bytes.extend_from_slice(&width.to_le_bytes());
@@ -281,7 +285,7 @@ fn swatch_pixels(
             let v = (f64::from(y) + 0.5) / f64::from(height) * 2.0 - 1.0;
             // A diamond's own coordinates, so its patterns follow its edges.
             let (u, v, inside) = if diamond {
-                (u + v, v - u, u.abs() + v.abs() <= 1.0)
+                (u + v, v - u, u.abs() + v.abs() <= 1.0 + bleed)
             } else {
                 (u, v, true)
             };
@@ -729,22 +733,55 @@ mod tests {
 
     #[test]
     fn picks_on_seams_find_the_neighbouring_tile() {
-        let iso = Projection::Isometric {
-            tile_width: 48,
-            tile_height: 24,
+        let iso = |tile_width, tile_height| Projection::Isometric {
+            tile_width,
+            tile_height,
         };
-        // At a fractional zoom the renderer leaves one-pixel seams.
-        let view = sized(iso, 1.1, 201, 161);
-        let (frame, picks) = render(&view, &[]);
-        let seams: Vec<(u32, u32)> = (0..frame.height)
-            .flat_map(|y| (0..frame.width).map(move |x| (x, y)))
-            .filter(|(x, y)| frame.semantic_ids[(y * frame.width + x) as usize] == 0)
-            .collect();
-        assert!(!seams.is_empty(), "the renderer drew no seam to test");
-        for (x, y) in seams {
-            let tile = picks.tile_at(&frame, x, y);
-            assert!(tile.is_some(), "no tile near seam pixel ({x}, {y})");
+        // At fractional zooms the renderer leaves one-pixel seams; tiles of
+        // odd sizes, at high zooms too, must leave no wider ones.
+        let mut seams = 0;
+        for (projection, zoom) in [
+            (iso(48, 24), 1.1),
+            (iso(33, 17), 0.7),
+            (iso(33, 17), 2.3),
+            (iso(33, 17), 5.3),
+            (iso(33, 17), 8.0),
+            (iso(64, 31), 1.7),
+            (iso(64, 31), 4.3),
+            (iso(64, 31), 7.113),
+            (iso(64, 31), 8.0),
+        ] {
+            let view = sized(projection, zoom, 201, 161);
+            let (frame, picks) = render(&view, &[]);
+            let id = |x: i64, y: i64| -> u32 {
+                match (u32::try_from(x), u32::try_from(y)) {
+                    (Ok(x), Ok(y)) if x < frame.width && y < frame.height => {
+                        frame.semantic_ids[(y * frame.width + x) as usize]
+                    }
+                    _ => 0,
+                }
+            };
+            for (x, y) in (0..frame.height).flat_map(|y| (0..frame.width).map(move |x| (x, y))) {
+                if id(x.into(), y.into()) != 0 {
+                    continue;
+                }
+                seams += 1;
+                // The tiles one pixel away: a seam is one pixel wide.
+                let near: Vec<[i64; 2]> = (-1..=1)
+                    .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
+                    .map(|(dx, dy)| id(i64::from(x) + dx, i64::from(y) + dy))
+                    .filter(|id| *id != 0)
+                    .filter_map(|id| picks.tile(tilewright_scene::SemanticId(id)))
+                    .collect();
+                let tile = picks.tile_at(&frame, x, y);
+                assert!(
+                    tile.is_some_and(|tile| near.contains(&tile)),
+                    "{projection:?} at {zoom}: pixel ({x}, {y}) picks {tile:?}, not one of {near:?}"
+                );
+                assert_eq!(picks.tile_at(&frame, x, y), tile, "the same every time");
+            }
         }
+        assert!(seams > 0, "the renderer drew no seam to test");
     }
 
     #[test]
