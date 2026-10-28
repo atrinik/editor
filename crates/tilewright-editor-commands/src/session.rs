@@ -51,7 +51,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-use tilewright_edit::PublishError;
+use tilewright_edit::{PublishError, limits};
 use tilewright_editor_document::{
     Error as DocumentError, WorldDocument,
     terrain::{self, ChunkKey, PlaneTerrain},
@@ -716,15 +716,19 @@ impl Session {
         if problems.iter().all(disk) {
             return waiting(problems);
         }
-        let own = problems
+        // Past its cap the toolkit ends the problems with a note, a limit at
+        // the transaction's own name, that there may be more: that is not a
+        // limit the edits reach.
+        let note = problems.len() >= limits::DIAGNOSTICS
+            && problems
+                .last()
+                .is_some_and(|last| last.code == "tx.limit" && last.path == TRANSACTION_NAME);
+        let reported = &problems[..problems.len() - usize::from(note)];
+        let own = reported
             .iter()
             .any(|problem| problem.path == TRANSACTION_NAME && !disk(problem));
-        if own && problems.iter().any(|problem| problem.code == "tx.limit") {
-            let reason = problems
-                .iter()
-                .find(|problem| problem.code == "tx.limit")
-                .map_or_else(String::new, |problem| problem.message.clone());
-            return Error::TooLarge(reason);
+        if own && let Some(limit) = reported.iter().find(|problem| problem.code == "tx.limit") {
+            return Error::TooLarge(limit.message.clone());
         }
         if own || WorldDocument::open(self.document.root()).is_ok() {
             return Error::Rejected(PreviewError::Rejected(problems));

@@ -583,6 +583,45 @@ fn a_save_its_edits_make_invalid_is_rejected_when_the_world_loads_without_them()
 }
 
 #[test]
+fn a_save_with_more_conflicts_than_reported_is_rejected_with_them() {
+    let root = meadow_copy();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
+    // An outside program paints chunk 0_0 with water and creates 1_0, which
+    // the session does not know of.
+    let cells: Vec<String> = (0..32)
+        .flat_map(|y| (0..64).map(move |x| format!("{{\"at\": [{x}, {y}], \"value\": \"water\"}}")))
+        .collect();
+    let operation = format!(
+        "{{\"op\": \"terrain.set\", \"plane\": \"meadow\", \"layer\": 0, \"grid\": \"ground\", \"cells\": [{}]}}",
+        cells.join(", ")
+    );
+    apply(root.path(), &transaction("Outside", &[operation], &[]));
+    let opened = revision(root.path());
+    let now = Instant::now();
+    let brush = Brush {
+        shape: Shape::Square,
+        radius: 32,
+    };
+    session
+        .begin_stroke(now, "meadow", 0, "sand", brush)
+        .unwrap();
+    session.stamp([32, 16]).unwrap();
+    // Thousands of tiles conflict: past the toolkit's cap on what it
+    // reports, it says there may be more, which is not a limit the stroke
+    // reached.
+    let Err(Error::Rejected(rejected)) = session.end_stroke(now) else {
+        panic!("not rejected");
+    };
+    let tilewright_editor_commands::Error::Rejected(problems) = rejected;
+    assert_eq!(problems.len(), tilewright_edit::limits::DIAGNOSTICS);
+    assert!(problems.iter().any(|problem| problem.code == "tx.conflict"));
+    let reason = &session.rejected().unwrap().reason;
+    assert!(!reason.contains("too large"), "{reason}");
+    assert_eq!(revision(root.path()), opened, "nothing was written");
+    assert!(!session.is_waiting());
+}
+
+#[test]
 fn a_problem_elsewhere_in_the_tree_keeps_the_save_waiting() {
     let root = meadow_copy();
     let mut session = Session::open(root.path(), accepted()).unwrap();
