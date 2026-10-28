@@ -137,29 +137,32 @@ impl eframe::App for EditorWindow {
 /// # Errors
 /// Fails when the world does not open or the window cannot be created.
 pub fn run(root: &Path, plane: Option<&str>, accepted: bool) -> Result<(), String> {
+    // The root is resolved before the process leaves the current folder;
+    // where it cannot be resolved through links, as on some network
+    // shares, it is made absolute as given.
     let root = root
         .canonicalize()
+        .or_else(|_| std::path::absolute(root))
         .map_err(|error| format!("cannot resolve the world's root: {error}"))?;
     leave_world_directory()?;
     let workbench = Workbench::open(&root, plane, accepted)?;
-    let mut wgpu_options = eframe::WgpuConfiguration::default();
-    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+    let mut options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Tilewright editor")
+            .with_inner_size([1280.0, 800.0]),
+        renderer: eframe::Renderer::Wgpu,
+        ..eframe::NativeOptions::default()
+    };
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
         // FXC ships with Windows; the default would look for the DXC
         // compiler's DLL by name, and so in the current directory too.
+        // Everything else stays as eframe sets it up.
         setup
             .instance_descriptor
             .backend_options
             .dx12
             .shader_compiler = eframe::wgpu::Dx12Compiler::Fxc;
     }
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Tilewright editor")
-            .with_inner_size([1280.0, 800.0]),
-        renderer: eframe::Renderer::Wgpu,
-        wgpu_options,
-        ..eframe::NativeOptions::default()
-    };
     eframe::run_native(
         "Tilewright editor",
         options,
