@@ -34,6 +34,13 @@ FONTS = [
     ('Ubuntu Font Licence 1.0 (Ubuntu Light)', 'fonts/UFL.txt'),
 ]
 FONT_TERMS = {'OFL-1.1', 'Ubuntu-font-1.0'}
+# Every font file the font crate holds: those it always compiles in, whose
+# licences are kept above, and those only its monochrome_emoji_fonts
+# feature compiles in (Noto Emoji, OFL-1.1, and the whole emoji-icon-font),
+# whose notices are not kept, so the feature must stay off.
+SHIPPED_FONTS = {'Hack-Regular.ttf', 'Ubuntu-Light.ttf', 'egui-icons.ttf'}
+EMOJI_FONTS = {'NotoEmoji-Regular.ttf', 'emoji-icon-font.ttf'}
+FONT_FEATURES = {'default'}
 LICENCE_FILE = re.compile(r'^(licen[cs]e|copying|copyright|notice|unlicense)', re.IGNORECASE)
 # Statements kept with a crate's licence text, whatever it is used under.
 STATEMENT_FILE = re.compile(r'^(copyright|notice)', re.IGNORECASE)
@@ -70,7 +77,9 @@ own license:
 
 Its Noto Emoji font (SIL Open Font License 1.1) and the whole emoji-icon-font
 are built only with its `monochrome_emoji_fonts` feature, which the editor
-does not enable, so neither is shipped.
+does not enable, so neither is shipped. The generator reads the crate's
+enabled features from the dependency tree, and fails when that feature is
+on or the crate holds a font it does not know.
 """
 
 
@@ -160,16 +169,36 @@ def run(arguments, root):
 
 
 def shipped_crates(root):
-    """(name, version) of every crate in each target's normal graph."""
+    """(name, version) of every crate in each target's normal graph, with
+    the platforms it is built for and the features enabled on any."""
     graph = {}
     for target, platform in TARGETS.items():
         tree = run(['cargo', 'tree', '--locked', '--offline', '--package', ROOT_PACKAGE, '--edges', 'normal',
-                    '--target', target, '--prefix', 'none', '--format', '{p}'], root)
+                    '--target', target, '--prefix', 'none', '--format', '{p}|{f}'], root)
         for line in tree.splitlines():
-            fields = line.split()
+            # A crate already shown is marked so, after its features.
+            package, _, features = line.removesuffix(' (*)').rpartition('|')
+            fields = package.split()
             if len(fields) >= 2 and fields[1].startswith('v'):
-                graph.setdefault((fields[0], fields[1][1:]), set()).add(platform)
+                platforms, enabled = graph.setdefault((fields[0], fields[1][1:]), (set(), set()))
+                platforms.add(platform)
+                enabled.update(feature for feature in features.split(',') if feature)
     return graph
+
+
+def check_fonts(features, files):
+    """Fails unless the font crate compiles in only the fonts whose
+    licences are kept: none of its emoji fonts, and no font unknown here."""
+    unknown = sorted(set(features) - FONT_FEATURES)
+    if 'monochrome_emoji_fonts' in unknown:
+        raise NoticeError('its monochrome_emoji_fonts feature is on, which ships Noto Emoji (OFL-1.1) and the whole '
+                          'emoji-icon-font: add the OFL text and the emoji-icon-font notice before enabling it')
+    if unknown:
+        raise NoticeError(f'it is built with features the notices do not cover: {", ".join(unknown)}')
+    fonts = sorted(file for file in files if file.lower().endswith(('.ttf', '.otf', '.ttc', '.woff', '.woff2')))
+    strangers = [file for file in fonts if file not in SHIPPED_FONTS | EMOJI_FONTS]
+    if strangers:
+        raise NoticeError(f'it holds fonts the notices do not cover: {", ".join(strangers)}')
 
 
 def crate_files(directory):
@@ -185,7 +214,7 @@ def render(root):
     packages = {(package['name'], package['version']): package for package in metadata['packages']}
     members = set(metadata['workspace_members'])
     rows, bundles, shared, fonts = [], {}, {}, []
-    for key, platforms in sorted(shipped_crates(root).items()):
+    for key, (platforms, features) in sorted(shipped_crates(root).items()):
         package = packages.get(key)
         if package is None:
             raise NoticeError(f'{key[0]} {key[1]} is in the tree but not in the metadata')
@@ -205,6 +234,7 @@ def render(root):
         texts = set().union(*kinds.values())
         try:
             if name == FONT_CRATE:
+                check_fonts(features, [path.name for path in (directory / 'fonts').iterdir()])
                 code = [choices for choices in terms(expression) if not FONT_TERMS.intersection(choices)]
                 used = choose(' AND '.join(' OR '.join(choices) for choices in code), texts)
                 for title, file in FONTS:

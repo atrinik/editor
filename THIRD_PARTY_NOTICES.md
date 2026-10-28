@@ -30,7 +30,9 @@ own license:
 
 Its Noto Emoji font (SIL Open Font License 1.1) and the whole emoji-icon-font
 are built only with its `monochrome_emoji_fonts` feature, which the editor
-does not enable, so neither is shipped.
+does not enable, so neither is shipped. The generator reads the crate's
+enabled features from the dependency tree, and fails when that feature is
+on or the crate holds a font it does not know.
 
 ### Hack
 

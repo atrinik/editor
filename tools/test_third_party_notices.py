@@ -52,6 +52,18 @@ class ThirdPartyNoticesTests(unittest.TestCase):
         with self.assertRaises(notices.NoticeError):
             notices.choose('GPL-2.0-only', set())
 
+    def test_only_fonts_whose_licences_are_kept_may_ship(self):
+        files = ['Hack-Regular.ttf', 'Hack-Regular.txt', 'NotoEmoji-Regular.ttf', 'OFL.txt', 'Ubuntu-Light.ttf',
+                 'egui-icons.ttf', 'emoji-icon-font.ttf']
+        notices.check_fonts({'default'}, files)
+        notices.check_fonts(set(), files)
+        with self.assertRaisesRegex(notices.NoticeError, 'monochrome_emoji_fonts'):
+            notices.check_fonts({'default', 'monochrome_emoji_fonts'}, files)
+        with self.assertRaisesRegex(notices.NoticeError, 'features'):
+            notices.check_fonts({'colour_emoji'}, files)
+        with self.assertRaisesRegex(notices.NoticeError, 'Comic.ttf'):
+            notices.check_fonts({'default'}, [*files, 'Comic.ttf'])
+
     def test_texts_are_fenced_whatever_they_hold(self):
         self.assertEqual(notices.fenced('a ``` b'), '````text\na ``` b\n````\n')
         self.assertEqual(notices.normalized('\n\tx  \r\ny\n\n'), '        x\ny')
