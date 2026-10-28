@@ -36,7 +36,8 @@
 //!   or written, a world that does not load from disk for reasons of its
 //!   own, and a save waiting for the user's consent
 //!   ([`Error::NeedsConsent`]). When a publish fails partway and leaves files
-//!   it could not restore, its inverse is kept in [`Session::recovery`].
+//!   it could not restore, its inverse is kept in [`Session::recovery`]
+//!   until that same transaction is published, or the record is taken.
 //! - A publish that reports a problem after every file was published, such
 //!   as a directory it could not sync, counts as saved, with the problem in
 //!   [`Saved::warning`].
@@ -192,11 +193,19 @@ pub struct Session {
     undo: Vec<Step>,
     redo: Vec<Step>,
     rejected: Option<Rejected>,
-    recovery: Option<String>,
+    recovery: Option<Recovery>,
     /// Runs once between a failed plan and the check of the world on disk,
     /// as another program would.
     #[cfg(test)]
     interleave: Interleave,
+}
+
+/// The inverse of a transaction whose publish left files it could not
+/// restore, and that transaction.
+#[derive(Debug)]
+struct Recovery {
+    source: String,
+    inverse: String,
 }
 
 #[cfg(test)]
@@ -331,15 +340,18 @@ impl Session {
 
     /// The inverse of the last transaction whose publish failed partway and
     /// could not restore every file: applied to the tree, it restores them.
-    /// It is kept until [`Session::take_recovery`] takes it, or until the
-    /// edits it came from are saved.
+    /// It is kept until [`Session::take_recovery`] takes it, or until that
+    /// same transaction is published, as by a retried undo or redo or a
+    /// flush of the same edits. Saves of other edits leave it.
     #[must_use]
     pub fn recovery(&self) -> Option<&str> {
-        self.recovery.as_deref()
+        self.recovery
+            .as_ref()
+            .map(|recovery| recovery.inverse.as_str())
     }
 
-    pub const fn take_recovery(&mut self) -> Option<String> {
-        self.recovery.take()
+    pub fn take_recovery(&mut self) -> Option<String> {
+        self.recovery.take().map(|recovery| recovery.inverse)
     }
 
     /// Starts an interaction at `now`: a pointer or key press.
@@ -530,9 +542,6 @@ impl Session {
         };
         self.pending.clear();
         self.rejected = None;
-        // These edits are on disk now, so the inverse of an earlier failed
-        // publish of them no longer restores anything.
-        self.recovery = None;
         let save = Save {
             title,
             forward: published.planned.sealed().to_owned(),
@@ -697,11 +706,23 @@ impl Session {
                     .iter()
                     .any(|problem| problem.message.contains("restoring failed"))
                 {
-                    self.recovery = Some(planned.inverse().to_owned());
+                    self.recovery = Some(Recovery {
+                        source: text.to_owned(),
+                        inverse: planned.inverse().to_owned(),
+                    });
                 }
                 return Err(Error::Publish(error));
             }
         };
+        // The transaction a recovery came from is published now, so its
+        // files are what it makes them, and there is nothing to restore.
+        if self
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.source == text)
+        {
+            self.recovery = None;
+        }
         self.document = self.document.with_world(planned.world().clone());
         self.terrains.clear();
         Ok(Published { planned, warning })
@@ -904,7 +925,7 @@ impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Interleave, Options, Session, TRANSACTION_NAME, Verdict, verdict};
+    use super::{Interleave, Options, Recovery, Session, TRANSACTION_NAME, Verdict, verdict};
     use crate::{
         brush::{Brush, Shape},
         json_string, transaction,
@@ -994,6 +1015,38 @@ mod tests {
         assert!(session.interleave.0.is_none(), "the first plan failed");
         assert_eq!(session.history().0, ["Paint sand on 1 tile"]);
         assert!(session.rejected().is_none() && !session.is_waiting());
+    }
+
+    #[test]
+    fn a_recovery_stays_until_its_own_transaction_is_published_or_taken() {
+        let root = meadow_copy();
+        let mut session = session(root.path());
+        let now = Instant::now();
+        paint(&mut session, now, "sand", [1, 1]);
+        // As if undoing that save had failed partway and left files
+        // unrestored.
+        let undo = session.undo.last().unwrap().saves[0].inverse.clone();
+        session.recovery = Some(Recovery {
+            source: undo,
+            inverse: "the inverse of the undo".to_owned(),
+        });
+        // Saving other edits leaves it.
+        let later = now + std::time::Duration::from_secs(5);
+        paint(&mut session, later, "water", [40, 1]);
+        assert_eq!(session.recovery(), Some("the inverse of the undo"));
+        // Undoing the other edits, another transaction, leaves it too; the
+        // undo it came from, published at last, clears it.
+        session.undo().unwrap().unwrap();
+        assert_eq!(session.recovery(), Some("the inverse of the undo"));
+        session.undo().unwrap().unwrap();
+        assert_eq!(session.recovery(), None);
+        // Taking it takes it.
+        session.recovery = Some(Recovery {
+            source: String::new(),
+            inverse: "kept".to_owned(),
+        });
+        assert_eq!(session.take_recovery().as_deref(), Some("kept"));
+        assert_eq!(session.recovery(), None);
     }
 
     #[test]
