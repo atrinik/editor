@@ -133,11 +133,14 @@ pub fn run(arguments: &[OsString]) -> Result<(), String> {
 }
 
 /// The inverse is a recovery record, so it is kept outside the world's
-/// source tree, where the toolkit would read it as a stray file. The folder
-/// is compared by identity, not by name, on Unix: a name can reach the tree
-/// through another spelling on a file system that ignores case, or through
-/// a bind mount. Windows and macOS resolve names to how the disk stores
-/// them, so there the canonical names compare.
+/// source tree, where the toolkit would read it as a stray file. On Unix the
+/// folder and the folders above it are also compared with the root by
+/// identity, so another name for the root itself is caught: another
+/// spelling on a file system that ignores case, or a bind mount of the root.
+/// A bind mount of a folder inside the tree is not caught; publishing then
+/// refuses the stray file (`docs/MUTABLE_PATHS.md`). Windows and macOS
+/// resolve names to how the disk stores them, so there the canonical names
+/// compare.
 fn outside(root: &Path, inverse: &Path) -> Result<(), String> {
     let root = root
         .canonicalize()

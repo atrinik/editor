@@ -81,10 +81,12 @@ profile's terrain transitions resolved, and saves them to the source tree
 when the interaction ends: a pointer or key is released. Interactions that
 begin within 2 seconds of the last saved one join its undo step, so a burst
 of strokes undoes as one; undo publishes the toolkit's exact inverses of the
-step's saves, and redo the transactions again. A save whose tiles changed
-outside the editor is dropped and the world read again; a save that cannot be
-made now, because a file cannot be read or written or the world has a problem
-elsewhere, waits to be saved again or discarded. The `paint` command strokes
+step's saves, and redo the transactions again. A save whose own edits are
+the problem, such as tiles changed outside the editor, is dropped and the
+world read again; a save too large to save or to undo is refused before
+anything is written; a save that cannot be made now, because a file cannot be
+read or written or the world does not load for reasons of its own, waits to
+be saved again or discarded. The `paint` command strokes
 the terrain brush from the command line: it prints the transaction, or with
 `--save INVERSE` keeps the inverse outside the source tree and then
 publishes the change.

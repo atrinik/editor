@@ -45,6 +45,10 @@ fn main() {
         }
         "paint" => {
             let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
+            // Without arguments, the help, as written.
+            if arguments.is_empty() {
+                usage();
+            }
             if let Err(error) = paint::run(&arguments) {
                 fail(&error);
             }
