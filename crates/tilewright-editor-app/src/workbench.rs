@@ -71,14 +71,15 @@ impl Workbench {
     /// # Errors
     /// Fails when the world does not load or has no such plane.
     pub fn open(root: &Path, plane: Option<&str>, accepted: bool) -> Result<Self, String> {
-        let session = Session::open(
-            root,
-            Options {
-                unchecked_access: accepted,
-                ..Options::default()
-            },
-        )
-        .map_err(|error| error.to_string())?;
+        let options = Options {
+            unchecked_access: accepted,
+            ..Options::default()
+        };
+        Self::open_with(root, plane, options)
+    }
+
+    fn open_with(root: &Path, plane: Option<&str>, options: Options) -> Result<Self, String> {
+        let session = Session::open(root, options).map_err(|error| error.to_string())?;
         let world = session.document().world().clone();
         let plane = match plane {
             Some(plane) if world.planes().contains_key(plane) => plane.to_owned(),
@@ -344,15 +345,17 @@ impl Workbench {
         before: &(Vec<String>, Vec<String>),
     ) -> String {
         let after = self.session.history();
-        // What went through moved to the other list; the rest stayed.
+        // A step that went partway is split: what went through moved to
+        // the other list, and the rest stays, with fewer saves, so another
+        // title. List lengths cannot tell, as the undo list stays at its cap.
         let (done, left) = if words.verb == UNDO.verb {
             (
-                (after.1.len() > before.1.len()).then(|| after.1.first()),
+                (after.0.last() != before.0.last()).then(|| after.1.first()),
                 after.0.last(),
             )
         } else {
             (
-                (after.0.len() > before.0.len()).then(|| after.0.last()),
+                (after.1.first() != before.1.first()).then(|| after.0.last()),
                 after.1.first(),
             )
         };
@@ -664,7 +667,7 @@ fn ground_of(terrain: &PlaneTerrain, key: ChunkKey, layers: usize) -> Vec<Vec<Op
 
 #[cfg(test)]
 mod tests {
-    use super::Workbench;
+    use super::{Options, Workbench};
     use eframe::egui;
     use std::time::Instant;
     use tilewright_editor_commands::{json_string, transaction};
@@ -978,6 +981,52 @@ mod tests {
         assert_eq!(
             status.history,
             (vec![], vec!["Paint water on 1 tile".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_joined_step_redone_partway_says_which_part_at_the_history_cap() {
+        let root = meadow_copy();
+        let options = Options {
+            unchecked_access: true,
+            history: 1,
+            ..Options::default()
+        };
+        let mut workbench = Workbench::open_with(root.path(), None, options).unwrap();
+        let now = Instant::now();
+        let later = |seconds| now + std::time::Duration::from_secs(seconds);
+        // Three strokes in three chunks, joined into one step.
+        workbench.apply(vec![begin([1, 1], "sand"), Action::StrokeEnd], now);
+        workbench.apply(vec![begin([40, 1], "water"), Action::StrokeEnd], later(1));
+        workbench.apply(vec![begin([72, 1], "sand"), Action::StrokeEnd], later(2));
+        // Undoing it stops at the first stroke, whose chunk changed
+        // outside; the history stays at its cap of one step.
+        outside_edit(root.path(), [5, 5], "water");
+        workbench.apply(vec![Action::Undo], later(3));
+        assert_eq!(
+            workbench.status(None, None).history,
+            (
+                vec!["Paint sand on 1 tile".to_owned()],
+                vec!["Paint water on 1 tile and 1 more edit".to_owned()]
+            )
+        );
+        // Redoing the rest stops at the third, whose chunk now exists.
+        outside_edit(root.path(), [75, 5], "water");
+        workbench.apply(vec![Action::Redo], later(3));
+        let status = workbench.status(None, None);
+        let message = status.message.unwrap();
+        assert!(
+            message.starts_with(
+                "Redid only part of Paint water on 1 tile and 1 more edit: Paint water on 1 tile is redone, but Paint sand on 1 tile could not be"
+            ),
+            "{message}"
+        );
+        assert_eq!(
+            status.history,
+            (
+                vec!["Paint water on 1 tile".to_owned()],
+                vec!["Paint sand on 1 tile".to_owned()]
+            )
         );
     }
 
