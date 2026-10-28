@@ -8,13 +8,26 @@ if (Test-Path $Output) { throw "release output already exists: $Output" }
 foreach ($Command in @("cargo-auditable", "syft", "python")) {
     if (-not (Get-Command $Command -ErrorAction SilentlyContinue)) { throw "missing required tool: $Command" }
 }
-cargo auditable build --locked --release --package tilewright-editor
+# The C runtime is linked statically, so the editor loads no Visual C++
+# runtime DLL, which Windows would look for in the current folder at start
+# where it is not installed (docs/THREAT_MODEL.md). The build sets its own
+# Rust flags.
+if ($env:RUSTFLAGS -or $env:CARGO_ENCODED_RUSTFLAGS) { throw "unset RUSTFLAGS and CARGO_ENCODED_RUSTFLAGS: the package build sets its own" }
+$env:RUSTFLAGS = "-C target-feature=+crt-static"
+try {
+    cargo auditable build --locked --release --package tilewright-editor
+    if ($LASTEXITCODE -ne 0) { throw "release build failed" }
+} finally {
+    Remove-Item Env:RUSTFLAGS
+}
 $Metadata = cargo metadata --locked --offline --format-version 1 --no-deps | ConvertFrom-Json
 $StageRoot = Join-Path $env:RUNNER_TEMP ([System.IO.Path]::GetRandomFileName())
 $Stage = Join-Path $StageRoot "tilewright-editor-$Version"
 try {
     New-Item -ItemType Directory -Path "$Stage/bin", $Output | Out-Null
     Copy-Item (Join-Path $Metadata.target_directory "release/tilewright-editor.exe") "$Stage/bin/"
+    python tools/check-windows-imports.py "$Stage/bin/tilewright-editor.exe"
+    if ($LASTEXITCODE -ne 0) { throw "the editor loads a Visual C++ runtime DLL" }
     Copy-Item LICENSE, PROVENANCE.md, THIRD_PARTY_NOTICES.md $Stage
     & "$Stage/bin/tilewright-editor.exe" version | Out-Null
     syft "$Stage/bin/tilewright-editor.exe" --source-name tilewright-editor --source-version $Version --output "cyclonedx-json=$Stage/sbom.cdx.json"

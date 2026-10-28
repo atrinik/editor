@@ -46,7 +46,14 @@ wrapper alone may provision or supervise a server playtest.
   tilewright-renderer 0.3 offers no option for it; the directory change
   covers it. Renderer pin pending: a later renderer release defaults its
   instance to FXC on Windows, and the editor adopts it then, keeping the
-  directory change.
+  directory change. DLLs the executable imports load before any of this
+  runs, so release packages link the C runtime statically: the editor
+  imports no Visual C++ runtime DLL, such as `VCRUNTIME140.dll`, which
+  Windows would look for in the current directory where it is not
+  installed, and the Windows package build fails when the executable's
+  import or delay-load import table names one
+  (`tools/check-windows-imports.py`). Builds made with plain `cargo build`
+  link the runtime dynamically and are not covered.
 - Never execute project scripts, shell fragments, plugins, macros, or build
   instructions merely by opening a project. Automation is an explicit bounded
   command with dry-run defaults.

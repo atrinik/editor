@@ -4,6 +4,7 @@ set -euo pipefail
 repository=$(git rev-parse --show-toplevel)
 cd "${repository}"
 python3 -m unittest discover -s tools -p 'test_package_provenance.py'
+python3 -m unittest discover -s tools -p 'test_check_windows_imports.py'
 test "$(rustc --version | awk '{print $2}')" = 1.97.1
 for command in cargo cargo-deny cargo-auditable jq syft; do command -v "${command}" >/dev/null || { echo "missing required tool: ${command}" >&2; exit 1; }; done
 cargo fmt --all --check
