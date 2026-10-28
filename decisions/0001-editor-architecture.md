@@ -42,6 +42,13 @@ leaves the editor.
   an egui image; the pointer finds tiles in the frame's exact semantic mask.
   Renderer GPU handles stay private to the renderer, and egui's stay inside
   eframe; the editor holds neither.
+- One exception to picking from the mask alone: at some zooms the renderer
+  leaves one-pixel seams between tiles, where the mask holds no tile, and
+  there the pointer picks the nearest tile within `PICK_REACH` (2) pixels.
+  It is to go when the editor adopts the renderer's fix, which snaps both
+  edges of each quad (tilewright-renderer #55); revisit it then. The
+  half-texel bleed of the editor's diamond swatches, which makes odd-sized
+  neighbours meet, is the editor's own art, not picking, and stays.
 - egui-wgpu is a second GPU device in the process and the view costs one
   readback each time it is drawn again. The view is drawn only when it
   changes, which an editor's view does at interaction rates, not every

@@ -12,7 +12,11 @@
 - Consume the released Tilewright renderer for scenes, GPU resources, viewport,
   semantic masks, picking, typography, and offscreen previews. Never fork
   renderer code or create editor-only projection, painter, lighting, cache, or
-  pixel-picking behavior.
+  pixel-picking behavior. One recorded exception (ADR 0001 amendment 1):
+  where the frame's semantic mask holds no tile, as on the renderer's
+  one-pixel seams, the pointer picks the nearest tile within `PICK_REACH`
+  pixels, until the editor adopts the renderer's seam fix
+  (tilewright-renderer #55), which is when to remove it.
 - Do not make editor builds or runtime depend on game clients, servers,
   protocols, or game-specific code. Game specifics arrive as data through game
   profiles. Preview is local rendering; playable tests belong to each game's own
