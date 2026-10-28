@@ -16,7 +16,11 @@ UNICODE = """UNICODE LICENSE V3
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of data files and any associated documentation (the "Data Files")"""
 APACHE = """                              Apache License
-                        Version 2.0, January 2004"""
+                        Version 2.0, January 2004
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION"""
+POINTER = """Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License."""
 
 
 class ThirdPartyNoticesTests(unittest.TestCase):
@@ -24,6 +28,8 @@ class ThirdPartyNoticesTests(unittest.TestCase):
         self.assertEqual(notices.classify(MIT), {'MIT'})
         self.assertEqual(notices.classify(UNICODE), {'Unicode-3.0'})
         self.assertEqual(notices.classify(APACHE), {'Apache-2.0'})
+        # A notice pointing to the licence is not the licence.
+        self.assertEqual(notices.classify(POINTER), set())
         # One file holding two licences counts for both.
         self.assertEqual(notices.classify(MIT + '\n\n' + APACHE), {'MIT', 'Apache-2.0'})
         self.assertEqual(notices.classify('Redistribution and use in source and binary forms ... Neither the name'),

@@ -83,7 +83,8 @@ class NoticeError(Exception):
 MARKERS = [
     ('Unicode-3.0', ['UNICODE LICENSE']),
     ('Unicode-3.0', ['Unicode, Inc.']),
-    ('Apache-2.0', ['Apache License', 'Version 2.0']),
+    # The licence itself, not a notice pointing to it.
+    ('Apache-2.0', ['Apache License', 'Version 2.0', 'TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION']),
     ('Apache-2.0 WITH LLVM-exception', ['LLVM Exceptions']),
     ('GPL', ['GNU GENERAL PUBLIC LICENSE']),
     ('MIT', ['to any person obtaining a copy of this software']),
