@@ -37,8 +37,9 @@
 //!   or written, a world that does not load from disk for reasons of its
 //!   own, and a save waiting for the user's consent
 //!   ([`Error::NeedsConsent`]). When a publish fails partway and leaves files
-//!   it could not restore, its inverse is kept in [`Session::recovery`]
-//!   until that same transaction is published, or the record is taken.
+//!   it could not restore, its inverse is kept in [`Session::recoveries`]
+//!   until that same transaction is published, or the records are taken;
+//!   each such publish keeps its own.
 //! - A publish that reports a problem after every file was published, such
 //!   as a directory it could not sync, counts as saved, with the problem in
 //!   [`Saved::warning`].
@@ -197,7 +198,9 @@ pub struct Session {
     undo: Vec<Step>,
     redo: Vec<Step>,
     rejected: Option<Rejected>,
-    recovery: Option<Recovery>,
+    /// One record for each transaction whose publish left files it could
+    /// not restore, the oldest first.
+    recoveries: Vec<Recovery>,
     /// Runs once between a failed plan and the check of the world on disk,
     /// as another program would.
     #[cfg(test)]
@@ -249,7 +252,7 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             rejected: None,
-            recovery: None,
+            recoveries: Vec::new(),
             #[cfg(test)]
             interleave: Interleave::default(),
         }
@@ -342,20 +345,28 @@ impl Session {
         self.rejected.take()
     }
 
-    /// The inverse of the last transaction whose publish failed partway and
-    /// could not restore every file: applied to the tree, it restores them.
-    /// It is kept until [`Session::take_recovery`] takes it, or until that
-    /// same transaction is published, as by a retried undo or redo or a
-    /// flush of the same edits. Saves of other edits leave it.
+    /// The inverses of the transactions whose publish failed partway and
+    /// could not restore every file, the newest first: applied to the tree
+    /// in this order, they restore those files. Each is kept until
+    /// [`Session::take_recoveries`] takes them, or until its own
+    /// transaction is published, as by a retried undo or redo or a flush of
+    /// the same edits. Saves of other edits, failed or not, leave it.
     #[must_use]
-    pub fn recovery(&self) -> Option<&str> {
-        self.recovery
-            .as_ref()
+    pub fn recoveries(&self) -> Vec<&str> {
+        self.recoveries
+            .iter()
+            .rev()
             .map(|recovery| recovery.inverse.as_str())
+            .collect()
     }
 
-    pub fn take_recovery(&mut self) -> Option<String> {
-        self.recovery.take().map(|recovery| recovery.inverse)
+    /// Takes every recovery record, the newest first.
+    pub fn take_recoveries(&mut self) -> Vec<String> {
+        self.recoveries
+            .drain(..)
+            .rev()
+            .map(|recovery| recovery.inverse)
+            .collect()
     }
 
     /// Starts an interaction at `now`: a pointer or key press.
@@ -707,7 +718,11 @@ impl Session {
                     .iter()
                     .any(|problem| problem.message.contains("restoring failed"))
                 {
-                    self.recovery = Some(Recovery {
+                    // A record of the same transaction failing again is
+                    // replaced by the newer one, planned on the tree as the
+                    // failure before left it.
+                    self.recoveries.retain(|recovery| recovery.source != text);
+                    self.recoveries.push(Recovery {
                         source: text.to_owned(),
                         inverse: planned.inverse().to_owned(),
                     });
@@ -717,13 +732,7 @@ impl Session {
         };
         // The transaction a recovery came from is published now, so its
         // files are what it makes them, and there is nothing to restore.
-        if self
-            .recovery
-            .as_ref()
-            .is_some_and(|recovery| recovery.source == text)
-        {
-            self.recovery = None;
-        }
+        self.recoveries.retain(|recovery| recovery.source != text);
         self.document = self.document.with_world(planned.world().clone());
         self.terrains.clear();
         Ok(Published { planned, warning })
@@ -1019,35 +1028,45 @@ mod tests {
     }
 
     #[test]
-    fn a_recovery_stays_until_its_own_transaction_is_published_or_taken() {
+    fn recoveries_stay_until_their_own_transactions_are_published_or_taken() {
         let root = meadow_copy();
         let mut session = session(root.path());
         let now = Instant::now();
+        let later = |seconds| now + std::time::Duration::from_secs(seconds);
         paint(&mut session, now, "sand", [1, 1]);
-        // As if undoing that save had failed partway and left files
-        // unrestored.
+        paint(&mut session, later(5), "water", [40, 1]);
+        // As if undoing the second save had failed partway and left files
+        // unrestored, and then a save of edits never published again had
+        // too: two records outstanding.
         let undo = session.undo.last().unwrap().saves[0].inverse.clone();
-        session.recovery = Some(Recovery {
+        session.recoveries.push(Recovery {
             source: undo,
             inverse: "the inverse of the undo".to_owned(),
         });
-        // Saving other edits leaves it.
-        let later = now + std::time::Duration::from_secs(5);
-        paint(&mut session, later, "water", [40, 1]);
-        assert_eq!(session.recovery(), Some("the inverse of the undo"));
-        // Undoing the other edits, another transaction, leaves it too; the
-        // undo it came from, published at last, clears it.
-        session.undo().unwrap().unwrap();
-        assert_eq!(session.recovery(), Some("the inverse of the undo"));
-        session.undo().unwrap().unwrap();
-        assert_eq!(session.recovery(), None);
-        // Taking it takes it.
-        session.recovery = Some(Recovery {
-            source: String::new(),
-            inverse: "kept".to_owned(),
+        session.recoveries.push(Recovery {
+            source: "a dropped save".to_owned(),
+            inverse: "the inverse of the dropped save".to_owned(),
         });
-        assert_eq!(session.take_recovery().as_deref(), Some("kept"));
-        assert_eq!(session.recovery(), None);
+        let both = ["the inverse of the dropped save", "the inverse of the undo"];
+        // Saving other edits leaves them.
+        paint(&mut session, later(10), "sand", [60, 1]);
+        assert_eq!(session.recoveries(), both);
+        // Undoing the other edits, another transaction, leaves them too;
+        // the undo one came from, published at last, clears that one alone.
+        session.undo().unwrap().unwrap();
+        assert_eq!(session.recoveries(), both);
+        session.undo().unwrap().unwrap();
+        assert_eq!(session.recoveries(), ["the inverse of the dropped save"]);
+        // Taking them takes them all, the newest first.
+        session.recoveries.push(Recovery {
+            source: String::new(),
+            inverse: "newest".to_owned(),
+        });
+        assert_eq!(
+            session.take_recoveries(),
+            ["newest", "the inverse of the dropped save"]
+        );
+        assert!(session.recoveries().is_empty());
     }
 
     #[test]

@@ -760,7 +760,7 @@ mod faults {
         assert!(!error.applied);
         assert!(session.is_waiting() && session.is_dirty());
         // Nothing was written, so nothing is left to restore.
-        assert_eq!(session.recovery(), None);
+        assert!(session.recoveries().is_empty());
         assert!(matches!(
             session.begin_stroke(now, "meadow", 0, "sand", DOT),
             Err(Error::Waiting)
@@ -790,7 +790,7 @@ mod faults {
         set_mode(&layer, 0o755);
         session.flush(now).unwrap().unwrap();
         assert_eq!(on_disk(root.path(), [3, 3]).as_deref(), Some("sand"));
-        assert_eq!(session.recovery(), None);
+        assert!(session.recoveries().is_empty());
     }
 
     #[test]
