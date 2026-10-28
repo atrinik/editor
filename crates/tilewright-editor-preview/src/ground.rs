@@ -273,6 +273,8 @@ fn swatch_pixels(
     pattern: Pattern,
     color: [u8; 4],
 ) -> Vec<u8> {
+    #[cfg(test)]
+    tests::MADE.with(|made| made.set(made.get() + 1));
     let diamond = matches!(projection, Projection::Isometric { .. });
     let bleed = 1.0 / f64::from(width.min(height).max(1));
     let mut bytes = Vec::with_capacity(12 + 4 * usize::try_from(width * height).unwrap_or(0));
@@ -409,7 +411,9 @@ pub fn view_bounds(camera: &GroundCamera) -> ([i64; 2], [i64; 2]) {
 /// else in view.
 ///
 /// # Errors
-/// Fails when the view holds more than [`MAXIMUM_VIEW_TILES`] tiles, a
+/// Fails when the view holds more than [`MAXIMUM_VIEW_TILES`] tiles, its
+/// tiles' swatches would be more than [`MAXIMUM_SCENE_TEXTURES`] textures
+/// or [`MAXIMUM_SWATCH_BYTES`] of them ([`Error::TooManySwatches`]), a
 /// ground layer has no rank, or the renderer rejects the view.
 pub fn ground_scene(
     camera: &GroundCamera,
@@ -524,7 +528,7 @@ impl fmt::Display for Error {
             ),
             Self::TooManySwatches => write!(
                 formatter,
-                "the view shows too many kinds of tile for their swatches to fit in {} MiB; zoom in",
+                "the view shows more kinds of tile than one view draws: at most {MAXIMUM_SCENE_TEXTURES}, in at most {} MiB of swatches; zoom in",
                 MAXIMUM_SWATCH_BYTES >> 20
             ),
             Self::TileTooLarge => write!(
@@ -543,9 +547,14 @@ impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
+    thread_local! {
+        /// How many swatches this thread's tests have made.
+        pub(super) static MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     use super::{
-        Error, GroundCamera, GroundTile, MAXIMUM_VIEW_TILES, ground_scene, swatch_color,
-        view_bounds,
+        Error, GroundCamera, GroundTile, MAXIMUM_SCENE_TEXTURES, MAXIMUM_SWATCH_BYTES,
+        MAXIMUM_VIEW_TILES, ground_scene, swatch_color, view_bounds,
     };
     use tilewright_render_api::{
         BackendPreference, FrameOutput, RenderRequest, Renderer, TargetDescriptor, TargetKind,
@@ -784,6 +793,13 @@ mod tests {
         assert!(seams > 0, "the renderer drew no seam to test");
     }
 
+    /// How many swatches `build` makes.
+    fn swatches_made<T>(build: impl FnOnce() -> T) -> (T, usize) {
+        let before = MADE.with(std::cell::Cell::get);
+        let result = build();
+        (result, MADE.with(std::cell::Cell::get) - before)
+    }
+
     #[test]
     fn many_kinds_of_large_tile_are_refused_before_their_swatches_are_made() {
         let large = Projection::Isometric {
@@ -805,15 +821,52 @@ mod tests {
             })
             .collect();
         let view = sized(large, 0.1, 1_400, 800);
-        let refused = ground_scene(&view, &[0], &tiles, 1);
+        let (refused, made) = swatches_made(|| ground_scene(&view, &[0], &tiles, 1));
         assert!(
             matches!(refused, Err(Error::TooManySwatches)),
             "{:?}",
             refused.err()
         );
-        assert!(Error::TooManySwatches.to_string().contains("256 MiB"));
+        let fit = usize::try_from(MAXIMUM_SWATCH_BYTES / (4 * 1_024 * 512)).unwrap();
+        assert_eq!(made, fit, "no swatch past the budget is made");
+        let message = Error::TooManySwatches.to_string();
+        assert!(
+            message.contains("256 MiB") && message.contains("4096"),
+            "{message}"
+        );
         // Fewer kinds fit.
         assert!(ground_scene(&view, &[0], &tiles[..100], 1).is_ok());
+    }
+
+    #[test]
+    fn more_kinds_of_tile_than_a_scene_names_are_refused() {
+        // Small swatches, far under the byte budget, of one more kind than a
+        // scene may name.
+        let protos: Vec<String> = (0..=MAXIMUM_SCENE_TEXTURES)
+            .map(|index| format!("rock{index}"))
+            .collect();
+        let tiles: Vec<GroundTile<'_>> = protos
+            .iter()
+            .enumerate()
+            .map(|(index, proto)| GroundTile {
+                at: [
+                    i64::try_from(index % 80).unwrap() - 40,
+                    i64::try_from(index / 80).unwrap() - 26,
+                ],
+                ground: 0,
+                proto,
+            })
+            .collect();
+        let view = sized(TOP_DOWN, 0.25, 1_280, 800);
+        let (refused, made) = swatches_made(|| ground_scene(&view, &[0], &tiles, 1));
+        assert!(
+            matches!(refused, Err(Error::TooManySwatches)),
+            "{:?}",
+            refused.err()
+        );
+        assert_eq!(made, MAXIMUM_SCENE_TEXTURES);
+        // One kind fewer, with the empty tile's swatch, still fits.
+        assert!(ground_scene(&view, &[0], &tiles[..MAXIMUM_SCENE_TEXTURES - 1], 1).is_ok());
     }
 
     #[test]
