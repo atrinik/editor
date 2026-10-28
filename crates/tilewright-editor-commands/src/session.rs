@@ -26,6 +26,10 @@
 //!   anything is written ([`Error::TooLarge`]): the toolkit checks that its
 //!   inverse fits a transaction, and the session that carrying the inverse
 //!   out stays within [`crate::MAXIMUM_INVERSE_WORK`].
+//! - A world that does not validate with a save's edits, while it loads
+//!   from disk, may have been read while another program was changing it:
+//!   the save is planned once more, and published if it now plans, before
+//!   its edits are blamed.
 //! - A save that cannot be made now keeps its edits pending, and no
 //!   interaction begins until [`Session::flush`] saves them or
 //!   [`Session::discard`] drops them. That covers a file that cannot be read
@@ -189,6 +193,21 @@ pub struct Session {
     redo: Vec<Step>,
     rejected: Option<Rejected>,
     recovery: Option<String>,
+    /// Runs once between a failed plan and the check of the world on disk,
+    /// as another program would.
+    #[cfg(test)]
+    interleave: Interleave,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct Interleave(Option<Box<dyn FnOnce()>>);
+
+#[cfg(test)]
+impl fmt::Debug for Interleave {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Interleave")
+    }
 }
 
 impl Session {
@@ -218,6 +237,8 @@ impl Session {
             redo: Vec::new(),
             rejected: None,
             recovery: None,
+            #[cfg(test)]
+            interleave: Interleave::default(),
         }
     }
 
@@ -645,10 +666,7 @@ impl Session {
     /// Carries out and publishes `text` against the tree, then takes the
     /// world it produced as the session's and rebuilds the preview.
     fn publish(&mut self, text: &str) -> Result<Published, Error> {
-        let planned = match preview(&self.document, TRANSACTION_NAME, text) {
-            Ok(planned) => planned,
-            Err(PreviewError::Rejected(problems)) => return Err(self.classify(problems)),
-        };
+        let planned = self.plan(text)?;
         let work = planned.inverse_work();
         if work > MAXIMUM_INVERSE_WORK {
             return Err(Error::TooLarge(format!(
@@ -659,14 +677,7 @@ impl Session {
         }
         // A directory that cannot be read here is a problem of the disk, not
         // of the edits, so they wait like any save that was not published.
-        let unchecked = planned.unchecked_access().map_err(|problems| {
-            Error::Publish(PublishError {
-                applied: false,
-                durable: true,
-                cleaned: true,
-                problems,
-            })
-        })?;
+        let unchecked = planned.unchecked_access().map_err(waiting)?;
         if !self.options.unchecked_access
             && let Some(unchecked) = unchecked
         {
@@ -696,44 +707,31 @@ impl Session {
         Ok(Published { planned, warning })
     }
 
-    /// Why the toolkit would not carry a transaction out, as what the session
-    /// does about it. A problem with the transaction itself, such as a
-    /// conflict, its shape or a limit, is the edits': they are rejected, and
-    /// a limit is a save too large. A file that cannot be read is the
-    /// disk's: the edits wait. A world that does not validate is the edits'
-    /// when the world on disk loads without them, and the disk's when it
-    /// does not.
-    fn classify(&self, problems: Vec<Diagnostic>) -> Error {
-        let disk = |problem: &Diagnostic| matches!(problem.code, "tx.io" | "source.io");
-        let waiting = |problems| {
-            Error::Publish(PublishError {
-                applied: false,
-                durable: true,
-                cleaned: true,
-                problems,
-            })
-        };
-        if problems.iter().all(disk) {
-            return waiting(problems);
+    /// Plans `text` against the tree. A world that does not validate with
+    /// the edits while it loads from disk may have been read while another
+    /// program was changing it, so the text is planned once more before
+    /// the edits are blamed.
+    fn plan(&mut self, text: &str) -> Result<Preview, Error> {
+        let mut replanned = false;
+        loop {
+            let problems = match preview(&self.document, TRANSACTION_NAME, text) {
+                Ok(planned) => return Ok(planned),
+                Err(PreviewError::Rejected(problems)) => problems,
+            };
+            #[cfg(test)]
+            if let Some(interleave) = self.interleave.0.take() {
+                interleave();
+            }
+            let root = self.document.root();
+            match verdict(&problems, || WorldDocument::open(root).is_ok()) {
+                Verdict::Replan if !replanned => replanned = true,
+                Verdict::Replan | Verdict::Reject => {
+                    return Err(Error::Rejected(PreviewError::Rejected(problems)));
+                }
+                Verdict::TooLarge(reason) => return Err(Error::TooLarge(reason)),
+                Verdict::Wait => return Err(waiting(problems)),
+            }
         }
-        // Past its cap the toolkit ends the problems with a note, a limit at
-        // the transaction's own name, that there may be more: that is not a
-        // limit the edits reach.
-        let note = problems.len() >= limits::DIAGNOSTICS
-            && problems
-                .last()
-                .is_some_and(|last| last.code == "tx.limit" && last.path == TRANSACTION_NAME);
-        let reported = &problems[..problems.len() - usize::from(note)];
-        let own = reported
-            .iter()
-            .any(|problem| problem.path == TRANSACTION_NAME && !disk(problem));
-        if own && let Some(limit) = reported.iter().find(|problem| problem.code == "tx.limit") {
-            return Error::TooLarge(limit.message.clone());
-        }
-        if own || WorldDocument::open(self.document.root()).is_ok() {
-            return Error::Rejected(PreviewError::Rejected(problems));
-        }
-        waiting(problems)
     }
 
     /// Reads the world from disk again, after a rejected save, so the next
@@ -752,6 +750,65 @@ impl Session {
         }
         self.undo.push(step);
     }
+}
+
+/// What the session does about a plan the toolkit refused.
+#[derive(Debug, Eq, PartialEq)]
+enum Verdict {
+    /// The disk's problem: the edits wait.
+    Wait,
+    /// The edits' problem: they are dropped.
+    Reject,
+    /// The edits reach a limit: they are dropped as too large, and why.
+    TooLarge(String),
+    /// The world did not validate with the edits but loads from disk now:
+    /// plan them once more.
+    Replan,
+}
+
+/// Why the toolkit would not carry a transaction out, as what the session
+/// does about it. A problem with the transaction itself, such as a
+/// conflict or its shape, is the edits', and a limit it reaches makes it
+/// too large. A file that cannot be read is the disk's. A world that does
+/// not validate is the disk's while the world on disk does not load
+/// (`loads_now`), and is planned again while it does.
+fn verdict(problems: &[Diagnostic], loads_now: impl FnOnce() -> bool) -> Verdict {
+    let disk = |problem: &Diagnostic| matches!(problem.code, "tx.io" | "source.io");
+    if problems.iter().all(disk) {
+        return Verdict::Wait;
+    }
+    // Past its cap the toolkit ends the problems with a note, a limit at
+    // the transaction's own name, that there may be more: that is not a
+    // limit the edits reach.
+    let note = problems.len() >= limits::DIAGNOSTICS
+        && problems
+            .last()
+            .is_some_and(|last| last.code == "tx.limit" && last.path == TRANSACTION_NAME);
+    let reported = &problems[..problems.len() - usize::from(note)];
+    let own = reported
+        .iter()
+        .any(|problem| problem.path == TRANSACTION_NAME && !disk(problem));
+    if !own {
+        return if loads_now() {
+            Verdict::Replan
+        } else {
+            Verdict::Wait
+        };
+    }
+    match reported.iter().find(|problem| problem.code == "tx.limit") {
+        Some(limit) => Verdict::TooLarge(limit.message.clone()),
+        None => Verdict::Reject,
+    }
+}
+
+/// Edits that were not published for a reason of the disk's, which wait.
+fn waiting(problems: Vec<Diagnostic>) -> Error {
+    Error::Publish(PublishError {
+        applied: false,
+        durable: true,
+        cleaned: true,
+        problems,
+    })
 }
 
 /// The files a carried-out transaction changes.
@@ -844,3 +901,125 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::{Interleave, Options, Session, TRANSACTION_NAME, Verdict, verdict};
+    use crate::{
+        brush::{Brush, Shape},
+        json_string, transaction,
+    };
+    use std::time::Instant;
+    use tilewright_edit::{Options as PlanOptions, PublishOptions, Transaction, limits};
+    use tilewright_editor_testkit::MEADOW_FILES;
+    use tilewright_source::Diagnostic;
+
+    fn meadow_copy() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let operations: Vec<String> = MEADOW_FILES
+            .iter()
+            .map(|(path, text)| {
+                format!(
+                    "{{\"op\": \"document.create\", \"path\": {}, \"text\": {}}}",
+                    json_string(path),
+                    json_string(text)
+                )
+            })
+            .collect();
+        let text = transaction("Copy the meadow", &operations, &[]);
+        let created = Transaction::parse("copy.jsonc", text).unwrap();
+        tilewright_edit::plan(directory.path(), &created, &PlanOptions::default())
+            .unwrap()
+            .publish_with(&PublishOptions {
+                unchecked_access: true,
+            })
+            .unwrap();
+        directory
+    }
+
+    fn session(root: &std::path::Path) -> Session {
+        Session::open(
+            root,
+            Options {
+                unchecked_access: true,
+                ..Options::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn paint(session: &mut Session, now: Instant, terrain: &str, at: [i64; 2]) {
+        let dot = Brush {
+            shape: Shape::Square,
+            radius: 0,
+        };
+        session
+            .begin_stroke(now, "meadow", 0, terrain, dot)
+            .unwrap();
+        session.stamp(at).unwrap();
+        session.end_stroke(now).unwrap().unwrap();
+    }
+
+    /// A file the loader refuses, in the meadow's plane; it goes when
+    /// dropped.
+    fn stray(root: &std::path::Path) -> tempfile::NamedTempFile {
+        tempfile::Builder::new()
+            .prefix("stray")
+            .suffix(".txt")
+            .tempfile_in(root.join("planes/meadow"))
+            .unwrap()
+    }
+
+    fn problem(path: &str, code: &'static str) -> Diagnostic {
+        Diagnostic {
+            path: path.to_owned(),
+            start: 0,
+            end: 0,
+            line: 1,
+            column: 1,
+            code,
+            message: format!("{code} at {path}"),
+        }
+    }
+
+    #[test]
+    fn a_world_changed_while_a_save_was_planned_does_not_drop_it() {
+        let root = meadow_copy();
+        let mut session = session(root.path());
+        // Another program is midway through a change that leaves the tree
+        // briefly invalid, and finishes it before the session looks again.
+        let midway = stray(root.path());
+        session.interleave = Interleave(Some(Box::new(move || drop(midway))));
+        paint(&mut session, Instant::now(), "sand", [1, 1]);
+        assert!(session.interleave.0.is_none(), "the first plan failed");
+        assert_eq!(session.history().0, ["Paint sand on 1 tile"]);
+        assert!(session.rejected().is_none() && !session.is_waiting());
+    }
+
+    #[test]
+    fn the_note_that_there_may_be_more_problems_is_no_limit() {
+        let mut conflicts: Vec<Diagnostic> = (0..limits::DIAGNOSTICS - 1)
+            .map(|_| problem(TRANSACTION_NAME, "tx.conflict"))
+            .collect();
+        conflicts.push(problem(TRANSACTION_NAME, "tx.limit"));
+        assert_eq!(verdict(&conflicts, || true), Verdict::Reject);
+        // A limit among fewer problems is one the edits reach.
+        let limit = [problem(TRANSACTION_NAME, "tx.limit")];
+        assert_eq!(
+            verdict(&limit, || true),
+            Verdict::TooLarge("tx.limit at editor.jsonc".to_owned())
+        );
+        // So is one among those reported before the note.
+        conflicts[0] = problem(TRANSACTION_NAME, "tx.limit");
+        assert!(matches!(verdict(&conflicts, || true), Verdict::TooLarge(_)));
+    }
+
+    #[test]
+    fn problems_elsewhere_are_planned_again_while_the_world_loads() {
+        let elsewhere = [problem("planes/meadow/stray.txt", "source.unexpected_file")];
+        assert_eq!(verdict(&elsewhere, || true), Verdict::Replan);
+        assert_eq!(verdict(&elsewhere, || false), Verdict::Wait);
+        let disk = [problem(TRANSACTION_NAME, "tx.io")];
+        assert_eq!(verdict(&disk, || true), Verdict::Wait);
+    }
+}
