@@ -88,8 +88,8 @@ anything is written; a save that cannot be made now, because a file cannot be
 read or written or the world does not load for reasons of its own, waits to
 be saved again or discarded. The `paint` command strokes
 the terrain brush from the command line: it prints the transaction, or with
-`--save INVERSE` keeps the inverse outside the source tree and then
-publishes the change.
+`--save INVERSE` checks the change as the window checks each save, keeps the
+inverse outside the source tree and then publishes the change.
 
 ## Safety and releases
 

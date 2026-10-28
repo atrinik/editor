@@ -140,6 +140,27 @@ impl Preview {
             .saturating_add(inverse.len() as u64)
     }
 
+    /// Checks that this save can be undone: the check every forward save
+    /// passes before anything is written, from the session and from `paint
+    /// --save` alike. Undo and redo publish what it passed, and are not
+    /// checked again. For now it bounds the work carrying out the inverse
+    /// takes ([`Preview::inverse_work`]); the toolkit's own proof that the
+    /// inverse can be planned is to replace it.
+    ///
+    /// # Errors
+    /// Why the save could not be undone, in words.
+    pub fn check_undo(&self) -> Result<(), String> {
+        let work = self.inverse_work();
+        if work > MAXIMUM_INVERSE_WORK {
+            return Err(format!(
+                "undoing it could take {} MiB of work, past the {} MiB one undo may take",
+                work >> 20,
+                MAXIMUM_INVERSE_WORK >> 20
+            ));
+        }
+        Ok(())
+    }
+
     /// Writes the inverse to a new file at `path`, atomically, through the
     /// toolkit: the recovery record to keep before publishing. Returns
     /// whether the new name is durable too.

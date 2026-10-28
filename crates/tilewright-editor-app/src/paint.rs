@@ -18,9 +18,10 @@ pub const USAGE: &str = "paint ROOT --plane PLANE --terrain TERRAIN [--layer LAY
 paint strokes the brush through the tiles X,Y in order, painting TERRAIN of
 the profile's transitions on LAYER (default 0) of PLANE. Without --save it
 prints the transaction and the files it would change, writing nothing. With
---save it writes the transaction's inverse to INVERSE, which must not exist,
-and then publishes the change; applying INVERSE with `tilewright tx apply`
-undoes it. Where publishing cannot check everything, on macOS and Windows
+--save it checks the change as the window checks each save, refusing one too
+large to undo, writes the transaction's inverse to INVERSE, which must not
+exist, and then publishes the change; applying INVERSE with
+`tilewright tx apply` undoes it. Where publishing cannot check everything, on macOS and Windows
 and on Linux for a tree on a file system that hides its access control
 lists, saving also needs --unchecked-access, accepting what it says is not
 checked.";
@@ -228,6 +229,10 @@ fn execute(request: &Request, notice: &mut dyn FnMut(&str)) -> Result<String, St
         }
         notice(&format!("saving without these checks: {unchecked}"));
     }
+    // The same check as every save the window makes.
+    planned
+        .check_undo()
+        .map_err(|reason| format!("the stroke is too large to save as one step: {reason}"))?;
     // Checked just before the write, so the folder is what it names now.
     outside(root, Path::new(path))?;
     let durable = planned

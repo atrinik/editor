@@ -24,8 +24,9 @@
 //!   there now.
 //! - A save too large to save or to undo is refused the same way, before
 //!   anything is written ([`Error::TooLarge`]): the toolkit checks that its
-//!   inverse fits a transaction, and the session that carrying the inverse
-//!   out stays within [`crate::MAXIMUM_INVERSE_WORK`].
+//!   inverse fits a transaction, and [`Preview::check_undo`] that it can be
+//!   carried out. Undo and redo publish what those checks passed, and are
+//!   not checked again.
 //! - A world that does not validate with a save's edits, while it loads
 //!   from disk, may have been read while another program was changing it:
 //!   the save is planned once more, and published if it now plans, before
@@ -46,7 +47,7 @@
 //! test.
 
 use crate::{
-    Error as PreviewError, MAXIMUM_INVERSE_WORK, Preview,
+    Error as PreviewError, Preview,
     brush::{self, Brush, StampError, Stroke},
     preview, transaction,
 };
@@ -526,7 +527,7 @@ impl Session {
             return Ok(None);
         };
         let title = title(&self.pending);
-        let published = match self.publish(&text) {
+        let published = match self.publish(&text, true) {
             Ok(published) => published,
             Err(error @ (Error::Rejected(_) | Error::TooLarge(_))) => {
                 self.pending.clear();
@@ -589,7 +590,7 @@ impl Session {
         let title = step.title();
         let (mut files, mut warning, mut undone) = (BTreeSet::new(), None, Vec::new());
         while let Some(save) = step.saves.pop() {
-            match self.publish(&save.inverse) {
+            match self.publish(&save.inverse, false) {
                 Ok(published) => {
                     files.extend(changed(&published.planned));
                     warning = warning.or(published.warning);
@@ -640,7 +641,7 @@ impl Session {
         let (mut files, mut warning, mut redone) = (BTreeSet::new(), None, Vec::new());
         step.saves.reverse();
         while let Some(save) = step.saves.pop() {
-            match self.publish(&save.forward) {
+            match self.publish(&save.forward, false) {
                 Ok(published) => {
                     files.extend(changed(&published.planned));
                     warning = warning.or(published.warning);
@@ -673,16 +674,13 @@ impl Session {
     }
 
     /// Carries out and publishes `text` against the tree, then takes the
-    /// world it produced as the session's and rebuilds the preview.
-    fn publish(&mut self, text: &str) -> Result<Published, Error> {
+    /// world it produced as the session's and rebuilds the preview. A
+    /// `forward` save, which is not an undo or redo, is first checked to be
+    /// one that can be undone.
+    fn publish(&mut self, text: &str, forward: bool) -> Result<Published, Error> {
         let planned = self.plan(text)?;
-        let work = planned.inverse_work();
-        if work > MAXIMUM_INVERSE_WORK {
-            return Err(Error::TooLarge(format!(
-                "undoing it could take {} MiB of work, past the {} MiB one undo may take",
-                work >> 20,
-                MAXIMUM_INVERSE_WORK >> 20
-            )));
+        if forward {
+            planned.check_undo().map_err(Error::TooLarge)?;
         }
         // A directory that cannot be read here is a problem of the disk, not
         // of the edits, so they wait like any save that was not published.
