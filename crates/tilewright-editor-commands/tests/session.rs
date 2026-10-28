@@ -508,39 +508,49 @@ fn thin_stroke(
 }
 
 #[test]
-fn a_thin_stroke_saves_when_its_inverse_fits_and_is_refused_when_not() {
+fn a_thin_stroke_saves_only_when_it_can_be_undone() {
     // Each changed row of an existing chunk is one operation of the
-    // inverse; 1,100 chunks of rows make an inverse past the toolkit's
-    // limits, so that save is refused before anything is written.
+    // inverse, and each palette entry the stroke adds one more, so 1,100
+    // chunks of rows make inverses near the toolkit's limits.
     let root = meadow_with_column(1_100, 0);
     let opened = revision(root.path());
+    // Past them, the save's own inverse is refused.
     let (session, saved) = thin_stroke(root.path(), 35_000);
     assert!(matches!(saved, Err(Error::TooLarge(_))), "{saved:?}");
     assert_eq!(revision(root.path()), opened, "nothing was written");
     assert!(!session.is_waiting() && session.rejected().is_some());
-    // A shorter stroke fits, saves and undoes.
-    let (mut session, saved) = thin_stroke(root.path(), 20_000);
+    // Just under them, the save's inverse fits, but undoing it would build
+    // an inverse of its own past them, each palette entry removed coming
+    // back as a longer insert: refused too, before anything is written.
+    let (session, saved) = thin_stroke(root.path(), 29_600);
+    let Err(Error::TooLarge(reason)) = saved else {
+        panic!("{saved:?}");
+    };
+    assert!(reason.contains("could not be"), "{reason}");
+    assert_eq!(revision(root.path()), opened, "nothing was written");
+    assert!(!session.is_waiting() && session.rejected().is_some());
+    // A stroke whose undo fits saves, undoes and redoes.
+    let (mut session, saved) = thin_stroke(root.path(), 28_000);
     saved.unwrap().unwrap();
     assert_eq!(
-        on_disk(root.path(), [3, 32 + 19_999]).as_deref(),
+        on_disk(root.path(), [3, 32 + 27_999]).as_deref(),
         Some("water")
     );
+    let painted = revision(root.path());
     session.undo().unwrap().unwrap();
     assert_eq!(revision(root.path()), opened);
+    session.redo().unwrap().unwrap();
+    assert_eq!(revision(root.path()), painted);
 }
 
 #[test]
-fn a_save_whose_undo_would_take_too_much_work_is_refused() {
-    // Large chunks make each operation of the inverse expensive: undoing a
-    // stroke down 200 chunks of 200 KB could pass the toolkit's work
-    // budget, so it is refused; down 30 of them it saves and undoes.
+fn a_stroke_over_large_chunks_saves_when_its_undo_fits() {
+    // 200 chunks of 200 KB each: undoing a stroke down all of them reads
+    // and parses each again, well within the toolkit's budgets, so it saves
+    // and undoes byte for byte.
     let root = meadow_with_column(200, 200_000);
     let opened = revision(root.path());
-    let (session, saved) = thin_stroke(root.path(), 200 * 32);
-    assert!(matches!(saved, Err(Error::TooLarge(_))), "{saved:?}");
-    assert_eq!(revision(root.path()), opened);
-    assert!(!session.is_waiting());
-    let (mut session, saved) = thin_stroke(root.path(), 30 * 32);
+    let (mut session, saved) = thin_stroke(root.path(), 200 * 32);
     saved.unwrap().unwrap();
     session.undo().unwrap().unwrap();
     assert_eq!(revision(root.path()), opened);

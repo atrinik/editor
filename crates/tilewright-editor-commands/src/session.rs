@@ -24,9 +24,10 @@
 //!   there now.
 //! - A save too large to save or to undo is refused the same way, before
 //!   anything is written ([`Error::TooLarge`]): the toolkit checks that its
-//!   inverse fits a transaction, and [`Preview::check_undo`] that it can be
-//!   carried out. Undo and redo publish what those checks passed, and are
-//!   not checked again.
+//!   inverse fits a transaction, and [`Preview::check_undo`] that its undo
+//!   and redo can be planned, with the toolkit's own checks. Undo and redo
+//!   publish what those checks passed, and are not checked again. A save
+//!   whose undo is refused for a reason other than a limit is rejected.
 //! - A world that does not validate with a save's edits, while it loads
 //!   from disk, may have been read while another program was changing it:
 //!   the save is planned once more, and published if it now plans, before
@@ -48,9 +49,9 @@
 //! test.
 
 use crate::{
-    Error as PreviewError, Preview,
+    Error as PreviewError, Preview, UndoError,
     brush::{self, Brush, StampError, Stroke},
-    preview, transaction,
+    is_limit, preview, transaction,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -694,7 +695,10 @@ impl Session {
     fn publish(&mut self, text: &str, forward: bool) -> Result<Published, Error> {
         let planned = self.plan(text)?;
         if forward {
-            planned.check_undo().map_err(Error::TooLarge)?;
+            planned.check_undo().map_err(|error| match error {
+                UndoError::TooLarge(reason) => Error::TooLarge(reason),
+                UndoError::Refused(problems) => Error::Rejected(PreviewError::Rejected(problems)),
+            })?;
         }
         // A directory that cannot be read here is a problem of the disk, not
         // of the edits, so they wait like any save that was not published.
@@ -799,8 +803,9 @@ enum Verdict {
 
 /// Why the toolkit would not carry a transaction out, as what the session
 /// does about it. A problem with the transaction itself, such as a
-/// conflict or its shape, is the edits', and a limit it reaches makes it
-/// too large. A file that cannot be read is the disk's. A world that does
+/// conflict or its shape, is the edits', and a limit it reaches, the
+/// toolkit's or the JSONC parser's ([`crate::is_limit`]), makes it too
+/// large. A file that cannot be read is the disk's. A world that does
 /// not validate is the disk's while the world on disk does not load
 /// (`loads_now`), and is planned again while it does.
 fn verdict(problems: &[Diagnostic], loads_now: impl FnOnce() -> bool) -> Verdict {
@@ -826,7 +831,7 @@ fn verdict(problems: &[Diagnostic], loads_now: impl FnOnce() -> bool) -> Verdict
             Verdict::Wait
         };
     }
-    match reported.iter().find(|problem| problem.code == "tx.limit") {
+    match reported.iter().find(|problem| is_limit(problem.code)) {
         Some(limit) => Verdict::TooLarge(limit.message.clone()),
         None => Verdict::Reject,
     }

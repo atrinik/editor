@@ -35,14 +35,6 @@ pub fn json_string(text: &str) -> String {
 /// Who the transactions the editor writes name as their actor.
 pub const ACTOR: &str = "editor:tilewright-editor";
 
-/// Most work, in bytes, the inverse of a save may take to carry out. The
-/// toolkit allows 4 GiB of work for one transaction, and each operation of
-/// an inverse reads the whole file it edits and parses it again after its
-/// edit. A save whose inverse could need more than this is refused before
-/// anything is written, so every saved step can be undone; see
-/// [`Preview::inverse_work`].
-pub const MAXIMUM_INVERSE_WORK: u64 = 3 << 29;
-
 /// Longest transaction title, in characters (TRANSACTIONS.md section 1).
 pub const MAXIMUM_TITLE: usize = 256;
 
@@ -118,47 +110,19 @@ impl Preview {
         self.plan.inverse()
     }
 
-    /// A bound on the work carrying out the inverse takes, as the toolkit
-    /// counts it: each of its operations reads the file it edits and parses
-    /// it again after its edit, so at most twice the largest file the
-    /// transaction changes per operation, plus the inverse's own size. The
-    /// toolkit has already checked that the inverse parses within a
-    /// transaction's limits.
-    #[must_use]
-    pub fn inverse_work(&self) -> u64 {
-        let inverse = self.plan.inverse();
-        let operations = Transaction::parse("inverse.jsonc", inverse)
-            .map_or(u64::MAX, |parsed| parsed.len() as u64);
-        let largest = self
-            .changed()
-            .flat_map(|file| [file.before.as_deref(), file.after.as_deref()])
-            .map(|text| text.map_or(0, str::len) as u64)
-            .max()
-            .unwrap_or(0);
-        operations
-            .saturating_mul(largest.saturating_mul(2))
-            .saturating_add(inverse.len() as u64)
-    }
-
     /// Checks that this save can be undone: the check every forward save
     /// passes before anything is written, from the session and from `paint
-    /// --save` alike. Undo and redo publish what it passed, and are not
-    /// checked again. For now it bounds the work carrying out the inverse
-    /// takes ([`Preview::inverse_work`]); the toolkit's own proof that the
-    /// inverse can be planned is to replace it.
+    /// --save` alike. The toolkit plans the save's inverse against the tree
+    /// the save leaves, and the inverse's own inverse against the tree that
+    /// leaves, with every check planning makes; nothing is read from disk.
+    /// Undo and redo then publish one of the two, and are not checked again.
     ///
     /// # Errors
-    /// Why the save could not be undone, in words.
-    pub fn check_undo(&self) -> Result<(), String> {
-        let work = self.inverse_work();
-        if work > MAXIMUM_INVERSE_WORK {
-            return Err(format!(
-                "undoing it could take {} MiB of work, past the {} MiB one undo may take",
-                work >> 20,
-                MAXIMUM_INVERSE_WORK >> 20
-            ));
-        }
-        Ok(())
+    /// [`UndoError::TooLarge`] when only limits of one transaction refuse
+    /// the undo or redo, so a smaller edit would save, and
+    /// [`UndoError::Refused`] for any other reason.
+    pub fn check_undo(&self) -> Result<(), UndoError> {
+        self.plan.check_undo().map_err(UndoError::from_problems)
     }
 
     /// Writes the inverse to a new file at `path`, atomically, through the
@@ -208,6 +172,79 @@ pub fn preview(document: &WorldDocument, name: &str, text: &str) -> Result<Previ
     Ok(Preview { plan })
 }
 
+/// The codes of a limit of one transaction: the toolkit's budgets and
+/// counts, and the bounds the JSONC parser holds a transaction's text to.
+/// An edit refused only by these would save if it were smaller.
+const LIMITS: [&str; 10] = [
+    "tx.limit",
+    "jsonc.array_limit",
+    "jsonc.depth_limit",
+    "jsonc.input_too_large",
+    "jsonc.line_too_long",
+    "jsonc.object_limit",
+    "jsonc.string_too_long",
+    "jsonc.too_many_comments",
+    "jsonc.too_many_lines",
+    "jsonc.value_limit",
+];
+
+/// Whether `code` is a limit of one transaction: one of the toolkit's
+/// budgets or counts (`tx.limit`), or a bound the JSONC parser holds a
+/// transaction's text to, such as `jsonc.too_many_lines`.
+#[must_use]
+pub fn is_limit(code: &str) -> bool {
+    LIMITS.contains(&code)
+}
+
+/// Why a save could not be undone, found before anything is written.
+#[derive(Debug)]
+pub enum UndoError {
+    /// Only limits of one transaction refuse its undo or redo, so a smaller
+    /// edit would save: why, in the toolkit's words.
+    TooLarge(String),
+    /// The toolkit could not plan its undo or redo for another reason: its
+    /// diagnostics.
+    Refused(Vec<Diagnostic>),
+}
+
+impl UndoError {
+    /// What the toolkit's refusal of an undo means: too large when every
+    /// problem is a limit, refused otherwise.
+    fn from_problems(problems: Vec<Diagnostic>) -> Self {
+        if problems.iter().all(|problem| is_limit(problem.code)) {
+            let reason = problems
+                .first()
+                .map_or_else(String::new, |problem| problem.message.clone());
+            Self::TooLarge(reason)
+        } else {
+            Self::Refused(problems)
+        }
+    }
+}
+
+impl fmt::Display for UndoError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge(reason) => {
+                write!(formatter, "it is too large to save as one step: {reason}")
+            }
+            Self::Refused(problems) => {
+                write!(
+                    formatter,
+                    "its undo could not be planned: {} problem(s)",
+                    problems.len()
+                )?;
+                if let Some(first) = problems.first() {
+                    write!(formatter, "; first: {first}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl std::error::Error for UndoError {}
+
 #[derive(Debug)]
 pub enum Error {
     /// The transaction is malformed, a precondition failed, or the edited
@@ -237,7 +274,7 @@ impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, preview};
+    use super::{Error, UndoError, preview};
     use tilewright_editor_document::WorldDocument;
     use tilewright_editor_testkit::fixture_world;
 
@@ -302,5 +339,40 @@ mod tests {
             panic!("a malformed transaction was accepted");
         };
         assert!(!diagnostics.is_empty());
+    }
+
+    fn problem(code: &'static str) -> tilewright_source::Diagnostic {
+        tilewright_source::Diagnostic {
+            path: "<transaction>".to_owned(),
+            start: 0,
+            end: 0,
+            line: 0,
+            column: 0,
+            code,
+            message: format!("{code}: the transaction could not be undone"),
+        }
+    }
+
+    #[test]
+    fn an_undo_refused_only_by_limits_is_too_large() {
+        for codes in [&["tx.limit"][..], &["jsonc.too_many_lines", "tx.limit"]] {
+            let problems = codes.iter().map(|code| problem(code)).collect();
+            assert!(
+                matches!(UndoError::from_problems(problems), UndoError::TooLarge(reason) if reason.starts_with(codes[0])),
+                "{codes:?}"
+            );
+        }
+        // Splitting would not help with anything else.
+        for codes in [
+            &["tx.conflict"][..],
+            &["tx.limit", "tx.shape"],
+            &["jsonc.expected_value"],
+        ] {
+            let problems = codes.iter().map(|code| problem(code)).collect();
+            assert!(
+                matches!(UndoError::from_problems(problems), UndoError::Refused(_)),
+                "{codes:?}"
+            );
+        }
     }
 }

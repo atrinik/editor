@@ -220,7 +220,7 @@ fn execute(request: &Request, notice: &mut dyn FnMut(&str)) -> Result<String, St
     // to save without every check.
     planned
         .check_undo()
-        .map_err(|reason| format!("the stroke is too large to save as one step: {reason}"))?;
+        .map_err(|error| format!("the stroke cannot be saved, as {error}"))?;
     let unchecked = planned.unchecked_access().map_err(|problems| {
         problems
             .iter()
@@ -337,6 +337,59 @@ mod tests {
             };
             assert!(error.contains(problem), "{words:?}: {error}");
         }
+    }
+
+    #[test]
+    fn a_stroke_that_could_not_be_undone_is_not_saved() {
+        // The meadow over a column of 1,100 chunks of rows: a thin stroke
+        // down 29,600 of them has an inverse that fits a transaction, but
+        // undoing it would not, so it is refused as the window refuses it.
+        let root = meadow_copy();
+        let row = format!("\"{}\"", "gggs".repeat(8));
+        let rows = vec![row; 32].join(", ");
+        for batch in (1..=1_100).collect::<Vec<i64>>().chunks(100) {
+            let operations: Vec<String> = batch
+                .iter()
+                .map(|cy| {
+                    let text = format!(
+                        "{{\"format\": \"tilewright.chunk/1\", \"plane\": \"meadow\", \"layer\": 0, \"chunk\": [0, {cy}], \"terrain\": {{\"ground\": {{\"palette\": {{\"g\": \"grass\", \"s\": \"sand\"}}, \"rows\": [{rows}]}}}}}}\n"
+                    );
+                    format!(
+                        "{{\"op\": \"document.create\", \"path\": \"planes/meadow/layers/0/0_{cy}.jsonc\", \"text\": {}}}",
+                        json_string(&text)
+                    )
+                })
+                .collect();
+            apply(root.path(), &transaction("Column", &operations, &[]));
+        }
+        let opened = revision(root.path());
+        let outside = tempfile::tempdir().unwrap();
+        let inverse = outside.path().join("undo.jsonc");
+        // Points at most 4,000 tiles apart, so the brush joins them.
+        let points: Vec<String> = (0..=8)
+            .map(|step| format!("3,{}", 32 + (step * 4_000).min(29_599)))
+            .collect();
+        let mut words = vec![
+            root.path().to_str().unwrap(),
+            "--plane",
+            "meadow",
+            "--terrain",
+            "water",
+            "--save",
+            inverse.to_str().unwrap(),
+            "--unchecked-access",
+        ];
+        words.extend(points.iter().map(String::as_str));
+        let request = request(&arguments(&words)).unwrap();
+        let Err(error) = execute(&request, &mut |_| {}) else {
+            panic!("the stroke was saved");
+        };
+        assert!(
+            error.starts_with("the stroke cannot be saved, as it is too large to save as one step"),
+            "{error}"
+        );
+        assert!(!inverse.exists(), "no inverse was written");
+        assert_eq!(revision(root.path()), opened, "nothing was published");
     }
 
     #[test]
