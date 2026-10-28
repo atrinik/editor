@@ -370,6 +370,16 @@ impl Workbench {
                     None => reason.to_string(),
                 }
             }
+            SessionError::TooLarge(reason) => {
+                self.stale = true;
+                match self.session.take_rejected() {
+                    Some(rejected) => format!(
+                        "Could not save {}, so it was dropped: the edit is too large to save as one step: {reason}",
+                        rejected.title
+                    ),
+                    None => format!("The edit is too large to save as one step: {reason}"),
+                }
+            }
             SessionError::Stamp(partial) => {
                 if !partial.dirty.is_empty() {
                     self.stale = true;
