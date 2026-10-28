@@ -14,8 +14,7 @@ use tilewright_editor_commands::{
 };
 use tilewright_editor_document::terrain::{ChunkKey, PlaneTerrain};
 use tilewright_editor_preview::ground::{
-    GroundCamera, GroundScene, GroundTile, PickMap, ground_scene, snap_zoom, swatch_color,
-    view_bounds,
+    GroundCamera, GroundScene, GroundTile, PickMap, ground_scene, swatch_color, view_bounds,
 };
 use tilewright_editor_ui::editor::{Action, BrushShape, PaletteEntry, Status};
 use tilewright_render_api::FrameOutput;
@@ -259,11 +258,7 @@ impl Workbench {
                 self.stale = true;
             }
             Action::Zoom(factor) => {
-                // Zoom moves in steps at which every tile spans whole
-                // pixels, so no seam opens between tiles.
-                let current = self.camera.zoom;
-                self.camera.zoom =
-                    snap_zoom(self.camera.projection, current, current * factor, ZOOM);
+                self.camera.zoom = (self.camera.zoom * factor).clamp(*ZOOM.start(), *ZOOM.end());
                 self.stale = true;
             }
             Action::AcceptUncheckedAccess => {
@@ -792,12 +787,36 @@ mod tests {
     }
 
     #[test]
-    fn zoom_moves_in_whole_pixel_steps() {
+    fn a_wheel_notch_spread_over_frames_zooms_as_one() {
         let mut workbench = Workbench::open(&fixture_world("meadow"), None, false).unwrap();
-        workbench.apply(vec![Action::Zoom(1.13)], Instant::now());
-        let tile = f64::from(workbench.camera.zoom) * 32.0;
-        assert!((tile - tile.round()).abs() < 1e-3, "{tile}");
-        assert!(workbench.camera.zoom > 1.0);
+        // Smooth scrolling hands one 40-point notch over in small parts,
+        // one per frame.
+        let part = (10.0_f32 / 400.0).exp();
+        for _ in 0..4 {
+            workbench.apply(vec![Action::Zoom(part)], Instant::now());
+        }
+        assert!(
+            (workbench.camera.zoom - 0.1_f32.exp()).abs() < 1e-4,
+            "{}",
+            workbench.camera.zoom
+        );
+        for _ in 0..4 {
+            workbench.apply(vec![Action::Zoom(part.recip())], Instant::now());
+        }
+        assert!(
+            (workbench.camera.zoom - 1.0).abs() < 1e-4,
+            "{}",
+            workbench.camera.zoom
+        );
+        // The other way, it zooms out by the same factor.
+        for _ in 0..4 {
+            workbench.apply(vec![Action::Zoom(part.recip())], Instant::now());
+        }
+        assert!(
+            (workbench.camera.zoom - (-0.1_f32).exp()).abs() < 1e-4,
+            "{}",
+            workbench.camera.zoom
+        );
     }
 
     #[test]

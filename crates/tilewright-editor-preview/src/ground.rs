@@ -8,6 +8,12 @@
 //! visible. Every tile in view without ground draws as a faint empty tile,
 //! so the pointer finds a tile everywhere through the renderer's semantic
 //! mask, also where nothing is painted yet.
+//!
+//! At some zooms the renderer leaves one-pixel seams between neighbouring
+//! tiles, where the background shows through and the mask holds no tile.
+//! That is a known renderer limitation, fixed in the renderer by snapping
+//! both edges of each quad to the same pixel; until then a pick on a seam
+//! finds the nearest tile.
 
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -31,6 +37,10 @@ pub const MAXIMUM_VIEW_TILES: usize = 30_000;
 /// Most objects a ground view draws: its tiles of every ground layer and its
 /// empty tiles, within the renderer's quad budget.
 pub const MAXIMUM_VIEW_OBJECTS: usize = 120_000;
+
+/// How far, in pixels, a pick looks for a tile where the semantic mask holds
+/// none under the pointer.
+pub const PICK_REACH: i64 = 2;
 
 /// Largest top-down swatch side, in pixels. Top-down ground is drawn at the
 /// tile size whatever its art's, so a larger tile draws this swatch scaled.
@@ -205,60 +215,6 @@ fn swatch_size(projection: Projection) -> Result<(u32, u32), Error> {
     }
 }
 
-const fn gcd(mut left: u32, mut right: u32) -> u32 {
-    while right != 0 {
-        let rest = left % right;
-        left = right;
-        right = rest;
-    }
-    left
-}
-
-/// The step zoom moves in, so that every tile spans whole pixels: a
-/// top-down tile's side, and an isometric tile's half width and half
-/// height, each a whole number of pixels. Between such zooms neighbouring
-/// tiles can leave a pixel uncovered, which would show as a seam and pick
-/// nothing.
-#[must_use]
-pub fn zoom_step(projection: Projection) -> f64 {
-    match projection {
-        Projection::TopDown { tile_size } => 1.0 / f64::from(tile_size.max(1)),
-        Projection::Isometric {
-            tile_width,
-            tile_height,
-        } => 2.0 / f64::from(gcd(tile_width.max(1), tile_height.max(1))),
-    }
-}
-
-/// `wanted` snapped to the nearest [`zoom_step`] within `range`, moving at
-/// least one step from `current` when `wanted` differs from it.
-#[must_use]
-#[allow(clippy::cast_possible_truncation)]
-pub fn snap_zoom(
-    projection: Projection,
-    current: f32,
-    wanted: f32,
-    range: std::ops::RangeInclusive<f32>,
-) -> f32 {
-    let step = zoom_step(projection);
-    let steps = |zoom: f32| f64::from(zoom) / step;
-    let lowest = steps(*range.start()).ceil().max(1.0);
-    let highest = steps(*range.end()).floor().max(lowest);
-    // Whole numbers of steps, as integers, so they compare exactly.
-    let mut chosen = steps(wanted).round() as i64;
-    let now = steps(current).round() as i64;
-    if chosen == now {
-        if wanted > current {
-            chosen = now + 1;
-        } else if wanted < current {
-            chosen = now - 1;
-        }
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let chosen = (chosen as f64).clamp(lowest, highest);
-    (chosen * step) as f32
-}
-
 /// The `ATX1` envelope of a swatch: `color` where the pattern covers the
 /// tile's shape, a diamond in isometric projection, and clear elsewhere.
 fn swatch_pixels(
@@ -309,14 +265,34 @@ impl PickMap {
     }
 
     /// The tile under pixel `(x, y)` of a frame rendered from the scene,
-    /// read from the frame's semantic mask.
+    /// read from the frame's semantic mask. Where the mask holds no tile, as
+    /// on the one-pixel seams the renderer leaves between tiles at some
+    /// zooms, the nearest tile within [`PICK_REACH`] pixels is the one
+    /// under the pointer.
     #[must_use]
     pub fn tile_at(&self, frame: &FrameOutput, x: u32, y: u32) -> Option<[i64; 2]> {
         if x >= frame.width || y >= frame.height {
             return None;
         }
-        let index = usize::try_from(u64::from(y) * u64::from(frame.width) + u64::from(x)).ok()?;
-        self.tile(SemanticId(*frame.semantic_ids.get(index)?))
+        let id = |x: i64, y: i64| -> Option<u32> {
+            let (x, y) = (u32::try_from(x).ok()?, u32::try_from(y).ok()?);
+            if x >= frame.width || y >= frame.height {
+                return None;
+            }
+            let index =
+                usize::try_from(u64::from(y) * u64::from(frame.width) + u64::from(x)).ok()?;
+            frame.semantic_ids.get(index).copied().filter(|id| *id != 0)
+        };
+        let (x, y) = (i64::from(x), i64::from(y));
+        // Rings of growing distance, each read in a fixed order, so the
+        // same pixel always picks the same tile.
+        let found = (0..=PICK_REACH).find_map(|reach| {
+            (-reach..=reach)
+                .flat_map(|dy| (-reach..=reach).map(move |dx| (dx, dy)))
+                .filter(|(dx, dy)| dx.abs().max(dy.abs()) == reach)
+                .find_map(|(dx, dy)| id(x + dx, y + dy))
+        })?;
+        self.tile(SemanticId(found))
     }
 
     fn push(&mut self, at: [i64; 2]) -> Option<SemanticId> {
@@ -521,8 +497,8 @@ impl std::error::Error for Error {}
 #[cfg(test)]
 mod tests {
     use super::{
-        Error, GroundCamera, GroundTile, MAXIMUM_VIEW_TILES, ground_scene, snap_zoom, swatch_color,
-        view_bounds, zoom_step,
+        Error, GroundCamera, GroundTile, MAXIMUM_VIEW_TILES, ground_scene, swatch_color,
+        view_bounds,
     };
     use tilewright_render_api::{
         BackendPreference, FrameOutput, RenderRequest, Renderer, TargetDescriptor, TargetKind,
@@ -709,30 +685,23 @@ mod tests {
     }
 
     #[test]
-    fn snapped_zooms_leave_no_seams() {
+    fn picks_on_seams_find_the_neighbouring_tile() {
         let iso = Projection::Isometric {
             tile_width: 48,
             tile_height: 24,
         };
-        for (projection, wanted) in [
-            (iso, 1.13),
-            (iso, 0.7),
-            (iso, 0.61),
-            (TOP_DOWN, 0.7),
-            (TOP_DOWN, 1.7),
-        ] {
-            let zoom = snap_zoom(projection, 1.0, wanted, 0.25..=8.0);
-            let step = zoom_step(projection);
-            let steps = f64::from(zoom) / step;
-            assert!((steps - steps.round()).abs() < 1e-3, "{zoom}");
-            let (frame, _) = render(&sized(projection, zoom, 200, 160), &[]);
-            assert_eq!(holes(&frame), 0, "{projection:?} at {zoom}");
+        // At a fractional zoom the renderer leaves one-pixel seams.
+        let view = sized(iso, 1.1, 201, 161);
+        let (frame, picks) = render(&view, &[]);
+        let seams: Vec<(u32, u32)> = (0..frame.height)
+            .flat_map(|y| (0..frame.width).map(move |x| (x, y)))
+            .filter(|(x, y)| frame.semantic_ids[(y * frame.width + x) as usize] == 0)
+            .collect();
+        assert!(!seams.is_empty(), "the renderer drew no seam to test");
+        for (x, y) in seams {
+            let tile = picks.tile_at(&frame, x, y);
+            assert!(tile.is_some(), "no tile near seam pixel ({x}, {y})");
         }
-        // A small wheel step still moves one step, within the range.
-        let step = 1.0 / 32.0;
-        assert!((snap_zoom(TOP_DOWN, 1.0, 1.001, 0.25..=8.0) - (1.0 + step)).abs() < 1e-6);
-        assert!((snap_zoom(TOP_DOWN, 0.25, 0.1, 0.25..=8.0) - 0.25).abs() < 1e-6);
-        assert!((snap_zoom(TOP_DOWN, 8.0, 100.0, 0.25..=8.0) - 8.0).abs() < 1e-6);
     }
 
     #[test]
