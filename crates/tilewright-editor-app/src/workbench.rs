@@ -60,7 +60,8 @@ enum Closing {
     Open,
     /// The user asked while edits were unsaved, and is being asked first.
     Asking,
-    /// The window may close.
+    /// The window may close: nothing was unsaved, the user discarded it, or
+    /// a save from the question succeeded without a warning.
     Now,
 }
 
@@ -181,10 +182,26 @@ impl Workbench {
     }
 
     /// Carries out what the user asked for at `now`.
+    ///
+    /// While the user is asked about closing, only "Discard and close" and
+    /// a save from the question that succeeds without a warning close the
+    /// window; any other answer, or a save that fails or warns, keeps it
+    /// open and shows what happened. Moving the view, and the end of a
+    /// stroke already ended, leave the question open.
     pub fn apply(&mut self, actions: Vec<Action>, now: Instant) {
         for action in actions {
+            let asking = self.closing == Closing::Asking;
+            let neutral = matches!(action, Action::Pan(_) | Action::Zoom(_))
+                || (!self.stroking
+                    && matches!(
+                        action,
+                        Action::StrokeMove(_) | Action::StrokeEnd | Action::StrokeCancel
+                    ));
             if let Err(error) = self.carry_out(action, now) {
                 self.message = Some(error);
+            }
+            if asking && !neutral && self.closing == Closing::Asking {
+                self.closing = Closing::Open;
             }
         }
     }
@@ -218,13 +235,7 @@ impl Workbench {
             }
             Action::Undo => self.undo_or_redo(false)?,
             Action::Redo => self.undo_or_redo(true)?,
-            Action::SaveNow => {
-                self.stale = true;
-                let result = self.session.flush(now);
-                if let Some(saved) = self.checked(result)? {
-                    self.saved(&saved);
-                }
-            }
+            Action::SaveNow => self.save_now(now)?,
             Action::Discard => {
                 let result = self.session.discard();
                 self.checked(result)?;
@@ -264,10 +275,7 @@ impl Workbench {
             Action::AcceptUncheckedAccess => {
                 self.consent = None;
                 self.session.set_unchecked_access(true);
-                let result = self.session.flush(now);
-                if let Some(saved) = self.checked(result)? {
-                    self.saved(&saved);
-                }
+                self.save_now(now)?;
             }
         }
         Ok(())
@@ -385,27 +393,67 @@ impl Workbench {
         })
     }
 
-    /// Notes a save, and a problem the toolkit reported after it.
-    fn saved(&mut self, saved: &Saved) {
-        self.message = Some(described("Saved", saved));
-    }
-
-    /// Asks to close the window: it may close at once when nothing is
-    /// unsaved, and otherwise asks the user first.
-    pub fn request_close(&mut self) -> bool {
-        if self.closing == Closing::Now || !self.session.is_dirty() {
-            return true;
-        }
-        self.closing = Closing::Asking;
-        false
-    }
-
-    /// Whether the window may close now: the user discarded the unsaved
-    /// edits, or they were saved while the question was open.
-    pub fn may_close(&mut self) -> bool {
-        if self.closing == Closing::Asking && !self.session.is_dirty() {
+    /// Saves what waits now. Asked from the question about closing, a save
+    /// that succeeds without a warning lets the window close.
+    fn save_now(&mut self, now: Instant) -> Result<(), String> {
+        self.stale = true;
+        let result = self.session.flush(now);
+        let clean = match self.checked(result)? {
+            Some(saved) => self.saved(&saved),
+            None => true,
+        };
+        if self.closing == Closing::Asking && clean && !self.session.is_dirty() {
             self.closing = Closing::Now;
         }
+        Ok(())
+    }
+
+    /// Notes a save, and a problem the toolkit reported after it; whether
+    /// there was none.
+    fn saved(&mut self, saved: &Saved) -> bool {
+        self.message = Some(described("Saved", saved));
+        saved.warning.is_none()
+    }
+
+    /// Asks at `now` to close the window. A stroke still being painted
+    /// ends first, as if the button were released. The window may then
+    /// close at once when nothing is unsaved and ending the stroke reported
+    /// nothing; when something is unsaved the user is asked first, and when
+    /// the stroke's save failed or warned the window stays open to say so.
+    pub fn request_close(&mut self, now: Instant) -> bool {
+        if self.closing == Closing::Now {
+            return true;
+        }
+        let mut reported = false;
+        if self.stroking {
+            self.stroking = false;
+            self.stale = true;
+            let result = self.session.end_stroke(now);
+            reported = match self.checked(result) {
+                Ok(Some(saved)) => !self.saved(&saved),
+                Ok(None) => false,
+                Err(message) => {
+                    self.message = Some(message);
+                    true
+                }
+            };
+        }
+        if self.session.is_dirty() {
+            self.closing = Closing::Asking;
+            return false;
+        }
+        if reported {
+            self.closing = Closing::Open;
+            return false;
+        }
+        self.closing = Closing::Now;
+        true
+    }
+
+    /// Whether the window may close now: nothing was unsaved, the user
+    /// discarded the unsaved edits, or a save from the question succeeded
+    /// without a warning.
+    pub fn may_close(&self) -> bool {
         self.closing == Closing::Now
     }
 
@@ -855,20 +903,115 @@ mod tests {
         assert_eq!(workbench.status(None, None).history.0.len(), 1);
     }
 
+    /// Whether a save here reports no warning: on Windows the toolkit
+    /// cannot make a save durable, and says so after every save.
+    const DURABLE: bool = !cfg!(windows);
+
+    /// A file the loader refuses in the meadow, so saves wait while it is
+    /// there; it goes when dropped.
+    fn stray(root: &std::path::Path) -> tempfile::NamedTempFile {
+        tempfile::Builder::new()
+            .prefix("stray")
+            .suffix(".txt")
+            .tempfile_in(root.join("planes/meadow"))
+            .unwrap()
+    }
+
     #[test]
-    fn closing_with_unsaved_edits_asks_first() {
+    fn closing_with_nothing_unsaved_closes_at_once() {
         let mut workbench = Workbench::open(&fixture_world("meadow"), None, false).unwrap();
-        assert!(workbench.request_close(), "nothing unsaved");
+        assert!(workbench.request_close(Instant::now()));
+        assert!(workbench.may_close());
+    }
+
+    #[test]
+    fn closing_mid_stroke_ends_the_stroke_first() {
+        let root = meadow_copy();
+        let mut workbench = Workbench::open(root.path(), None, true).unwrap();
         let now = Instant::now();
-        // A stroke still being painted is unsaved.
         workbench.apply(vec![begin([16, 16], "water")], now);
-        assert!(!workbench.request_close());
+        // The stroke is saved as if the button were released.
+        assert_eq!(workbench.request_close(now), DURABLE);
+        let status = workbench.status(None, None);
+        assert_eq!(status.history.0, ["Paint water on 1 tile"]);
+        assert!(!status.dirty && !status.closing);
+        if !DURABLE {
+            // The warning stays shown, and closing again closes.
+            assert!(status.message.unwrap().contains(", but: "));
+            assert!(workbench.request_close(now));
+        }
+        // The release that follows has nothing left to end.
+        workbench.apply(vec![Action::StrokeEnd], now);
+        assert_eq!(workbench.status(None, None).history.0.len(), 1);
+    }
+
+    #[test]
+    fn closing_while_a_save_waits_asks_and_only_explicit_answers_close() {
+        let root = meadow_copy();
+        let mut workbench = Workbench::open(root.path(), None, true).unwrap();
+        let now = Instant::now();
+        let stray = stray(root.path());
+        workbench.apply(vec![begin([1, 1], "sand"), Action::StrokeEnd], now);
+        assert!(workbench.status(None, None).waiting);
+        assert!(!workbench.request_close(now));
         assert!(workbench.status(None, None).closing);
-        assert!(!workbench.may_close());
+        // Keep editing returns to the editor.
         workbench.apply(vec![Action::KeepEditing], now);
-        assert!(!workbench.status(None, None).closing);
-        assert!(!workbench.request_close());
-        // Discarding drops the stroke, so the fixture is never written.
+        assert!(!workbench.status(None, None).closing && !workbench.may_close());
+        // Moving the view leaves the question open.
+        assert!(!workbench.request_close(now));
+        workbench.apply(vec![Action::Pan(egui::vec2(4.0, 0.0))], now);
+        assert!(workbench.status(None, None).closing);
+        // Saving again while the save still waits keeps the window open
+        // and says why.
+        workbench.apply(vec![Action::SaveNow], now);
+        let status = workbench.status(None, None);
+        assert!(!status.closing && !workbench.may_close());
+        assert!(status.message.is_some() && status.waiting);
+        // Once the problem is gone, saving from the question closes.
+        drop(stray);
+        assert!(!workbench.request_close(now));
+        workbench.apply(vec![Action::SaveNow], now);
+        assert_eq!(workbench.may_close(), DURABLE);
+        assert!(!workbench.status(None, None).dirty);
+    }
+
+    #[test]
+    fn a_rejected_save_again_keeps_the_window_open() {
+        let root = meadow_copy();
+        let mut workbench = Workbench::open(root.path(), None, true).unwrap();
+        let now = Instant::now();
+        let stray = stray(root.path());
+        workbench.apply(vec![begin([1, 1], "sand"), Action::StrokeEnd], now);
+        assert!(!workbench.request_close(now));
+        drop(stray);
+        // Meanwhile another program painted the same tile.
+        outside_edit(root.path(), [1, 1], "water");
+        workbench.apply(vec![Action::SaveNow], now);
+        let status = workbench.status(None, None);
+        assert!(!workbench.may_close() && !status.closing);
+        let message = status.message.unwrap();
+        assert!(
+            message.starts_with("Could not save Paint sand on 1 tile, so it was dropped"),
+            "{message}"
+        );
+        // Nothing is unsaved now, so closing again closes.
+        assert!(workbench.request_close(now));
+    }
+
+    #[test]
+    fn releasing_the_button_under_the_question_does_not_close() {
+        let root = meadow_copy();
+        let mut workbench = Workbench::open(root.path(), None, true).unwrap();
+        let now = Instant::now();
+        let _stray = stray(root.path());
+        workbench.apply(vec![begin([1, 1], "sand")], now);
+        // Ending the stroke leaves its save waiting, so the user is asked.
+        assert!(!workbench.request_close(now));
+        workbench.apply(vec![Action::StrokeMove([2, 1]), Action::StrokeEnd], now);
+        let status = workbench.status(None, None);
+        assert!(status.closing && status.waiting && !workbench.may_close());
+        // Discarding closes, and drops the waiting save.
         workbench.apply(vec![Action::DiscardAndClose], now);
         assert!(workbench.may_close());
         assert!(!workbench.status(None, None).dirty);

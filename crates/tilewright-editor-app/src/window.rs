@@ -109,7 +109,7 @@ impl eframe::App for EditorWindow {
         // Closing with unsaved edits asks first; the window stays open
         // until they are saved or discarded.
         if ui.ctx().input(|input| input.viewport().close_requested())
-            && !self.workbench.request_close()
+            && !self.workbench.request_close(now)
         {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);

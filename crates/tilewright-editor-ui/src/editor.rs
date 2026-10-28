@@ -338,6 +338,14 @@ impl EditorUi {
         // While a save waits, painting would only add to what cannot be
         // saved, so the view takes no strokes until it is answered.
         let blocked = status.waiting || status.unchecked_access.is_some() || status.closing;
+        // A question that opens mid-stroke, as when the window is asked to
+        // close, ends the stroke: the button's release then belongs to
+        // nothing.
+        if self.stroking && blocked {
+            actions.push(Action::StrokeEnd);
+            self.stroking = false;
+            self.last_tile = None;
+        }
         if !self.stroking && !blocked && pressed && response.hovered() {
             if let (Some(tile), Some(entry)) =
                 (tile, self.terrain.and_then(|index| self.palette.get(index)))
@@ -407,8 +415,11 @@ impl EditorUi {
             ui.label(if status.waiting {
                 "The last save failed, so its edits are not in the world yet."
             } else {
-                "A stroke is still being painted."
+                "Some edits are not saved yet."
             });
+            if let Some(message) = &status.message {
+                ui.add(egui::Label::new(message).wrap());
+            }
             ui.horizontal(|ui| {
                 if status.waiting && self.dialog_button(ui, "Save again") {
                     actions.push(Action::SaveNow);
@@ -663,6 +674,34 @@ mod tests {
             let at = window.ui.dialog_buttons[choice].center();
             assert_eq!(window.click(at), [expected]);
         }
+    }
+
+    #[test]
+    fn releasing_a_stroke_over_the_question_answers_nothing() {
+        let mut window = Window::new(palette());
+        window.ui.terrain = Some(0);
+        window.frame(vec![Event::PointerMoved(IN_VIEW)]);
+        let begun = window.frame(vec![button(IN_VIEW, true)]);
+        assert!(
+            matches!(begun[..], [Action::StrokeBegin { .. }]),
+            "{begun:?}"
+        );
+        // Closing mid-stroke asks while the button is still held.
+        window.status.dirty = true;
+        window.status.waiting = true;
+        window.status.closing = true;
+        // The question ends the stroke.
+        let mut actions = Vec::new();
+        for _ in 0..5 {
+            actions.extend(window.frame(Vec::new()));
+        }
+        assert_eq!(actions, [Action::StrokeEnd]);
+        // Releasing the button over "Discard and close" is not a click.
+        let discard = window.ui.dialog_buttons[1].center();
+        let mut actions = window.frame(vec![Event::PointerMoved(discard)]);
+        actions.extend(window.frame(vec![button(discard, false)]));
+        actions.extend(window.frame(Vec::new()));
+        assert_eq!(actions, []);
     }
 
     #[test]
