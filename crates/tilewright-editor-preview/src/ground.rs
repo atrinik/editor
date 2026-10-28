@@ -17,13 +17,14 @@
 
 use sha2::{Digest as _, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     fmt,
     sync::Arc,
 };
 use tilewright_render_api::FrameOutput;
 use tilewright_render_resources::{
-    Error as ResourceError, ResourceBlob, ResourceProvider, ResourceRequest,
+    DEFAULT_MAXIMUM_TEXTURE_WORKING_SET_BYTES, Error as ResourceError, MAXIMUM_SCENE_TEXTURES,
+    ResourceBlob, ResourceProvider, ResourceRequest,
 };
 use tilewright_render_world::{
     Anchor, Camera, HeightField, Projection, Stretch, TextureRef, WorldObject, WorldView,
@@ -41,6 +42,11 @@ pub const MAXIMUM_VIEW_OBJECTS: usize = 120_000;
 /// How far, in pixels, a pick looks for a tile where the semantic mask holds
 /// none under the pointer.
 pub const PICK_REACH: i64 = 2;
+
+/// Most bytes a view's decoded swatch textures take together: the renderer's
+/// working set for the textures of one scene. A view also names at most
+/// [`MAXIMUM_SCENE_TEXTURES`] swatches.
+pub const MAXIMUM_SWATCH_BYTES: u64 = DEFAULT_MAXIMUM_TEXTURE_WORKING_SET_BYTES;
 
 /// Largest top-down swatch side, in pixels. Top-down ground is drawn at the
 /// tile size whatever its art's, so a larger tile draws this swatch scaled.
@@ -172,6 +178,47 @@ fn hsl(hue: f64, saturation: f64, lightness: f64) -> [u8; 3] {
 #[derive(Debug, Default)]
 pub struct Swatches {
     textures: BTreeMap<ResourceId, (Vec<u8>, Digest256)>,
+    /// The decoded size of every texture, as the renderer counts it.
+    bytes: u64,
+}
+
+impl Swatches {
+    /// The texture of a `size` swatch of `key`, made and hashed the first
+    /// time a tile shows it. A swatch past [`MAXIMUM_SWATCH_BYTES`] or
+    /// [`MAXIMUM_SCENE_TEXTURES`] is refused before it is made.
+    fn swatch(
+        &mut self,
+        projection: Projection,
+        (width, height): (u32, u32),
+        key: &str,
+        pattern: Pattern,
+        color: [u8; 4],
+    ) -> Result<TextureRef, Error> {
+        let id = texture_id(key, pattern, width, height);
+        let made = self.textures.len();
+        let digest = match self.textures.entry(id) {
+            Entry::Occupied(entry) => entry.get().1,
+            Entry::Vacant(entry) => {
+                let bytes = self
+                    .bytes
+                    .saturating_add(4 * u64::from(width) * u64::from(height));
+                if bytes > MAXIMUM_SWATCH_BYTES || made >= MAXIMUM_SCENE_TEXTURES {
+                    return Err(Error::TooManySwatches);
+                }
+                self.bytes = bytes;
+                let pixels = swatch_pixels(projection, (width, height), pattern, color);
+                let digest = Digest256(Sha256::digest(pixels.as_slice()).into());
+                entry.insert((pixels, digest)).1
+            }
+        };
+        Ok(TextureRef {
+            id,
+            revision: 1,
+            digest,
+            width,
+            height,
+        })
+    }
 }
 
 impl ResourceProvider for Swatches {
@@ -381,24 +428,9 @@ pub fn ground_scene(
         return Err(Error::TooManyTiles);
     }
     shown.sort_by_key(|tile| (tile.at[1], tile.at[0], tile.ground));
-    let (width, height) = swatch_size(camera.projection)?;
-    let mut swatches = Swatches::default();
+    let size = swatch_size(camera.projection)?;
     // Each texture is made and hashed once, however many tiles show it.
-    let mut texture = |key: &str, pattern: Pattern, color: [u8; 4]| -> TextureRef {
-        let id = texture_id(key, pattern, width, height);
-        let (_, digest) = swatches.textures.entry(id).or_insert_with(|| {
-            let bytes = swatch_pixels(camera.projection, (width, height), pattern, color);
-            let digest = Digest256(Sha256::digest(bytes.as_slice()).into());
-            (bytes, digest)
-        });
-        TextureRef {
-            id,
-            revision: 1,
-            digest: *digest,
-            width,
-            height,
-        }
-    };
+    let mut swatches = Swatches::default();
     let mut picks = PickMap::default();
     let mut objects = Vec::with_capacity(shown.len() + area);
     let mut covered = BTreeSet::new();
@@ -407,11 +439,13 @@ pub fn ground_scene(
             .get(tile.ground)
             .ok_or(Error::UnknownGround(tile.ground))?;
         let [red, green, blue] = swatch_color(tile.proto);
-        let texture = texture(
+        let texture = swatches.swatch(
+            camera.projection,
+            size,
             tile.proto,
             Pattern::of(tile.ground),
             [red, green, blue, 0xff],
-        );
+        )?;
         let id = picks.push(tile.at).ok_or(Error::TooManyTiles)?;
         objects.push(WorldObject::new(id, tile.at, rank, Anchor::Ground, texture));
         // Only a solid swatch covers its whole tile; under the others an
@@ -420,7 +454,7 @@ pub fn ground_scene(
             covered.insert(tile.at);
         }
     }
-    let empty = texture("", Pattern::Solid, EMPTY);
+    let empty = swatches.swatch(camera.projection, size, "", Pattern::Solid, EMPTY)?;
     let lowest = ranks.iter().copied().min().unwrap_or(0);
     for y in low[1]..=high[1] {
         for x in low[0]..=high[0] {
@@ -469,6 +503,10 @@ pub enum Error {
     TooManyTiles,
     /// Isometric tiles wider or taller than [`MAXIMUM_ISOMETRIC_TILE`].
     TileTooLarge,
+    /// The view shows so many kinds of tile that their swatches would take
+    /// more than [`MAXIMUM_SWATCH_BYTES`], or be more than
+    /// [`MAXIMUM_SCENE_TEXTURES`] textures.
+    TooManySwatches,
     UnknownGround(usize),
     Render(tilewright_render_world::Error),
 }
@@ -479,6 +517,11 @@ impl fmt::Display for Error {
             Self::TooManyTiles => write!(
                 formatter,
                 "the view holds more than {MAXIMUM_VIEW_TILES} tiles; zoom in"
+            ),
+            Self::TooManySwatches => write!(
+                formatter,
+                "the view shows too many kinds of tile for their swatches to fit in {} MiB; zoom in",
+                MAXIMUM_SWATCH_BYTES >> 20
             ),
             Self::TileTooLarge => write!(
                 formatter,
@@ -702,6 +745,38 @@ mod tests {
             let tile = picks.tile_at(&frame, x, y);
             assert!(tile.is_some(), "no tile near seam pixel ({x}, {y})");
         }
+    }
+
+    #[test]
+    fn many_kinds_of_large_tile_are_refused_before_their_swatches_are_made() {
+        let large = Projection::Isometric {
+            tile_width: 1_024,
+            tile_height: 512,
+        };
+        // Each swatch is 2 MiB decoded; 128 of them fill the budget.
+        let protos: Vec<String> = (0..140).map(|index| format!("rock{index}")).collect();
+        let tiles: Vec<GroundTile<'_>> = protos
+            .iter()
+            .enumerate()
+            .map(|(index, proto)| GroundTile {
+                at: [
+                    i64::try_from(index % 13).unwrap() - 6,
+                    i64::try_from(index / 13).unwrap() - 6,
+                ],
+                ground: 0,
+                proto,
+            })
+            .collect();
+        let view = sized(large, 0.1, 1_400, 800);
+        let refused = ground_scene(&view, &[0], &tiles, 1);
+        assert!(
+            matches!(refused, Err(Error::TooManySwatches)),
+            "{:?}",
+            refused.err()
+        );
+        assert!(Error::TooManySwatches.to_string().contains("256 MiB"));
+        // Fewer kinds fit.
+        assert!(ground_scene(&view, &[0], &tiles[..100], 1).is_ok());
     }
 
     #[test]
