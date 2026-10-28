@@ -1140,6 +1140,58 @@ mod tests {
     }
 
     #[test]
+    fn a_stroke_too_large_to_save_says_what_it_dropped() {
+        // The meadow over a column of 1,100 chunks of rows, made by
+        // publishing transactions, so a thin stroke down 35,000 of them has
+        // an inverse past the toolkit's limits.
+        let root = meadow_copy();
+        let row = format!("\"{}\"", "gggs".repeat(8));
+        let rows = vec![row; 32].join(", ");
+        for batch in (1..=1_100).collect::<Vec<i64>>().chunks(100) {
+            let operations: Vec<String> = batch
+                .iter()
+                .map(|cy| {
+                    let text = format!(
+                        "{{\"format\": \"tilewright.chunk/1\", \"plane\": \"meadow\", \"layer\": 0, \"chunk\": [0, {cy}], \"terrain\": {{\"ground\": {{\"palette\": {{\"g\": \"grass\", \"s\": \"sand\"}}, \"rows\": [{rows}]}}}}}}\n"
+                    );
+                    format!(
+                        "{{\"op\": \"document.create\", \"path\": \"planes/meadow/layers/0/0_{cy}.jsonc\", \"text\": {}}}",
+                        json_string(&text)
+                    )
+                })
+                .collect();
+            let text = transaction("Column", &operations, &[]);
+            let created = tilewright_edit::Transaction::parse("column.jsonc", text).unwrap();
+            tilewright_edit::plan(root.path(), &created, &tilewright_edit::Options::default())
+                .unwrap()
+                .publish_with(&tilewright_edit::PublishOptions {
+                    unchecked_access: true,
+                })
+                .unwrap();
+        }
+        let mut workbench = Workbench::open(root.path(), None, true).unwrap();
+        let now = Instant::now();
+        // Pointer samples at most 4,000 tiles apart, so the brush joins them.
+        let mut actions = vec![begin([3, 32], "water")];
+        actions
+            .extend((1..=9).map(|step| Action::StrokeMove([3, 32 + (step * 4_000).min(34_999)])));
+        actions.push(Action::StrokeEnd);
+        workbench.apply(actions, now);
+        let message = workbench.status(None, None).message.unwrap();
+        assert!(
+            message.starts_with(
+                "Could not save Paint water on 35000 tiles, so it was dropped: the edit is too large to save as one step: "
+            ),
+            "{message}"
+        );
+        assert!(
+            workbench.session.rejected().is_none(),
+            "the message took it"
+        );
+        assert!(workbench.status(None, None).history.0.is_empty());
+    }
+
+    #[test]
     fn a_close_whose_stroke_cannot_be_saved_stays_open_to_say_so() {
         let root = meadow_copy();
         let mut workbench = Workbench::open(root.path(), None, true).unwrap();
