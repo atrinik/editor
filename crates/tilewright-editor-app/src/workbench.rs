@@ -312,46 +312,70 @@ impl Workbench {
 
     fn undo_or_redo(&mut self, redo: bool) -> Result<(), String> {
         self.stale = true;
-        let (undo, redone) = self.session.history();
-        let (what, verb, title, result) = if redo {
-            (
-                "redo",
-                "Redid",
-                redone.first().cloned(),
-                self.session.redo(),
-            )
+        let before = self.session.history();
+        let (words, title, result) = if redo {
+            (REDO, before.1.first().cloned(), self.session.redo())
         } else {
-            ("undo", "Undid", undo.last().cloned(), self.session.undo())
+            (UNDO, before.0.last().cloned(), self.session.undo())
         };
-        match self.step(result, what, title)? {
-            Some(saved) => {
+        let title = title.unwrap_or_default();
+        match result {
+            Ok(Some(saved)) => {
                 if !redo {
                     self.consent = None;
                 }
-                self.message = Some(described(verb, &saved));
+                self.message = Some(described(words.done, &saved));
             }
-            None => self.message = Some(format!("Nothing to {what}")),
+            Ok(None) => self.message = Some(format!("Nothing to {}", words.verb)),
+            Err(error) => return Err(self.step_failed(error, words, &title, &before)),
         }
         Ok(())
     }
 
-    /// An undo or redo result in words: a rejected one says which step it
-    /// could not `what`, and that the world was read again.
-    fn step(
+    /// An undo or redo of step `title` that failed, in words: a rejected one
+    /// says the step stays in the history and the world was read again, and
+    /// one of a joined step that went partway says which part went through
+    /// and which could not. `before` is the history before it.
+    fn step_failed(
         &mut self,
-        result: Result<Option<Saved>, SessionError>,
-        what: &str,
-        title: Option<String>,
-    ) -> Result<Option<Saved>, String> {
-        match result {
-            Err(SessionError::Rejected(reason)) => {
+        error: SessionError,
+        words: StepWords,
+        title: &str,
+        before: &(Vec<String>, Vec<String>),
+    ) -> String {
+        let after = self.session.history();
+        // What went through moved to the other list; the rest stayed.
+        let (done, left) = if words.verb == UNDO.verb {
+            (
+                (after.1.len() > before.1.len()).then(|| after.1.first()),
+                after.0.last(),
+            )
+        } else {
+            (
+                (after.0.len() > before.0.len()).then(|| after.0.last()),
+                after.1.first(),
+            )
+        };
+        let rejected = matches!(error, SessionError::Rejected(_));
+        let reason = match error {
+            SessionError::Rejected(reason) => {
                 self.stale = true;
-                Err(format!(
-                    "Could not {what} {}, so it stays in the history and the world was read again: {reason}",
-                    title.unwrap_or_default()
-                ))
+                reason.to_string()
             }
-            other => self.checked(other),
+            other => self.checked(Err::<(), _>(other)).err().unwrap_or_default(),
+        };
+        let stays = if rejected {
+            ", so it stays in the history and the world was read again"
+        } else {
+            ""
+        };
+        match (done.flatten(), left) {
+            (Some(done), Some(left)) => format!(
+                "{} only part of {title}: {done} is {}, but {left} could not be{stays}: {reason}",
+                words.done, words.participle
+            ),
+            _ if rejected => format!("Could not {} {title}{stays}: {reason}", words.verb),
+            _ => reason,
         }
     }
 
@@ -584,6 +608,26 @@ impl Workbench {
         self.picks.tile_at(frame, x, y)
     }
 }
+
+/// How a message names an undo or a redo.
+#[derive(Clone, Copy)]
+struct StepWords {
+    verb: &'static str,
+    done: &'static str,
+    participle: &'static str,
+}
+
+const UNDO: StepWords = StepWords {
+    verb: "undo",
+    done: "Undid",
+    participle: "undone",
+};
+
+const REDO: StepWords = StepWords {
+    verb: "redo",
+    done: "Redid",
+    participle: "redone",
+};
 
 /// A save, undo or redo in words, with a problem the toolkit reported after
 /// it published every file.
@@ -883,24 +927,94 @@ mod tests {
         let root = meadow_copy();
         let mut workbench = Workbench::open(root.path(), None, true).unwrap();
         let now = Instant::now();
+        let later = |seconds| now + std::time::Duration::from_secs(seconds);
         workbench.apply(vec![begin([20, 20], "sand"), Action::StrokeEnd], now);
+        workbench.apply(vec![begin([24, 24], "water"), Action::StrokeEnd], later(5));
+        let steps = ["Paint sand on 1 tile", "Paint water on 1 tile"];
+        assert_eq!(workbench.status(None, None).history.0, steps);
         outside_edit(root.path(), [1, 1], "water");
         // A save over the outside change is dropped and says so.
-        let later = now + std::time::Duration::from_secs(5);
-        workbench.apply(vec![begin([1, 1], "sand"), Action::StrokeEnd], later);
+        workbench.apply(vec![begin([1, 1], "sand"), Action::StrokeEnd], later(10));
         let message = workbench.status(None, None).message.unwrap();
         assert!(
             message.starts_with("Could not save Paint sand on 1 tile, so it was dropped"),
             "{message}"
         );
-        // An undo over it names the step it could not undo, not the save.
-        workbench.apply(vec![Action::Undo], later);
+        // An undo over it names the last step, which it could not undo,
+        // not the dropped save.
+        workbench.apply(vec![Action::Undo], later(10));
         let message = workbench.status(None, None).message.unwrap();
         assert!(
-            message.starts_with("Could not undo Paint sand on 1 tile, so it stays"),
+            message.starts_with(
+                "Could not undo Paint water on 1 tile, so it stays in the history and the world was read again"
+            ),
             "{message}"
         );
-        assert_eq!(workbench.status(None, None).history.0.len(), 1);
+        assert_eq!(workbench.status(None, None).history.0, steps);
+    }
+
+    #[test]
+    fn a_rejected_redo_says_what_happened() {
+        let root = meadow_copy();
+        let mut workbench = Workbench::open(root.path(), None, true).unwrap();
+        let now = Instant::now();
+        workbench.apply(vec![begin([24, 24], "water"), Action::StrokeEnd], now);
+        workbench.apply(vec![Action::Undo], now);
+        let undone = workbench.status(None, None).message.unwrap();
+        assert!(
+            undone.starts_with("Undid Paint water on 1 tile"),
+            "{undone}"
+        );
+        outside_edit(root.path(), [1, 1], "sand");
+        workbench.apply(vec![Action::Redo], now);
+        let status = workbench.status(None, None);
+        let message = status.message.unwrap();
+        assert!(
+            message.starts_with(
+                "Could not redo Paint water on 1 tile, so it stays in the history and the world was read again"
+            ),
+            "{message}"
+        );
+        assert_eq!(
+            status.history,
+            (vec![], vec!["Paint water on 1 tile".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_joined_step_undone_partway_says_which_part() {
+        let root = meadow_copy();
+        let mut workbench = Workbench::open(root.path(), None, true).unwrap();
+        let now = Instant::now();
+        // Two strokes within the joining window are one undo step.
+        workbench.apply(vec![begin([1, 1], "sand"), Action::StrokeEnd], now);
+        workbench.apply(
+            vec![begin([40, 1], "water"), Action::StrokeEnd],
+            now + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            workbench.status(None, None).history.0,
+            ["Paint sand on 1 tile and 1 more edit"]
+        );
+        // An outside edit to the first stroke's chunk blocks undoing it, not
+        // the second, which undoes first.
+        outside_edit(root.path(), [5, 5], "water");
+        workbench.apply(vec![Action::Undo], now);
+        let status = workbench.status(None, None);
+        let message = status.message.unwrap();
+        assert!(
+            message.starts_with(
+                "Undid only part of Paint sand on 1 tile and 1 more edit: Paint water on 1 tile is undone, but Paint sand on 1 tile could not be, so it stays in the history and the world was read again: "
+            ),
+            "{message}"
+        );
+        assert_eq!(
+            status.history,
+            (
+                vec!["Paint sand on 1 tile".to_owned()],
+                vec!["Paint water on 1 tile".to_owned()]
+            )
+        );
     }
 
     /// Whether a save here reports no warning: on Windows the toolkit
