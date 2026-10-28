@@ -1140,6 +1140,27 @@ mod tests {
     }
 
     #[test]
+    fn a_close_whose_stroke_cannot_be_saved_stays_open_to_say_so() {
+        let root = meadow_copy();
+        let mut workbench = Workbench::open(root.path(), None, true).unwrap();
+        let now = Instant::now();
+        workbench.apply(vec![begin([1, 1], "sand")], now);
+        // Another program paints the tile while the stroke runs, so ending
+        // the stroke to close drops it.
+        outside_edit(root.path(), [1, 1], "water");
+        assert!(!workbench.request_close(now));
+        let status = workbench.status(None, None);
+        assert!(!status.closing && !status.dirty && !workbench.may_close());
+        let message = status.message.unwrap();
+        assert!(
+            message.starts_with("Could not save Paint sand on 1 tile, so it was dropped"),
+            "{message}"
+        );
+        // Closing again closes.
+        assert!(workbench.request_close(now));
+    }
+
+    #[test]
     fn a_rejected_save_again_keeps_the_window_open() {
         let root = meadow_copy();
         let mut workbench = Workbench::open(root.path(), None, true).unwrap();
