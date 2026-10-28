@@ -64,8 +64,11 @@ use tilewright_editor_document::{
 };
 use tilewright_source::Diagnostic;
 
-/// The name the session's transactions carry in the toolkit's diagnostics.
-const TRANSACTION_NAME: &str = "editor.jsonc";
+/// The name the session's transactions carry in the toolkit's diagnostics,
+/// which tells their own problems from the world's. No file of a world can
+/// have it: world paths are of letters, digits, `_`, `.` and `-` (FORMAT.md
+/// section 2), so not even a profile at the root can be named so.
+const TRANSACTION_NAME: &str = "<transaction>";
 
 /// How soon after the last saved interaction another one joins its undo
 /// step.
@@ -1058,7 +1061,7 @@ mod tests {
         let limit = [problem(TRANSACTION_NAME, "tx.limit")];
         assert_eq!(
             verdict(&limit, || true),
-            Verdict::TooLarge("tx.limit at editor.jsonc".to_owned())
+            Verdict::TooLarge("tx.limit at <transaction>".to_owned())
         );
         // So is one among those reported before the note.
         conflicts[0] = problem(TRANSACTION_NAME, "tx.limit");

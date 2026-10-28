@@ -621,6 +621,47 @@ fn a_save_with_more_conflicts_than_reported_is_rejected_with_them() {
     assert!(!session.is_waiting());
 }
 
+/// The meadow with its profile at the root, as `editor.jsonc`, and the
+/// profile's other files beside it.
+fn meadow_with_profile_at_the_root() -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    for (path, text) in MEADOW_FILES {
+        let (path, text) = if *path == "world.jsonc" {
+            (
+                (*path).to_owned(),
+                text.replace("profile/profile.jsonc", "editor.jsonc"),
+            )
+        } else if let Some(rest) = path.strip_prefix("profile/") {
+            let rest = if rest == "profile.jsonc" {
+                "editor.jsonc"
+            } else {
+                rest
+            };
+            (rest.to_owned(), (*text).to_owned())
+        } else {
+            ((*path).to_owned(), (*text).to_owned())
+        };
+        let target = directory.path().join(&path);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, text).unwrap();
+    }
+    directory
+}
+
+#[test]
+fn a_world_file_is_never_taken_for_the_transaction() {
+    // Whatever the world names its files, its problems are not the edits'
+    // own: with the profile at the root, a profile broken by another
+    // program keeps the save waiting, as anywhere else.
+    let root = meadow_with_profile_at_the_root();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
+    std::fs::write(root.path().join("editor.jsonc"), "{ not valid").unwrap();
+    paint(&mut session, Instant::now(), "sand", &[[1, 1]]);
+    let result = session.end_stroke(Instant::now());
+    assert!(matches!(result, Err(Error::Publish(_))), "{result:?}");
+    assert!(session.is_waiting() && session.rejected().is_none());
+}
+
 #[test]
 fn a_problem_elsewhere_in_the_tree_keeps_the_save_waiting() {
     let root = meadow_copy();
