@@ -52,6 +52,9 @@
   any reuse of outside material needs an MIT-compatible license and an exact
   record (source, revision, destination, transformation, notice) in
   [PROVENANCE.md](PROVENANCE.md) and `THIRD_PARTY_NOTICES.md`.
+- `THIRD_PARTY_NOTICES.md` is generated from `Cargo.lock` by
+  `tools/third-party-notices.py`; run it after any dependency change, and
+  add notices for outside material other than crates to its template.
 - Authored material keeps exact licenses. Preview/test assets require a
   source/author/license/digest/transformation/notice manifest; preserve legal
   metadata and fail on ambiguous inputs.
