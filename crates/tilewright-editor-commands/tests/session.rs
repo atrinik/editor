@@ -15,7 +15,6 @@ use std::{
 };
 use tilewright_edit::{Options as PlanOptions, PublishOptions, Transaction};
 use tilewright_editor_commands::{
-    MAXIMUM_TRANSACTION_CELLS, MAXIMUM_TRANSACTION_CHUNKS, MAXIMUM_TRANSACTION_ROWS,
     brush::{Brush, MAXIMUM_STROKE_TILES, Shape},
     json_string,
     session::{Command, Error, MAXIMUM_COALESCE, Options, Session},
@@ -63,6 +62,15 @@ fn accepted() -> Options {
         unchecked_access: true,
         ..Options::default()
     }
+}
+
+/// Publishes `text` as an outside program would.
+fn apply(root: &Path, text: &str) {
+    let parsed = Transaction::parse("outside.jsonc", text).unwrap();
+    tilewright_edit::plan(root, &parsed, &PlanOptions::default())
+        .unwrap()
+        .publish_with(&ACCEPTED)
+        .unwrap();
 }
 
 /// An outside program sets ground tile `at` to `value`.
@@ -418,92 +426,182 @@ fn a_maximum_stroke_saves_and_one_past_it_saves_what_it_painted() {
 }
 
 #[test]
-fn an_interaction_changes_at_most_what_one_save_holds() {
+fn a_malformed_command_is_rejected_not_kept_waiting() {
     let root = meadow_copy();
     let mut session = Session::open(root.path(), accepted()).unwrap();
     let now = Instant::now();
     session.begin_interaction(now).unwrap();
-    let command = |cells, rows, chunks| Command {
-        title: "Big".to_owned(),
-        operation: String::new(),
-        record: "{}".to_owned(),
-        cells,
-        rows,
-        chunks,
-    };
-    // Each limit counts the interaction's commands together.
-    let half = MAXIMUM_TRANSACTION_CELLS / 2;
-    session.record(command(half, 1, 1)).unwrap();
+    session
+        .record(Command {
+            title: "Broken".to_owned(),
+            operation: "{\"op\": ".to_owned(),
+            record: "{}".to_owned(),
+        })
+        .unwrap();
     assert!(matches!(
-        session.record(command(half + 1, 1, 1)),
-        Err(Error::TooLarge)
+        session.end_interaction(now),
+        Err(Error::Rejected(_))
     ));
-    assert!(matches!(
-        session.record(command(1, MAXIMUM_TRANSACTION_ROWS, 1)),
-        Err(Error::TooLarge)
-    ));
-    assert!(matches!(
-        session.record(command(1, 1, MAXIMUM_TRANSACTION_CHUNKS)),
-        Err(Error::TooLarge)
-    ));
-    session.cancel_stroke().unwrap_err();
-    assert!(session.discard().is_err(), "the interaction still runs");
+    assert!(!session.is_waiting());
+    assert_eq!(session.rejected().unwrap().title, "Broken");
 }
 
-#[test]
-fn a_thin_stroke_over_painted_chunks_saves_within_its_inverse() {
-    // A column of 700 chunks below the meadow, each with rows of terrain,
-    // so the inverse sets every changed row back.
+/// A copy of the meadow whose ground chunks reach down a column of chunks
+/// below it, `chunks` of them, each with rows of terrain and padded with a
+/// comment of `padding` bytes, made by publishing transactions.
+fn meadow_with_column(chunks: i64, padding: usize) -> tempfile::TempDir {
     let root = meadow_copy();
     let row = format!("\"{}\"", "gggs".repeat(8));
     let rows = vec![row; 32].join(", ");
-    let operations: Vec<String> = (1..=700)
-        .map(|cy| {
-            let text = format!(
-                "{{\"format\": \"tilewright.chunk/1\", \"plane\": \"meadow\", \"layer\": 0, \"chunk\": [0, {cy}], \"terrain\": {{\"ground\": {{\"palette\": {{\"g\": \"grass\", \"s\": \"sand\"}}, \"rows\": [{rows}]}}}}}}\n"
-            );
-            format!(
-                "{{\"op\": \"document.create\", \"path\": \"planes/meadow/layers/0/0_{cy}.jsonc\", \"text\": {}}}",
-                json_string(&text)
-            )
-        })
-        .collect();
-    let created = transaction("Column", &operations, &[]);
-    let created = Transaction::parse("column.jsonc", created).unwrap();
-    tilewright_edit::plan(root.path(), &created, &PlanOptions::default())
-        .unwrap()
-        .publish_with(&ACCEPTED)
-        .unwrap();
-    let opened = revision(root.path());
+    let comment = format!("// {}\n", "x".repeat(padding));
+    for batch in (1..=chunks).collect::<Vec<_>>().chunks(100) {
+        let operations: Vec<String> = batch
+            .iter()
+            .map(|cy| {
+                let text = format!(
+                    "{comment}{{\"format\": \"tilewright.chunk/1\", \"plane\": \"meadow\", \"layer\": 0, \"chunk\": [0, {cy}], \"terrain\": {{\"ground\": {{\"palette\": {{\"g\": \"grass\", \"s\": \"sand\"}}, \"rows\": [{rows}]}}}}}}\n"
+                );
+                format!(
+                    "{{\"op\": \"document.create\", \"path\": \"planes/meadow/layers/0/0_{cy}.jsonc\", \"text\": {}}}",
+                    json_string(&text)
+                )
+            })
+            .collect();
+        let created = transaction("Column", &operations, &[]);
+        let created = Transaction::parse("column.jsonc", created).unwrap();
+        tilewright_edit::plan(root.path(), &created, &PlanOptions::default())
+            .unwrap()
+            .publish_with(&ACCEPTED)
+            .unwrap();
+    }
+    root
+}
+
+/// Paints water straight down x = 3 from the top of the column through
+/// `tiles` tiles, one a row, in a session that saves each release.
+fn thin_stroke(
+    root: &Path,
+    tiles: i64,
+) -> (
+    Session,
+    Result<Option<tilewright_editor_commands::session::Saved>, Error>,
+) {
     let options = Options {
         coalesce: Duration::ZERO,
         ..accepted()
     };
-    let mut session = Session::open(root.path(), options).unwrap();
+    let mut session = Session::open(root, options).unwrap();
     let now = Instant::now();
     session
         .begin_stroke(now, "meadow", 0, "water", DOT)
         .unwrap();
-    // One tile a row, straight down: the row cap stops it first.
-    let mut stopped = None;
-    for step in 0..7 {
-        if let Err(error) = session.stamp([3, 32 + step * 4_000]) {
-            stopped = Some(error);
-            break;
-        }
+    // Pointer samples at most 4,000 tiles apart, so the brush joins them.
+    let last = 32 + tiles - 1;
+    let mut y = 32;
+    session.stamp([3, y]).unwrap();
+    while y < last {
+        y = (y + 4_000).min(last);
+        session.stamp([3, y]).unwrap();
     }
-    assert!(matches!(stopped, Some(Error::Stamp(_))), "{stopped:?}");
-    let saved = session.end_stroke(now).unwrap().unwrap();
-    assert_eq!(
-        saved.title,
-        format!("Paint water on {MAXIMUM_TRANSACTION_ROWS} tiles")
-    );
+    let saved = session.end_stroke(now);
+    (session, saved)
+}
+
+#[test]
+fn a_thin_stroke_saves_when_its_inverse_fits_and_is_refused_when_not() {
+    // Each changed row of an existing chunk is one operation of the
+    // inverse; 1,100 chunks of rows make an inverse past the toolkit's
+    // limits, so that save is refused before anything is written.
+    let root = meadow_with_column(1_100, 0);
+    let opened = revision(root.path());
+    let (session, saved) = thin_stroke(root.path(), 35_000);
+    assert!(matches!(saved, Err(Error::TooLarge(_))), "{saved:?}");
+    assert_eq!(revision(root.path()), opened, "nothing was written");
+    assert!(!session.is_waiting() && session.rejected().is_some());
+    // A shorter stroke fits, saves and undoes.
+    let (mut session, saved) = thin_stroke(root.path(), 20_000);
+    saved.unwrap().unwrap();
     assert_eq!(
         on_disk(root.path(), [3, 32 + 19_999]).as_deref(),
         Some("water")
     );
     session.undo().unwrap().unwrap();
     assert_eq!(revision(root.path()), opened);
+}
+
+#[test]
+fn a_save_whose_undo_would_take_too_much_work_is_refused() {
+    // Large chunks make each operation of the inverse expensive: undoing a
+    // stroke down 200 chunks of 200 KB could pass the toolkit's work
+    // budget, so it is refused; down 30 of them it saves and undoes.
+    let root = meadow_with_column(200, 200_000);
+    let opened = revision(root.path());
+    let (session, saved) = thin_stroke(root.path(), 200 * 32);
+    assert!(matches!(saved, Err(Error::TooLarge(_))), "{saved:?}");
+    assert_eq!(revision(root.path()), opened);
+    assert!(!session.is_waiting());
+    let (mut session, saved) = thin_stroke(root.path(), 30 * 32);
+    saved.unwrap().unwrap();
+    session.undo().unwrap().unwrap();
+    assert_eq!(revision(root.path()), opened);
+}
+
+#[test]
+fn a_save_its_edits_make_invalid_is_rejected_when_the_world_loads_without_them() {
+    // A terrain the session read is removed outside the editor; the tree
+    // still loads, so a save that paints it is the problem.
+    let root = meadow_copy();
+    let add = transaction(
+        "Add mud",
+        &[
+            "{\"op\": \"insert\", \"path\": \"profile/transitions.jsonc\", \"pointer\": [\"terrains\", 3], \"value\": {\"id\": \"mud\", \"protos\": [\"mud\"]}}".to_owned(),
+            "{\"op\": \"document.create\", \"path\": \"defs/proto/mud.jsonc\", \"text\": \"{\\\"format\\\": \\\"tilewright.def/1\\\", \\\"type\\\": \\\"proto\\\", \\\"id\\\": \\\"mud\\\", \\\"fields\\\": {}}\\n\"}".to_owned(),
+        ],
+        &[],
+    );
+    apply(root.path(), &add);
+    let mut session = Session::open(root.path(), accepted()).unwrap();
+    let remove = transaction(
+        "Remove mud",
+        &[
+            "{\"op\": \"remove\", \"path\": \"profile/transitions.jsonc\", \"pointer\": [\"terrains\", {\"id\": \"mud\"}]}".to_owned(),
+            "{\"op\": \"document.delete\", \"path\": \"defs/proto/mud.jsonc\"}".to_owned(),
+        ],
+        &[],
+    );
+    apply(root.path(), &remove);
+    let now = Instant::now();
+    paint(&mut session, now, "mud", &[[1, 1]]);
+    let result = session.end_stroke(now);
+    assert!(matches!(result, Err(Error::Rejected(_))), "{result:?}");
+    assert!(!session.is_waiting());
+    // The world was read again, so the terrain is gone from the session.
+    assert!(matches!(
+        session.begin_stroke(now, "meadow", 0, "mud", DOT),
+        Err(Error::Brush(_))
+    ));
+}
+
+#[test]
+fn a_problem_elsewhere_in_the_tree_keeps_the_save_waiting() {
+    let root = meadow_copy();
+    let mut session = Session::open(root.path(), accepted()).unwrap();
+    let now = Instant::now();
+    // A stray file the loader refuses, which the save does not touch.
+    let stray = root.path().join("planes/meadow/stray.txt");
+    std::fs::write(&stray, "not part of the world").unwrap();
+    paint(&mut session, now, "sand", &[[1, 1]]);
+    let result = session.end_stroke(now);
+    assert!(matches!(result, Err(Error::Publish(_))), "{result:?}");
+    assert!(session.is_waiting());
+    assert_eq!(session.rejected(), None);
+    assert_eq!(
+        session.terrain("meadow").unwrap().value(0, [1, 1], 0),
+        Some("sand")
+    );
+    std::fs::remove_file(&stray).unwrap();
+    session.flush(now).unwrap().unwrap();
+    assert_eq!(on_disk(root.path(), [1, 1]).as_deref(), Some("sand"));
 }
 
 #[test]
@@ -548,7 +646,7 @@ fn a_coalesced_step_that_fails_partway_is_split() {
 /// proves nothing and stops early.
 #[cfg(unix)]
 mod faults {
-    use super::{DOT, Error, Options, Session, accepted, meadow_copy, on_disk, paint, stroke};
+    use super::{DOT, Error, Options, Session, accepted, meadow_copy, on_disk, paint};
     use std::{
         os::unix::fs::PermissionsExt as _,
         path::Path,
@@ -581,7 +679,8 @@ mod faults {
         };
         assert!(!error.applied);
         assert!(session.is_waiting() && session.is_dirty());
-        assert!(session.recovery().is_some());
+        // Nothing was written, so nothing is left to restore.
+        assert_eq!(session.recovery(), None);
         assert!(matches!(
             session.begin_stroke(now, "meadow", 0, "sand", DOT),
             Err(Error::Waiting)
@@ -611,10 +710,27 @@ mod faults {
         set_mode(&layer, 0o755);
         session.flush(now).unwrap().unwrap();
         assert_eq!(on_disk(root.path(), [3, 3]).as_deref(), Some("sand"));
-        // The inverse of the failed publish stays until it is taken.
-        stroke(&mut session, now, "sand", &[[4, 4]]);
-        assert!(session.take_recovery().is_some());
         assert_eq!(session.recovery(), None);
+    }
+
+    #[test]
+    fn an_unrelated_file_that_cannot_be_read_keeps_the_save_waiting() {
+        let root = meadow_copy();
+        let mut session = Session::open(root.path(), accepted()).unwrap();
+        let now = Instant::now();
+        let unrelated = root.path().join("defs/proto/daisies.jsonc");
+        set_mode(&unrelated, 0o000);
+        paint(&mut session, now, "sand", &[[1, 1]]);
+        let result = session.end_stroke(now);
+        set_mode(&unrelated, 0o644);
+        if result.is_ok() {
+            return;
+        }
+        assert!(matches!(result, Err(Error::Publish(_))), "{result:?}");
+        assert!(session.is_waiting());
+        assert_eq!(session.rejected(), None);
+        session.flush(now).unwrap().unwrap();
+        assert_eq!(on_disk(root.path(), [1, 1]).as_deref(), Some("sand"));
     }
 
     #[test]

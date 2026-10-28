@@ -35,24 +35,13 @@ pub fn json_string(text: &str) -> String {
 /// Who the transactions the editor writes name as their actor.
 pub const ACTOR: &str = "editor:tilewright-editor";
 
-/// Most terrain cells one save holds. The toolkit parses a transaction
-/// under the JSONC limits of FORMAT.md section 3: 1,000,000 values and
-/// 250,000 lines. A brush cell takes 6 values and a line, which would allow
-/// about 166,000; this leaves room for the header, the operations around
-/// the cells and the `base` and `result` digests the toolkit seals in.
-pub const MAXIMUM_TRANSACTION_CELLS: usize = 120_000;
-
-/// Most chunk rows one save changes. The toolkit checks a transaction's
-/// inverse under the same limits, and the inverse sets each changed row of
-/// a chunk back with an operation of about 8 lines, so 31,000 rows would
-/// already fill 250,000 lines; this keeps room for the chunks' palettes.
-pub const MAXIMUM_TRANSACTION_ROWS: usize = 20_000;
-
-/// Most chunks one save changes. The inverse restores each chunk's palette
-/// with a few operations of its own, and the sealed transaction and the
-/// inverse each list every chunk's digests, so together with
-/// [`MAXIMUM_TRANSACTION_ROWS`] this keeps the inverse within the limits.
-pub const MAXIMUM_TRANSACTION_CHUNKS: usize = 2_000;
+/// Most work, in bytes, the inverse of a save may take to carry out. The
+/// toolkit allows 4 GiB of work for one transaction, and each operation of
+/// an inverse reads the whole file it edits and parses it again after its
+/// edit. A save whose inverse could need more than this is refused before
+/// anything is written, so every saved step can be undone; see
+/// [`Preview::inverse_work`].
+pub const MAXIMUM_INVERSE_WORK: u64 = 3 << 29;
 
 /// Longest transaction title, in characters (TRANSACTIONS.md section 1).
 pub const MAXIMUM_TITLE: usize = 256;
@@ -127,6 +116,28 @@ impl Preview {
     #[must_use]
     pub fn inverse(&self) -> &str {
         self.plan.inverse()
+    }
+
+    /// A bound on the work carrying out the inverse takes, as the toolkit
+    /// counts it: each of its operations reads the file it edits and parses
+    /// it again after its edit, so at most twice the largest file the
+    /// transaction changes per operation, plus the inverse's own size. The
+    /// toolkit has already checked that the inverse parses within a
+    /// transaction's limits.
+    #[must_use]
+    pub fn inverse_work(&self) -> u64 {
+        let inverse = self.plan.inverse();
+        let operations = Transaction::parse("inverse.jsonc", inverse)
+            .map_or(u64::MAX, |parsed| parsed.len() as u64);
+        let largest = self
+            .changed()
+            .flat_map(|file| [file.before.as_deref(), file.after.as_deref()])
+            .map(|text| text.map_or(0, str::len) as u64)
+            .max()
+            .unwrap_or(0);
+        operations
+            .saturating_mul(largest.saturating_mul(2))
+            .saturating_add(inverse.len() as u64)
     }
 
     /// Writes the inverse to a new file at `path`, atomically, through the
