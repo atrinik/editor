@@ -208,10 +208,12 @@ impl EditorUi {
             self.view(ui, status, pick, &mut actions);
         });
         self.dialog_buttons.clear();
-        if let Some(unchecked) = &status.unchecked_access {
-            self.notice(ui, unchecked, &mut actions);
-        } else if status.closing {
+        // Asked to close, the question about closing comes first; it says
+        // what saving would not check when that is what a save waits for.
+        if status.closing {
             self.closing(ui, status, &mut actions);
+        } else if let Some(unchecked) = &status.unchecked_access {
+            self.notice(ui, unchecked, &mut actions);
         }
         actions
     }
@@ -412,16 +414,26 @@ impl EditorUi {
         egui::Modal::new(egui::Id::unique("tilewright.closing")).show(ui.ctx(), |ui| {
             ui.set_max_width(420.0);
             ui.heading("Unsaved edits");
-            ui.label(if status.waiting {
-                "The last save failed, so its edits are not in the world yet."
+            if let Some(unchecked) = &status.unchecked_access {
+                ui.add(egui::Label::new(format!(
+                    "The last save waits for your consent: the world toolkit cannot check everything for this world here: {unchecked}."
+                )).wrap());
             } else {
-                "Some edits are not saved yet."
-            });
-            if let Some(message) = &status.message {
-                ui.add(egui::Label::new(message).wrap());
+                ui.label(if status.waiting {
+                    "The last save failed, so its edits are not in the world yet."
+                } else {
+                    "Some edits are not saved yet."
+                });
+                if let Some(message) = &status.message {
+                    ui.add(egui::Label::new(message).wrap());
+                }
             }
             ui.horizontal(|ui| {
-                if status.waiting && self.dialog_button(ui, "Save again") {
+                if status.unchecked_access.is_some() {
+                    if self.dialog_button(ui, "Accept and save") {
+                        actions.push(Action::AcceptUncheckedAccess);
+                    }
+                } else if status.waiting && self.dialog_button(ui, "Save again") {
                     actions.push(Action::SaveNow);
                 }
                 if self.dialog_button(ui, "Discard and close") {
@@ -666,6 +678,28 @@ mod tests {
             let mut window = Window::new(palette());
             window.status.dirty = true;
             window.status.waiting = true;
+            window.status.closing = true;
+            for _ in 0..5 {
+                window.frame(Vec::new());
+            }
+            assert_eq!(window.ui.dialog_buttons.len(), 3);
+            let at = window.ui.dialog_buttons[choice].center();
+            assert_eq!(window.click(at), [expected]);
+        }
+    }
+
+    #[test]
+    fn closing_while_a_save_waits_for_consent_asks_both_at_once() {
+        for (choice, expected) in [
+            (0, Action::AcceptUncheckedAccess),
+            (1, Action::DiscardAndClose),
+            (2, Action::KeepEditing),
+        ] {
+            let mut window = Window::new(palette());
+            window.status.dirty = true;
+            window.status.waiting = true;
+            window.status.unchecked_access =
+                Some("access control lists are not checked".to_owned());
             window.status.closing = true;
             for _ in 0..5 {
                 window.frame(Vec::new());

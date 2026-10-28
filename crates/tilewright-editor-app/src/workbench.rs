@@ -1132,6 +1132,28 @@ mod tests {
     }
 
     #[test]
+    fn closing_while_a_save_waits_for_consent_closes_on_either_answer() {
+        for answer in [Action::AcceptUncheckedAccess, Action::DiscardAndClose] {
+            let root = meadow_copy();
+            let mut workbench = Workbench::open(root.path(), None, false).unwrap();
+            let now = Instant::now();
+            workbench.apply(vec![begin([1, 1], "sand"), Action::StrokeEnd], now);
+            if workbench.status(None, None).unchecked_access.is_none() {
+                // Saving here checks everything, so nothing waits for
+                // consent: Linux on a file system that shows access lists.
+                return;
+            }
+            assert!(!workbench.request_close(now));
+            let status = workbench.status(None, None);
+            assert!(status.closing && status.unchecked_access.is_some());
+            let accepted = answer == Action::AcceptUncheckedAccess;
+            workbench.apply(vec![answer], now);
+            // A save from the question closes unless it warns.
+            assert_eq!(workbench.may_close(), !accepted || DURABLE);
+        }
+    }
+
+    #[test]
     fn saving_asks_for_consent_where_it_cannot_check_everything() {
         let root = meadow_copy();
         let mut workbench = Workbench::open(root.path(), None, false).unwrap();
