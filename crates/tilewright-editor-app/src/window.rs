@@ -103,14 +103,20 @@ impl eframe::App for EditorWindow {
     /// Runs also while the window is minimized or hidden, when `ui` does
     /// not, so a request to close is always answered here.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Closing with unsaved edits asks first: the window stays open, and
-        // comes back into view to ask, until they are saved or discarded.
+        // Closing with unsaved edits asks first: the window stays open until
+        // they are saved or discarded, and comes back into view to ask where
+        // the platform allows it. Wayland lets a window neither unminimize
+        // nor focus itself, so the window also asks for attention, which
+        // the compositor shows.
         if ctx.input(|input| input.viewport().close_requested())
             && !self.workbench.request_close(Instant::now())
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
         }
     }
 
