@@ -52,8 +52,8 @@ publisher and OS-specific canonical/file-identity/case-collision adapter; issue
 The native application now composes World-backed Session/History, strict generic
 catalog loading, immutable digest-verified resources, shared-renderer scenes,
 reference semantic masks and wgpu/SDL presentation. It opens no game-specific
-code and invokes no project executables. A separate game toolkit owns Classic
-import/export and the exact allowable source-span edits.
+code and invokes no project executables. A separate game toolkit owns external
+map import/export and the exact allowable source-span edits.
 
 Editing requires trusted fresh Linux provisioning: distinct private World,
 recovery and evidence directories, persistent supported local backing verified
