@@ -1,9 +1,9 @@
 # Authored geometric meadow
 
 This is a tiny original MIT top-down editor sample by Seraphina Studios. All
-pixels are newly authored integer geometry; no game art, Classic source, or
+pixels are newly authored integer geometry; no game art, game source, or
 third-party images were copied. It illustrates editing and transitions, not
-Classic visual fidelity or gameplay. COPYING contains the MIT license.
+any game's visual fidelity or gameplay. COPYING contains the MIT license.
 
 Open `fixture_world("prototype-neutral")` or this directory as an ordinary
 Tilewright World 0.1 project. `preview.jsonc` declares editor-preview/1 resources,

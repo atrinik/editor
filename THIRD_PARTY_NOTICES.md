@@ -21,7 +21,7 @@ SBOM.
 The bundled `samples/prototype-neutral` data and standalone ATX1 resources are
 original MIT geometric fixtures by Seraphina Studios. Exact source, author,
 license, transformation and SHA-256 records are in `provenance/assets.json`.
-No external Classic map or original game artwork is included.
+No external game map or original game artwork is included.
 
 Authored content opened by the editor is not part of this software and retains
 its own license and attribution.

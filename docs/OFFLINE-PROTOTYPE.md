@@ -2,14 +2,15 @@
 
 The prototype composes released World 0.1.0 and renderer 0.5.1. The generic
 editor opens ordinary World data and its strict `preview.jsonc` catalog. A
-separate Atrinik toolkit adapter imports a selected external Classic map and
-exports a checked subset of edits. The editor contains no Classic parser and
-never starts commands selected by project data.
+separate game-specific toolkit adapter imports a selected external map and
+exports a checked subset of edits. The editor contains no game-specific
+parser and never starts commands selected by project data.
 
 This is a schematic editor demonstration, with original MIT geometric art.
-It does not claim Classic artwork, gameplay or visual parity. Classic remains
-the active game content/runtime. Original map bytes, licensing and import
-baseline belong to the external adapter workspace and are never bundled here.
+It does not claim artwork, gameplay or visual parity with the external game,
+which remains the active game content/runtime. Original map bytes, licensing
+and import baseline belong to the external adapter workspace and are never
+bundled here.
 
 ## Fresh checked session
 
@@ -74,7 +75,7 @@ transactions and require acceptance through the same path. An uncertain
 applied/durable/cleaned result blocks further editing and preserves its record.
 Reopen is explicit inspection/reload, never blind recovery or retry.
 
-The first Classic edit moves an eligible UID-bearing top-level object only
+The first external-map edit moves an eligible UID-bearing top-level object only
 when its original block has one existing `x` and `y`, within original bounds.
 Same-chunk coordinate changes use guarded generic World path transactions to
 preserve source object order. Cross-chunk relocation still uses World's
@@ -82,7 +83,7 @@ preserve source object order. Cross-chunk relocation still uses World's
 unsupported structural/order changes. Other fields, ordering and bytes are
 preserved by the adapter's checked export.
 The neutral sample also exposes a typed field and terrain paint operation.
-Classic floors remain objects; no generic terrain capability is inferred.
+External-map floors remain objects; no generic terrain capability is inferred.
 
 Export is a separate explicit toolkit CLI operation on committed World data.
 Pending scenes are never export input. Keep the original content tree read-only
@@ -101,11 +102,12 @@ them and the exact source revision and dependencies.
 
 Packages include only allowlisted authored MIT sample data/resources, immutable
 registry references, notices, checksums, SBOM and provenance. Imported worlds,
-real Classic maps/art, adapter baseline, recovery records and session evidence
+real game maps/art, adapter baseline, recovery records and session evidence
 are excluded. Windows build/test/package success is not Windows durable-editing
 or native D3D12 qualification.
 
 Later work includes rich panels/text, arbitrary-root provisioning APIs,
-automatic crash replay, persistent undo, additional Classic edit forms, original
-art/effects qualification, broader platform durability and game-runtime cutover.
-Each needs its own evidence and authority; none is implied by this prototype.
+automatic crash replay, persistent undo, additional external-map edit forms,
+original art/effects qualification, broader platform durability and
+game-runtime cutover. Each needs its own evidence and authority; none is
+implied by this prototype.
