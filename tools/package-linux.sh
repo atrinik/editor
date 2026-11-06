@@ -54,6 +54,7 @@ python3 tools/package-provenance.py --root . --version "${version}" \
 
 archive="${output}/tilewright-editor-${version}-linux-amd64.tar.gz"
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 1970-01-01' \
+  --mode='u+rwX,go+rX,go-w' \
   -C "${stage}" -cf - "tilewright-editor-${version}" | gzip -n >"${archive}"
 git archive --format=tar --prefix="tilewright-editor-${version}/" HEAD \
   | gzip -n >"${output}/tilewright-editor-${version}-source.tar.gz"
