@@ -2086,6 +2086,9 @@ fn native_pointer_selection(
     physical: (u32, u32),
     extend: bool,
 ) -> Result<()> {
+    // A press while a stroke runs means its release was missed: end it
+    // visibly before the press acts, whatever it hits.
+    app.interrupt_stroke();
     if !app.displayed_input_ready() {
         return Err("input waits for the current displayed frame".into());
     }
@@ -2129,7 +2132,6 @@ fn native_pointer_selection(
         }
         Hit::Control(control) => app.control(control),
         Hit::World(x, y) => {
-            app.interrupt_stroke();
             app.tools.cancel();
             if app.tools.mode() == ToolMode::Terrain {
                 app.begin_stroke(x, y)
@@ -2162,14 +2164,12 @@ fn native_stroke_release(
     logical: (u32, u32),
     physical: (u32, u32),
 ) -> Result<()> {
-    let sampled = stroke_position(app, position, logical, physical);
     // The finish outcome is what the user sees: a last-sample problem must
     // neither hide a refused stroke nor mark a prepared one as not applied.
-    app.finish_stroke()?;
-    if let Err(error) = sampled {
+    if let Err(error) = stroke_position(app, position, logical, physical) {
         eprintln!("{}", terminal_field(&error));
     }
-    Ok(())
+    app.finish_stroke()
 }
 
 /// Panels and pixels outside the window are misses, like map background.

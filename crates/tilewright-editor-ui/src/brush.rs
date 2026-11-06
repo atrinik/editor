@@ -284,6 +284,21 @@ mod tests {
     }
 
     #[test]
+    fn a_capped_stroke_never_paints_past_its_refused_segment() {
+        let mut stroke = wide_stroke(0);
+        let end = i64::try_from(MAXIMUM_STROKE_CELLS).unwrap() - 2;
+        stroke.stamp([0, 0]);
+        stroke.stamp([end, 0]);
+        assert_eq!(stroke.len(), MAXIMUM_STROKE_CELLS - 1);
+        // Two more cells would pass the cap, so the stamp is refused.
+        assert_eq!(stroke.stamp([end, 2]), 0);
+        assert!(stroke.capped());
+        // One cell would fit, but it would leave the refused cell a gap.
+        assert_eq!(stroke.stamp([end, 2]), 0);
+        assert_eq!(stroke.len(), MAXIMUM_STROKE_CELLS - 1);
+    }
+
+    #[test]
     fn an_oversized_stamp_is_refused_whole() {
         let mut stroke = wide_stroke(4);
         // Start inside the view so every stamp is a whole 9 x 9 square.

@@ -1529,3 +1529,18 @@ fn a_press_during_a_stroke_reports_the_abandoned_stroke_and_starts_fresh() {
     assert_eq!(terrain_value(&app, 0, 1).as_deref(), Some("grass"));
     assert_eq!(terrain_value(&app, 2, 3).as_deref(), Some("sand"));
 }
+
+#[test]
+fn a_panel_or_control_press_during_a_stroke_ends_it_unprepared() {
+    let (_temporary, mut app) = brush_application();
+    let start = cell_pixel(&mut app, 1, 1);
+    for panel in [[20.0, 20.0], [1270.0, 400.0]] {
+        acknowledge_ui(&mut app);
+        super::native_pointer(&mut app, start, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+        acknowledge_ui(&mut app);
+        super::native_pointer(&mut app, panel, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+        assert!(app.tools.stroke().is_none() && app.stroke_mask.is_none());
+        super::native_stroke_release(&mut app, panel, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+        assert!(app.session.history().pending().is_none());
+    }
+}

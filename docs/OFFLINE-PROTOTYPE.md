@@ -130,9 +130,9 @@ in one reviewed step.
 
 A stroke can start only when no change is pending; it never merges into an
 existing pending diff. Escape abandons a running stroke, and other world
-shortcuts are ignored until release. A resize, rebuild, focus loss or minimize ends
-the stroke without preparing anything, and motion that arrives without the
-button held finishes it where the release was missed. The brush never saves
+shortcuts are ignored until release. A resize, rebuild, focus loss, minimize
+or a new press ends the stroke without preparing anything, and motion that
+arrives without the button held finishes it where the release was missed. The brush never saves
 on release: there is no autosave.
 
 Planned edits are visible before acceptance. Accept retains the exact inverse
