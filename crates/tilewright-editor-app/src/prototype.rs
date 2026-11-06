@@ -433,7 +433,12 @@ impl Application {
             self.interrupt_stroke();
             return Err(STROKE_INTERRUPTED.into());
         };
-        if mask.generation() != self.view.frame_revision {
+        // Reflow keeps the generation, so also require the mask's own size;
+        // reflow and rebuild end the stroke before either can change.
+        let viewport = self.prepared.cell_scene.viewport();
+        if mask.generation() != self.view.frame_revision
+            || mask.size() != [viewport.width, viewport.height]
+        {
             self.interrupt_stroke();
             return Err(STROKE_INTERRUPTED.into());
         }
@@ -1535,10 +1540,7 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
                 app.interrupt_stroke();
                 dirty = true;
             }
-            let stroke_before = app
-                .tools
-                .stroke()
-                .map(tilewright_editor_ui::brush::Stroke::len);
+            let stroke_before = app.tools.stroke().map(|s| (s.len(), s.capped()));
             let scroll_before = (app.sidebar_scroll, app.review_scroll);
             let composing = app.tools.is_composing();
             let draft_before = app.tools.input_revision().map(|revision| revision.draft);
@@ -1612,11 +1614,7 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
             }
             dirty |= update_input_presentation(&mut app, scroll_before)
                 || result.is_err()
-                || stroke_before
-                    != app
-                        .tools
-                        .stroke()
-                        .map(tilewright_editor_ui::brush::Stroke::len);
+                || stroke_before != app.tools.stroke().map(|s| (s.len(), s.capped()));
             if let Err(error) = result {
                 eprintln!("{}", terminal_field(&error));
                 app.notice = Some(error);
@@ -2131,6 +2129,7 @@ fn native_pointer_selection(
         }
         Hit::Control(control) => app.control(control),
         Hit::World(x, y) => {
+            app.interrupt_stroke();
             app.tools.cancel();
             if app.tools.mode() == ToolMode::Terrain {
                 app.begin_stroke(x, y)
@@ -2164,8 +2163,13 @@ fn native_stroke_release(
     physical: (u32, u32),
 ) -> Result<()> {
     let sampled = stroke_position(app, position, logical, physical);
-    let finished = app.finish_stroke();
-    sampled.and(finished)
+    // The finish outcome is what the user sees: a last-sample problem must
+    // neither hide a refused stroke nor mark a prepared one as not applied.
+    app.finish_stroke()?;
+    if let Err(error) = sampled {
+        eprintln!("{}", terminal_field(&error));
+    }
+    Ok(())
 }
 
 /// Panels and pixels outside the window are misses, like map background.
@@ -2202,7 +2206,7 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
     }
     if app.tools.stroke().is_some() {
         // A running stroke owns the keyboard: Escape abandons it, and other
-        // world shortcuts wait for release so the gesture keeps its frame.
+        // world shortcuts are ignored so the gesture keeps its frame.
         if key == Keycode::Escape {
             app.interrupt_stroke();
             app.notice = Some("Brush stroke cancelled; nothing was prepared.".into());

@@ -214,6 +214,10 @@ impl PickMask {
     pub const fn generation(&self) -> u64 {
         self.generation
     }
+    /// Physical `[width, height]` of the frame this mask was rendered for.
+    pub const fn size(&self) -> [u32; 2] {
+        [self.width, self.height]
+    }
     /// The semantic selection under physical pixel `x, y`, if any.
     pub fn pick(&self, x: u32, y: u32) -> Result<Option<SelectionKey>, PreviewError> {
         if x >= self.width || y >= self.height {

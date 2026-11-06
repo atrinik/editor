@@ -1509,3 +1509,23 @@ fn brush_size_controls_clip_at_the_view_edge_and_pending_changes_fence_new_strok
         }
     );
 }
+
+#[test]
+fn a_press_during_a_stroke_reports_the_abandoned_stroke_and_starts_fresh() {
+    let (_temporary, mut app) = brush_application();
+    let first = cell_pixel(&mut app, 0, 1);
+    let second = cell_pixel(&mut app, 2, 3);
+    super::native_pointer(&mut app, first, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    acknowledge_ui(&mut app);
+    // A missed release followed by a new press: the old stroke is reported
+    // as ended, never silently dropped or merged into the new one.
+    super::native_pointer(&mut app, second, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert_eq!(app.notice.as_deref(), Some(super::STROKE_INTERRUPTED));
+    assert_eq!(
+        app.tools.stroke().unwrap().cells().collect::<Vec<_>>(),
+        [[2, 3]]
+    );
+    super::native_stroke_release(&mut app, second, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert_eq!(terrain_value(&app, 0, 1).as_deref(), Some("grass"));
+    assert_eq!(terrain_value(&app, 2, 3).as_deref(), Some("sand"));
+}

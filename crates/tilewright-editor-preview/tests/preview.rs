@@ -486,6 +486,7 @@ fn a_retained_gesture_mask_matches_every_single_pick_and_only_its_frame() {
     for terrain in [false, true] {
         let mask = p.mask(5, terrain).unwrap();
         assert_eq!(mask.generation(), 5);
+        assert_eq!(mask.size(), [128, 96]);
         for (x, y) in [(52, 44), (72, 52), (40, 36), (87, 44), (0, 0), (127, 95)] {
             assert_eq!(
                 mask.pick(x, y).unwrap(),

@@ -174,8 +174,13 @@ impl Stroke {
     /// clipping footprints to the editable view. Samples that leave the view
     /// do not reset the line, so a fast drag along a jagged edge stays joined.
     /// A stamp that would exceed [`MAXIMUM_STROKE_CELLS`] adds nothing and
-    /// marks the stroke capped. Returns how many cells the stamp added.
+    /// caps the stroke: later samples add nothing either, so a capped stroke
+    /// never has a gap followed by more paint. Returns how many cells the
+    /// stamp added.
     pub(crate) fn stamp(&mut self, cell: [i64; 2]) -> usize {
+        if self.capped {
+            return 0;
+        }
         let path = segment(self.last.unwrap_or(cell), cell);
         self.last = Some(cell);
         let mut added = BTreeSet::new();
@@ -238,5 +243,58 @@ impl Stroke {
             proto: self.proto,
             expected: self.expected,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Brush, BrushShape, MAXIMUM_STROKE_CELLS, Stroke};
+
+    fn wide_stroke(radius: u16) -> Stroke {
+        Stroke::begin(
+            "main".into(),
+            0,
+            "floor".into(),
+            "sand".into(),
+            Brush {
+                shape: BrushShape::Square,
+                radius,
+            },
+            [0; 32],
+            1,
+            [0, 0, 10_000, 10],
+        )
+    }
+
+    #[test]
+    fn a_stroke_stops_whole_at_its_cell_cap() {
+        let mut stroke = wide_stroke(0);
+        let last = i64::try_from(MAXIMUM_STROKE_CELLS).unwrap() - 1;
+        stroke.stamp([0, 0]);
+        assert_eq!(stroke.stamp([last, 0]), MAXIMUM_STROKE_CELLS - 1);
+        assert_eq!(stroke.len(), MAXIMUM_STROKE_CELLS);
+        assert!(!stroke.capped());
+        // One more cell exceeds the cap: nothing is added, and the stroke
+        // stays capped even for later samples that would fit on their own.
+        assert_eq!(stroke.stamp([last + 1, 0]), 0);
+        assert!(stroke.capped());
+        assert_eq!(stroke.stamp([0, 1]), 0);
+        assert_eq!(stroke.len(), MAXIMUM_STROKE_CELLS);
+        assert!(!stroke.cells().any(|[_, y]| y == 1));
+    }
+
+    #[test]
+    fn an_oversized_stamp_is_refused_whole() {
+        let mut stroke = wide_stroke(4);
+        // Start inside the view so every stamp is a whole 9 x 9 square.
+        let mut x = 4;
+        while !stroke.capped() {
+            let before = stroke.len();
+            let added = stroke.stamp([x, 4]);
+            assert!(added == 0 || stroke.len() == before + added);
+            x += 9;
+        }
+        assert!(stroke.len() <= MAXIMUM_STROKE_CELLS);
+        assert_eq!(stroke.len() % 81, 0, "only whole 9x9 stamps were kept");
     }
 }

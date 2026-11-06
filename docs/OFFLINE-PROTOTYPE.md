@@ -99,8 +99,9 @@ invalidate earlier masks.
 
 In Terrain mode, choose an explicit palette value, then press on a cell and
 drag. One press-move-release gesture is one brush stroke. The press selects
-its cell through the ordinary exact cell mask and the stroke keeps that one
-frame's mask for its samples, so each pointer sample costs no extra render.
+its cell through the ordinary exact cell mask; selection then prepares an
+identical frame, and the stroke keeps that frame's exact cell mask for its
+samples, so each pointer sample costs no extra render.
 The brush stamps its footprint at every sample and along the straight cell
 line from the previous sample, so a fast drag leaves no gaps; a single jump
 of more than 4,096 cells stamps only where it lands. Footprint cells outside
@@ -113,7 +114,8 @@ a radius of 0 (one cell) to 8 (17 x 17). A disc covers the cells whose
 centres lie within half a cell past the radius. The Terrain sidebar shows the
 brush and offers smaller, larger and shape controls; `[` and `]` change the
 size and `B` the shape. A stroke keeps the brush it began with and covers at
-most 4,096 distinct cells (the default view's cell budget).
+most 4,096 distinct cells (the default view's cell budget); a stamp that would
+pass the cap is refused whole and the stroke stops growing.
 
 While the button is held the status line counts the covered cells; nothing is
 prepared or drawn as changed yet. Release turns the whole gesture into one
@@ -128,7 +130,7 @@ in one reviewed step.
 
 A stroke can start only when no change is pending; it never merges into an
 existing pending diff. Escape abandons a running stroke, and other world
-shortcuts wait until release. A resize, rebuild, focus loss or minimize ends
+shortcuts are ignored until release. A resize, rebuild, focus loss or minimize ends
 the stroke without preparing anything, and motion that arrives without the
 button held finishes it where the release was missed. The brush never saves
 on release: there is no autosave.
