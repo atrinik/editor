@@ -1,6 +1,6 @@
 # Offline editing prototype
 
-The prototype composes released World 0.1.0 and renderer 0.5.1. The generic
+The prototype composes released World 0.2.0 and renderer 0.5.1. The generic
 editor opens ordinary World data and its strict `preview.jsonc` catalog. A
 separate game-specific toolkit adapter imports a selected external map and
 exports a checked subset of edits. The editor contains no game-specific

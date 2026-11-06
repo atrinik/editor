@@ -26,8 +26,8 @@ tilewright-editor-project = { path = "crates/tilewright-editor-project", version
 tilewright-editor-recovery = { path = "crates/tilewright-editor-recovery", version = "=0.1.0" }
 tilewright-editor-testkit = { path = "crates/tilewright-editor-testkit", version = "=0.1.0" }
 tilewright-editor-ui = { path = "crates/tilewright-editor-ui", version = "=0.1.0" }
-tilewright-edit = "=0.1.0"
-tilewright-jsonc = "=0.1.0"
+tilewright-edit = "=0.2.0"
+tilewright-jsonc = "=0.2.0"
 tilewright-render-api = "=0.5.1"
 tilewright-render-world = "=0.5.1"
 tilewright-render-wgpu = "=0.5.1"
@@ -35,7 +35,7 @@ tilewright-render-sdl3 = "=0.5.1"
 tilewright-render-resources = "=0.5.1"
 tilewright-render-testkit = "=0.5.1"
 tilewright-scene = "=0.5.1"
-tilewright-source = "=0.1.0"
+tilewright-source = "=0.2.0"
 sha2 = "0.11.0"
 serde_json = "1.0.145"
 png = "0.18.1"

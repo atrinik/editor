@@ -6,7 +6,7 @@ third-party images were copied. It illustrates editing and transitions, not
 any game's visual fidelity or gameplay. COPYING contains the MIT license.
 
 Open `fixture_world("prototype-neutral")` or this directory as an ordinary
-Tilewright World 0.1 project. `preview.jsonc` declares editor-preview/1 resources,
+Tilewright World 0.2 project. `preview.jsonc` declares editor-preview/1 resources,
 capabilities and the default `main` plane, spatial layer 0, bounds `[0,0,8,6]`.
 The marker `marker_1` starts at `(3,2)` on render layer `item`; its typed `label`
 is `Trail marker`, and its nested typed `settings` holds `active` and `visits`.
