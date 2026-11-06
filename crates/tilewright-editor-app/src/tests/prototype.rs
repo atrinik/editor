@@ -1261,7 +1261,7 @@ fn backspace_then_left_uses_current_shaped_text_and_return_stays_fenced() {
 }
 
 #[test]
-fn regained_focus_lets_return_reach_world_actions_without_a_draft() {
+fn regained_focus_lets_a_fresh_return_reach_world_actions_without_a_draft() {
     use sdl3::{
         event::{Event, WindowEvent},
         keyboard::Keycode,
@@ -1284,5 +1284,10 @@ fn regained_focus_lets_return_reach_world_actions_without_a_draft() {
     );
     assert!(input.focused);
     input.begin_batch(false, None);
+    // A Return held through the focus change is not a fresh press.
+    assert!(super::native_text_event(&mut app, &enter, &mut input).is_some());
+    super::native_text_event(&mut app, &input_key(7, Keycode::Return, true), &mut input)
+        .unwrap()
+        .unwrap();
     assert!(super::native_text_event(&mut app, &enter, &mut input).is_none());
 }

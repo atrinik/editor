@@ -24,13 +24,15 @@ fn focus_loss_requires_explicit_refocus_and_fresh_return_release() {
     assert!(input.submit_allowed(false));
 }
 #[test]
-fn focus_gain_restores_return_and_fences_old_text() {
+fn focus_gain_restores_return_after_release_and_fences_old_text() {
     let mut input = NativeInput::new(1);
     input.lose_focus();
     input.begin_batch(false, Some(3));
     assert!(!input.submit_allowed(false));
     input.gain_focus(20);
     assert!(input.focused);
+    assert!(!input.submit_allowed(false));
+    input.return_released(false);
     assert!(input.submit_allowed(false));
     assert!(!input.submit_allowed(true));
     assert!(!input.text_allowed(Some(3), 20));

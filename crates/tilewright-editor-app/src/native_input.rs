@@ -67,12 +67,12 @@ impl NativeInput {
     pub fn submit_allowed(&self, composing: bool) -> bool {
         self.focused && !composing && !self.submit.blocked && !self.submit.batch_has_text
     }
-    /// The window has keyboard focus again. Return works again: Return keys
-    /// pressed elsewhere never reach this window, and repeats stay refused.
-    /// Text drained for the old IME session stays fenced by `refocus`.
+    /// The window has keyboard focus again. Text drained for the old IME
+    /// session stays fenced by `refocus`. Return stays fenced until a Return
+    /// release: a Return held through the focus change arrives without a
+    /// repeat flag and must not review or accept anything.
     pub fn gain_focus(&mut self, timestamp: u64) {
         self.refocus(timestamp);
-        self.submit.blocked = false;
     }
     pub fn lose_focus(&mut self) {
         self.focused = false;

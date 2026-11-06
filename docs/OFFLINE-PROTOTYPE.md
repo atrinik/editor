@@ -72,9 +72,9 @@ the selected object's identity, position and schema fields, or the selected
 cell and explicit terrain choices. Only profile-authorized scalar fields are
 editable; structured values remain read-only.
 
-Click an editable field or position and type. Place the caret or select with
-the pointer, the arrows (Shift extends), Home/End or select-all, edit with
-Backspace/Delete or the clipboard, then choose Review. Long focused input keeps its tail and caret visible.
+Click an editable field or position and type. Place the caret by clicking
+(Shift-click extends), with the arrows (Shift extends), Home/End or
+select-all; edit with Backspace/Delete or the clipboard, then choose Review. Long focused input keeps its tail and caret visible.
 Text focus consumes world shortcuts. The shared renderer shapes text using the
 explicit Unicode font pack; missing-glyph diagnostics preserve the complete
 original value and prevent a lossy visual replacement. Exact native input,
