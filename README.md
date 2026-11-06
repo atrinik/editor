@@ -52,7 +52,9 @@ The registry lockfile records their actual archive checksums; producer path/Git
 overrides are not part of builds or package provenance.
 
 The editor owns panel layout, focus and actions; glyph layout and drawing stay
-in the shared renderer. The bundled common-Latin font preserves its OFL notice.
+in the shared renderer. The bundled common-Latin font preserves its OFL notice;
+the native editor also requires the explicit Unicode font pack (`--font-pack ROOT`),
+which packages carry with its original OFL notices.
 Unsupported text stays intact and is protected against lossy interactive edits.
 See [the prototype controls and limits](docs/OFFLINE-PROTOTYPE.md).
 

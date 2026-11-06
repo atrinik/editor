@@ -124,5 +124,6 @@ MIT files in `seraphinastudios/tilewright-renderer`, local reviewed candidate
 commit `9072863707c64e0de29051cc565a6590232f6355`. Transformation: none; no font
 parser, upstream implementation or rasterizer source is copied. Exact helper
 SHA-256: `cbffc180a44fc473ecad0e7fcd9b6b50e32b4a06b7b3f404a0999a7be6ea6469`; test SHA-256: `7a92e12aebbb2ab57a41884cd0af9270df129023b721d070a451b0d1086a19e0`. Preserve their MIT headers and
-this provenance when updating the shared delivery seam. This local source
-record does not claim that the commit or UI crate has been published.
+this provenance when updating the shared delivery seam. This record covers
+the helper copies only; the published UI crate's registry provenance is
+recorded above.
