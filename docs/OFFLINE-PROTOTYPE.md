@@ -75,6 +75,10 @@ editable; structured values remain read-only.
 Click an editable field or position and type. Place the caret by clicking
 (Shift-click extends), with the arrows (Shift extends), Home/End or
 select-all; edit with Backspace/Delete or the clipboard, then choose Review. Long focused input keeps its tail and caret visible.
+Fields are single-line: typed, pasted or composed text containing a control
+character, U+2028 LINE SEPARATOR or U+2029 PARAGRAPH SEPARATOR is rejected as a
+whole and leaves the draft unchanged. A stored value that already contains them
+opens unchanged and keeps them unless the user deletes or replaces them.
 Text focus consumes world shortcuts. The shared renderer shapes text using the
 explicit Unicode font pack; missing-glyph diagnostics preserve the complete
 original value and prevent a lossy visual replacement. Exact native input,
