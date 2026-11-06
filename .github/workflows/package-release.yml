@@ -75,10 +75,14 @@ jobs:
           printf '%s  %s\n' bf7b29ff57f06da30918266a0e1c2885a8f99784798d1bdb1628886aa015d788 "${RUNNER_TEMP}/syft.tar.gz" | sha256sum --check --strict
           tar -xzf "${RUNNER_TEMP}/syft.tar.gz" -C "${RUNNER_TEMP}/bin" syft
           echo "${RUNNER_TEMP}/bin" >>"${GITHUB_PATH}"
+      - name: Prepare immutable font data explicitly
+        run: |
+          cargo fetch --locked
+          python3 tools/prepare-font-pack.py prepare --acquire --output "${RUNNER_TEMP}/unicode-font-pack"
       - name: Build immutable package
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: tools/package-linux.sh dist "${RELEASE_TAG#v}"
+        run: tools/package-linux.sh dist "${RELEASE_TAG#v}" "${RUNNER_TEMP}/unicode-font-pack"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux-release
@@ -107,11 +111,18 @@ jobs:
           if ((Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP/cargo-auditable.zip").Hash.ToLowerInvariant() -ne "83a7d5955c7ac96ede5d896ac9ede5f7ecce9ece0e95d9e47acd766b09e2ef1b") { throw "cargo-auditable digest mismatch" }
           Expand-Archive "$env:RUNNER_TEMP/cargo-auditable.zip" "$env:RUNNER_TEMP/cargo-auditable"
           "$env:RUNNER_TEMP/cargo-auditable" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Prepare immutable font data explicitly
+        shell: pwsh
+        run: |
+          cargo fetch --locked
+          if ($LASTEXITCODE -ne 0) { throw "locked dependency fetch failed" }
+          python tools/prepare-font-pack.py prepare --acquire --output "$env:RUNNER_TEMP/unicode-font-pack"
+          if ($LASTEXITCODE -ne 0) { throw "Unicode font preparation failed" }
       - name: Build immutable package
         shell: pwsh
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: tools/package-windows.ps1 -Output dist -Version $env:RELEASE_TAG.TrimStart('v')
+        run: tools/package-windows.ps1 -Output dist -Version $env:RELEASE_TAG.TrimStart('v') -FontPack "$env:RUNNER_TEMP/unicode-font-pack"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-release

@@ -1,6 +1,7 @@
 param(
     [string]$Output = "dist",
-    [Parameter(Mandatory = $true)][string]$Version
+    [Parameter(Mandatory = $true)][string]$Version,
+    [Parameter(Mandatory = $true)][string]$FontPack
 )
 $ErrorActionPreference = "Stop"
 if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$') { throw "invalid release version" }
@@ -20,6 +21,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "sample asset verification failed" }
     python tools/package-assets.py --root . --stage $Stage
     if ($LASTEXITCODE -ne 0) { throw "sample package allowlist failed" }
+    python tools/package-font-notice.py --root . --stage $Stage | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "font package notice verification failed" }
+    python tools/prepare-font-pack.py stage --root . --font-pack $FontPack --stage $Stage | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Unicode font pack staging failed" }
     & "$Stage/bin/tilewright-editor.exe" version | Out-Null
     syft "$Stage/bin/tilewright-editor.exe" --source-name tilewright-editor --source-version $Version --output "cyclonedx-json=$Stage/sbom.cdx.json"
     $Sbom = Get-Content "$Stage/sbom.cdx.json" -Raw | ConvertFrom-Json
@@ -32,6 +37,8 @@ try {
         if ($Component.type -eq "file") { $Component.name = "/tilewright-editor.exe" }
     }
     $Sbom | ConvertTo-Json -Depth 20 -Compress | Set-Content "$Stage/sbom.cdx.json" -Encoding utf8NoBOM
+    python tools/prepare-font-pack.py sbom --root . --stage $Stage --sbom "$Stage/sbom.cdx.json" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Unicode font pack SBOM verification failed" }
     python tools/package-provenance.py --root . --version $Version --output "$Stage/provenance.json"
     if ($LASTEXITCODE -ne 0) { throw "package dependency provenance failed" }
     $Archive = Join-Path $Output "tilewright-editor-$Version-windows-amd64.zip"

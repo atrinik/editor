@@ -66,6 +66,17 @@ class ProvisionTests(unittest.TestCase):
             self.assertNotEqual(result.returncode,0)
             self.assertFalse(destination.exists())
 
+    def test_editor_launch_requires_explicit_font_pack_before_creating_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            source.mkdir()
+            result = subprocess.run([sys.executable, str(SCRIPT), '--world', str(source),
+                '--destination', str(root / 'session'), '--editor', str(root / 'editor')], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'explicit --font-pack', result.stderr)
+            self.assertFalse((root / 'session').exists())
+
     def test_copy_refuses_links_and_retains_any_partial_data(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

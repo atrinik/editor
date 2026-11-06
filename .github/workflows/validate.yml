@@ -37,7 +37,11 @@ jobs:
           tar -xzf "${RUNNER_TEMP}/syft.tar.gz" -C "${RUNNER_TEMP}/bin" syft
           echo "${RUNNER_TEMP}/bin" >>"${GITHUB_PATH}"
       - run: cargo fetch --locked
+      - name: Prepare immutable font data explicitly
+        run: python3 tools/prepare-font-pack.py prepare --acquire --output "${RUNNER_TEMP}/unicode-font-pack"
       - run: tools/validate.sh
+        env:
+          TILEWRIGHT_PREPARED_FONT_PACK: ${{ runner.temp }}/unicode-font-pack
 
   windows:
     name: Windows build, tests, and package
@@ -46,7 +50,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+      - run: cargo fetch --locked
+      - name: Prepare immutable font data explicitly
+        shell: pwsh
+        run: python tools/prepare-font-pack.py prepare --acquire --output "$env:RUNNER_TEMP/unicode-font-pack"
       - run: cargo test --locked --workspace --all-targets
+        env:
+          TILEWRIGHT_UNICODE_FONT_ROOT: ${{ runner.temp }}/unicode-font-pack
       - name: Install pinned packaging tools
         shell: pwsh
         run: |
@@ -60,7 +70,7 @@ jobs:
           "$env:RUNNER_TEMP/cargo-auditable" | Out-File -FilePath $env:GITHUB_PATH -Append
       - name: Package dry run
         shell: pwsh
-        run: tools/package-windows.ps1 -Output dist -Version 0.1.0-test.1
+        run: tools/package-windows.ps1 -Output dist -Version 0.1.0-test.1 -FontPack "$env:RUNNER_TEMP/unicode-font-pack"
 
   aggregate:
     name: Editor validation

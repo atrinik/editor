@@ -33,6 +33,11 @@
       "repository_id": 1327106998
     },
     {
+      "name": "tilewright-render-ui",
+      "repository": "seraphinastudios/tilewright-renderer",
+      "repository_id": 1327106998
+    },
+    {
       "name": "tilewright-render-wgpu",
       "repository": "seraphinastudios/tilewright-renderer",
       "repository_id": 1327106998

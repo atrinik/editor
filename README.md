@@ -3,8 +3,9 @@
 Tilewright editor is an MIT-licensed Rust world editor for isometric and
 top-down tile games, with built-in agent tooling. Humans and agents edit the
 same world through one command engine. The bounded offline prototype provides
-a native desktop session and deterministic scripted reference proof; an editor
-MCP server and rich panels remain future work.
+a native toolbar, scalar inspector, coordinate and terrain tools, reviewed
+changes and undo/redo. Deterministic reference capture accompanies native
+window testing; an editor MCP server and a full widget system remain future work.
 
 Tilewright is maintained by Seraphina Studios alongside
 [tilewright-world](https://github.com/seraphinastudios/tilewright-world), the
@@ -44,10 +45,18 @@ service, or server lifecycle.
 
 The editor opens world source trees with tilewright-world's `tilewright-source`
 and carries out edits as its `tilewright-edit` transactions; it builds scenes
-with tilewright-renderer 0.5.1. The production manifests target exact crates.io
+with tilewright-renderer 0.6.2, including its shared UI/text compiler.
+The production manifests target exact crates.io
 versions, recorded with their repositories in `policy/released-dependencies.json`.
 The registry lockfile records their actual archive checksums; producer path/Git
 overrides are not part of builds or package provenance.
+
+The editor owns panel layout, focus and actions; glyph layout and drawing stay
+in the shared renderer. The bundled common-Latin font preserves its OFL notice;
+the native editor also requires the explicit Unicode font pack (`--font-pack ROOT`),
+which packages carry with its original OFL notices.
+Unsupported text stays intact and is protected against lossy interactive edits.
+See [the prototype controls and limits](docs/OFFLINE-PROTOTYPE.md).
 
 `tilewright-editor-commands::History` provides semantic transaction preparation,
 reviewable file diffs, explicit commit, and undo/redo. It checks the opened world

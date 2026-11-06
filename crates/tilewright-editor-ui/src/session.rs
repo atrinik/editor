@@ -16,6 +16,7 @@ pub enum Action {
         generation: u64,
         key: SelectionKey,
     },
+    ClearSelection,
     Move {
         uid: String,
         x: i64,
@@ -91,6 +92,46 @@ fn refuse(message: &str) -> SessionError {
     SessionError(message.into())
 }
 
+/// Toolkit-canonical source spellings for the fixed coordinate guard layout.
+/// In particular, World's transaction comparisons distinguish `-0` from `0`.
+struct CoordinateGuards {
+    old_at: String,
+    changed_axes: Vec<String>,
+}
+impl CoordinateGuards {
+    fn apply(
+        &self,
+        text: String,
+        limits: &tilewright_jsonc::Limits,
+    ) -> Result<String, SessionError> {
+        let mut syntax = tilewright_jsonc::Document::parse(text, limits)
+            .map_err(|error| SessionError(error.to_string()))?;
+        let guards = std::iter::once((2, "value", &self.old_at)).chain(
+            self.changed_axes
+                .iter()
+                .enumerate()
+                .map(|(index, value)| (index + 3, "expect", value)),
+        );
+        for (index, key, value) in guards {
+            let operations = syntax
+                .root()
+                .get("operations")
+                .and_then(tilewright_jsonc::Value::as_array)
+                .filter(|operations| operations.len() == 3 + self.changed_axes.len())
+                .ok_or_else(|| refuse("invalid coordinate transaction guard layout"))?;
+            let span = operations
+                .get(index)
+                .and_then(|operation| operation.get(key))
+                .ok_or_else(|| refuse("missing coordinate transaction guard"))?
+                .span();
+            syntax = syntax
+                .replace(span, value, limits)
+                .map_err(|error| SessionError(error.to_string()))?;
+        }
+        Ok(syntax.source().into())
+    }
+}
+
 pub struct Session {
     history: History,
     catalog: PreviewCatalog,
@@ -134,6 +175,13 @@ impl Session {
     }
     pub fn status(&self) -> &SessionStatus {
         &self.status
+    }
+    /// Whether a new edit or history preview may be prepared. Dispatch still
+    /// checks the catalog and the action author's original source revision.
+    pub fn can_prepare(&self) -> bool {
+        self.status.phase == SessionPhase::Ready
+            && !self.history.needs_reload()
+            && self.history.pending().is_none()
     }
     pub fn world(&self) -> &World {
         self.history
@@ -209,6 +257,89 @@ impl Session {
             }
         }
     }
+    fn revalidate_selection(&mut self) {
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|key| !self.valid_key(key))
+        {
+            self.selection = None;
+        }
+    }
+    /// Inspect source-only details through the toolkit's bounded AST. History
+    /// still verifies the complete source revision before planning.
+    fn inspect_object_source<T>(
+        &self,
+        uid: &str,
+        inspect: impl FnOnce(
+            &tilewright_jsonc::Document,
+            &tilewright_jsonc::Value,
+        ) -> Result<T, SessionError>,
+    ) -> Result<T, SessionError> {
+        let document = self.history.document();
+        let world = document.world();
+        let location = world
+            .object_location(uid)
+            .ok_or_else(|| refuse("unknown UID location"))?;
+        let chunk = world
+            .planes()
+            .get(&location.plane)
+            .and_then(|plane| plane.chunks.get(&location.chunk))
+            .ok_or_else(|| refuse("missing authoritative object chunk"))?;
+        let limits = document.load_options().limits;
+        let limit = u64::try_from(limits.max_input_bytes)
+            .map_err(|_| refuse("source byte budget overflow"))?;
+        let bytes = document
+            .source()
+            .read(&chunk.path, limit)
+            .map_err(|error| SessionError(error.to_string()))?
+            .ok_or_else(|| refuse("object source chunk is missing"))?;
+        let text =
+            String::from_utf8(bytes).map_err(|_| refuse("object source chunk is not UTF-8"))?;
+        let syntax = tilewright_jsonc::Document::parse(text, &limits)
+            .map_err(|error| SessionError(error.to_string()))?;
+        let mut object = syntax.root();
+        for (depth, index) in location.path.iter().enumerate() {
+            object = object
+                .get(if depth == 0 { "objects" } else { "inventory" })
+                .and_then(tilewright_jsonc::Value::as_array)
+                .and_then(|objects| objects.get(*index))
+                .ok_or_else(|| refuse("object source location changed"))?;
+        }
+        if object.get("uid").and_then(tilewright_jsonc::Value::as_str) != Some(uid) {
+            return Err(refuse("object source UID changed"));
+        }
+        inspect(&syntax, object)
+    }
+    fn coordinate_guards(
+        &self,
+        uid: &str,
+        old_at: [u16; 2],
+        at: [u16; 2],
+    ) -> Result<CoordinateGuards, SessionError> {
+        self.inspect_object_source(uid, |syntax, object| {
+            let value = object
+                .get("at")
+                .ok_or_else(|| refuse("missing source coordinates"))?;
+            let axes = value
+                .as_array()
+                .filter(|axes| axes.len() == 2)
+                .ok_or_else(|| refuse("invalid source coordinates"))?;
+            let mut changed_axes = Vec::new();
+            for axis in 0..2 {
+                if axes[axis].as_i64() != Some(i64::from(old_at[axis])) {
+                    return Err(refuse("source coordinates changed"));
+                }
+                if old_at[axis] != at[axis] {
+                    changed_axes.push(syntax.canonical(&axes[axis]));
+                }
+            }
+            Ok(CoordinateGuards {
+                old_at: syntax.canonical(value),
+                changed_axes,
+            })
+        })
+    }
     fn prepare(&mut self, expected: [u8; 32], op: &Value) -> Result<(), SessionError> {
         self.prepare_operations(expected, std::slice::from_ref(op))
     }
@@ -217,8 +348,21 @@ impl Session {
         expected: [u8; 32],
         operations: &[Value],
     ) -> Result<(), SessionError> {
+        self.prepare_guarded_operations(expected, operations, None)
+    }
+    fn prepare_guarded_operations(
+        &mut self,
+        expected: [u8; 32],
+        operations: &[Value],
+        coordinates: Option<&CoordinateGuards>,
+    ) -> Result<(), SessionError> {
         self.verify_revision(expected)?;
         let text = json!({"format":"tilewright.transaction/1","title":"Editor semantic action","actor":"editor:prototype","operations":operations}).to_string();
+        let text = if let Some(coordinates) = coordinates {
+            coordinates.apply(text, &self.history.document().load_options().limits)?
+        } else {
+            text
+        };
         // History seals the complete consulted file base and enforces full World revision.
         self.history
             .prepare(expected, "editor:action", &text)
@@ -261,10 +405,31 @@ impl Session {
                 "session blocked: inspect recovery and reopen explicitly",
             ));
         }
-        if !matches!(action, Action::Cancel) {
+        // A pending transaction is the exact diff the author is reviewing.
+        // History's general preparation API can replace it, so fence every
+        // preparation action here before any call can discard that evidence.
+        if self.history.pending().is_some()
+            && matches!(
+                action,
+                Action::Move { .. }
+                    | Action::SetField { .. }
+                    | Action::Paint { .. }
+                    | Action::Undo
+                    | Action::Redo
+            )
+        {
+            return Err(refuse(
+                "review pending transaction: Accept or Cancel before another edit",
+            ));
+        }
+        if !matches!(action, Action::Cancel | Action::ClearSelection) {
             self.verify_catalog()?;
         }
         match action {
+            Action::ClearSelection => {
+                self.selection = None;
+                Ok(())
+            }
             Action::Select { generation, key } => {
                 self.verify_revision(self.history.document().revision())?;
                 if generation != self.generation || !self.valid_key(&key) {
@@ -311,18 +476,22 @@ impl Session {
                     // World 0.2 forbids object-relative set of `at`. A document
                     // pointer plus UID/prototype/old-value tests provides the
                     // supported order-preserving transaction for this chunk.
-                    let coordinate = if old_at == at {
-                        // A no-op move must preserve even the original coordinate
-                        // whitespace and must not create a recovery record.
-                        json!({"op":"test","path":chunk.path,"pointer":["objects",index,"at"],"value":at})
-                    } else {
-                        json!({"op":"set","path":chunk.path,"pointer":["objects",index,"at"],"expect":old_at,"value":at})
-                    };
-                    self.prepare_operations(expected, &[
+                    let mut operations = vec![
                         json!({"op":"test","object":{"uid":uid},"pointer":["proto"],"value":object.proto}),
                         json!({"op":"test","path":chunk.path,"pointer":["objects",index,"uid"],"value":uid}),
-                        coordinate,
-                    ])
+                        json!({"op":"test","path":chunk.path,"pointer":["objects",index,"at"],"value":old_at}),
+                    ];
+                    // Replace only changed scalar leaves, preserving array
+                    // comments, whitespace and the untouched axis's spelling.
+                    // A no-op remains tests only, with no recovery record.
+                    for axis in 0..2 {
+                        if old_at[axis] != at[axis] {
+                            operations.push(json!({"op":"set","path":chunk.path,"pointer":["objects",index,"at",axis],"expect":old_at[axis],"value":at[axis]}));
+                        }
+                    }
+                    self.verify_revision(expected)?;
+                    let guards = self.coordinate_guards(&uid, old_at, at)?;
+                    self.prepare_guarded_operations(expected, &operations, Some(&guards))
                 } else {
                     // Crossing chunks uses the released relocation operation;
                     // exporters may refuse order changes they cannot represent.
@@ -349,6 +518,19 @@ impl Session {
                     return Err(refuse("field absent from authoritative schema"));
                 }
                 let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
+                if object.fields.is_empty() {
+                    self.verify_revision(expected)?;
+                    if self.inspect_object_source(&uid, |_, object| {
+                        Ok(object.get("fields").is_none())
+                    })? {
+                        // Create only a proven-absent parent. Never replace an
+                        // existing empty container, which can contain comments.
+                        return self.prepare_operations(expected, &[
+                            json!({"op":"test","object":{"uid":uid},"pointer":["fields"],"absent":true}),
+                            json!({"op":"set","object":{"uid":uid},"pointer":["fields"],"value":{(field):value}}),
+                        ]);
+                    }
+                }
                 let mut op = json!({"op":"set","object":{"uid":uid},"pointer":["fields",field],"value":value});
                 if let Some((_, before)) = object.fields.iter().find(|(name, _)| name == &field) {
                     op["expect"] = field_json(before)?;
@@ -397,6 +579,7 @@ impl Session {
             Action::Accept => self.accept(recovery),
             Action::Cancel => {
                 self.history.cancel();
+                self.revalidate_selection();
                 self.status.phase = SessionPhase::Ready;
                 self.status.message = "Pending action cancelled; no publication".into();
                 self.invalidate_frame()
@@ -443,7 +626,7 @@ impl Session {
                 self.status.cleaned = Some(true);
                 self.status.message =
                     "Published World workspace and reloaded verified result".into();
-                self.selection = None;
+                self.revalidate_selection();
                 self.invalidate_frame()
             }
             Err(error) => {

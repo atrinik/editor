@@ -139,3 +139,7 @@ mod tests {
 mod session;
 pub use session::{Action, Session, SessionError, SessionPhase, SessionStatus};
 pub use tilewright_editor_preview::SelectionKey;
+
+pub mod inspector;
+pub mod text_input;
+pub mod tools;

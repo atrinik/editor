@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tomllib
 
 REGISTRY = 'registry+https://github.com/rust-lang/crates.io-index'
@@ -67,6 +68,16 @@ def main():
                   'revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True, timeout=30).strip(),
                   'rust': subprocess.check_output(['rustc', '--version'], text=True, timeout=30).strip(),
                   **dependency_provenance(root)}
+    # Refuse an archive when its required font notice was omitted or altered.
+    provenance.update(json.loads(subprocess.check_output(
+        [sys.executable, str(Path(__file__).with_name('package-font-notice.py')),
+         '--root', str(root), '--stage', str(args.output.parent.resolve()), '--verify'],
+        text=True, timeout=150)))
+    provenance.update(json.loads(subprocess.check_output(
+        [sys.executable, str(Path(__file__).with_name('prepare-font-pack.py')), 'verify',
+         '--root', str(root), '--stage', str(args.output.parent.resolve()),
+         '--sbom', str(args.output.parent.resolve() / 'sbom.cdx.json')],
+        text=True, timeout=150)))
     args.output.write_text(json.dumps(provenance, indent=2) + '\n', encoding='utf-8')
 
 

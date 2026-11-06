@@ -19,6 +19,7 @@ tilewright-render-api.workspace = true
 tilewright-render-world.workspace = true
 tilewright-render-resources.workspace = true
 tilewright-render-testkit.workspace = true
+tilewright-render-ui.workspace = true
 tilewright-render-wgpu.workspace = true
 tilewright-render-sdl3.workspace = true
 tilewright-scene.workspace = true

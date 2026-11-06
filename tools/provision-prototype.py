@@ -136,9 +136,21 @@ def main():
     parser.add_argument('--destination', type=Path, required=True, help='new absent session directory')
     parser.add_argument('--world', type=Path, required=True, help='existing sample/import to copy as data')
     parser.add_argument('--editor', type=Path, help='trusted built editor executable; omit to provision only')
+    parser.add_argument('--font-pack', type=Path, help='explicit absolute immutable font pack; required for editor launch')
     parser.add_argument('--demo-script', action='store_true')
     parser.add_argument('--reference', action='store_true', help='headless reference proof, no native acceptance')
     args = parser.parse_args()
+    font_record = None
+    if args.editor and args.font_pack is None:
+        raise ValueError('editor launch requires explicit --font-pack')
+    if args.font_pack is not None:
+        import font_pack
+        if not args.font_pack.is_absolute():
+            raise ValueError('font pack must be an explicit absolute directory')
+        manifest = font_pack.read_regular(args.font_pack / 'manifest.json', font_pack.MAX_MANIFEST)
+        font_record = {'scope': 'candidate/local data byte verification only; no registry proof',
+                       'registry_proof': False, 'path': str(args.font_pack),
+                       **font_pack.verify(args.font_pack, manifest)}
     if sys.platform != 'linux':
         raise ValueError('checked prototype editing is supported only on Linux')
     # Resolve only the existing trusted parent. The new final component is
@@ -168,7 +180,7 @@ def main():
         os.fsync(task_fd)
         os.fsync(parent_fd)
         receipt = {'format': 'tilewright.prototype-provision/1', 'platform': sys.platform,
-                   'roots': ids, 'copy': copied, 'scope': 'fresh distinct retained roots; no arbitrary-root guarantee'}
+                   'roots': ids, 'copy': copied, 'font_pack': font_record, 'scope': 'fresh distinct retained roots; no arbitrary-root guarantee'}
         receipt_fd = os.open('provision.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                              0o600, dir_fd=task_fd)
         with os.fdopen(receipt_fd, 'w') as stream:
@@ -189,7 +201,8 @@ def main():
             command = [str(executable), 'prototype',
                        '--world-fd', str(children['world']),
                        '--recovery-fd', str(children['recovery']),
-                       '--evidence-fd', str(children['evidence'])]
+                       '--evidence-fd', str(children['evidence']),
+                       '--font-pack', str(args.font_pack)]
             if args.demo_script:
                 command.append('--demo-script')
             if args.reference:

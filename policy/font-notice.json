@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "package": {
+    "name": "tilewright-render-ui",
+    "version": "0.6.2",
+    "license": "MIT AND OFL-1.1"
+  },
+  "manifest_sha256": "597b0b047442eb4aa40b59b0a0104a9b446a836ceb8a8c249f52db92a429393c",
+  "source_sha256": "af0bff7599c3df3831755c16e39b3c496df74b8c8d8a1161b14dc8461be17cb4",
+  "notice_sha256": "50ab8dd54680d3473f649c9db86fece88434d097c7834475c1c72d2f8c429215",
+  "notice_destination": "licenses/OFL-RobotoMono.txt"
+}
