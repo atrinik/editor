@@ -128,8 +128,9 @@ impl TextInput {
     }
 
     pub(crate) fn with_identity(text: String, draft: u64) -> Result<Self, ToolError> {
-        // Existing source can contain controls. Opening it must remain lossless;
-        // only newly inserted user input retains the single-line control policy.
+        // Existing source can contain controls or line separators. Opening it
+        // must remain lossless; only newly inserted user input follows the
+        // single-line policy in `validate_insert`.
         if text.len() > MAX_INPUT_BYTES {
             return Err(ToolError("Input exceeds byte budget"));
         }
@@ -380,13 +381,21 @@ fn validate_insert(current: &str, range: &Range<usize>, text: &str) -> Result<()
     validate_cursor(current, TextCursor::new(range.start))?;
     validate_cursor(current, TextCursor::new(range.end))?;
     if text.len() > MAX_INPUT_BYTES - (current.len() - range.len())
-        || text.chars().any(char::is_control)
+        || text.chars().any(breaks_single_line)
     {
         return Err(ToolError(
-            "Input exceeds byte budget or contains control characters",
+            "Input exceeds byte budget or contains control characters or line breaks",
         ));
     }
     Ok(())
+}
+
+/// Characters a single-line field never accepts as new input. Text layout
+/// breaks lines at every control line break (LF, CR, VT, FF, NEL) and also at
+/// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which are not
+/// controls.
+fn breaks_single_line(character: char) -> bool {
+    character.is_control() || matches!(character, '\u{2028}' | '\u{2029}')
 }
 
 fn validate_cursor(text: &str, cursor: TextCursor) -> Result<(), ToolError> {

@@ -195,3 +195,47 @@ fn grapheme_joins_keep_caret_valid_without_rewriting_raw_input() {
     input.input("\u{2067}עברית\u{2069}\u{200d}").unwrap();
     assert!(input.text().starts_with("\u{2067}עברית\u{2069}\u{200d}"));
 }
+
+#[test]
+fn new_line_and_paragraph_separators_are_rejected_like_controls() {
+    for separator in ["\u{2028}", "\u{2029}"] {
+        let mut input = TextInput::new("AZ".into()).unwrap();
+        select(&mut input, 1, 1);
+        let before = input.clone();
+        // Typed or pasted text arrives through `input`; IME through preedit.
+        assert!(input.input(separator).is_err());
+        assert!(input.input(&format!("x{separator}y")).is_err());
+        assert!(input.update_preedit(separator, 1, 0).is_err());
+        assert_eq!(input, before);
+        input.update_preedit("é", 1, 0).unwrap();
+        let composing = input.clone();
+        assert!(
+            input
+                .update_preedit(&format!("é{separator}"), 2, 0)
+                .is_err()
+        );
+        assert!(input.input(&format!("é{separator}")).is_err());
+        assert_eq!(input, composing, "a rejected commit keeps the composition");
+        input.input("é").unwrap();
+        assert_eq!(input.text(), "AéZ");
+    }
+}
+
+#[test]
+fn loaded_line_and_paragraph_separators_are_kept_until_the_user_removes_them() {
+    let loaded = "A\u{2028}B\u{2029}C";
+    let mut input = TextInput::new(loaded.into()).unwrap();
+    assert_eq!(input.text(), loaded);
+    assert_eq!(input.snapshot().display_text, loaded);
+    // Editing elsewhere preserves the stored separators byte for byte.
+    select(&mut input, 0, 0);
+    input.input("<").unwrap();
+    assert_eq!(input.text(), "<A\u{2028}B\u{2029}C");
+    // Each separator is a whole grapheme the user can delete or replace.
+    select(&mut input, 2, 2);
+    input.delete().unwrap();
+    assert_eq!(input.text(), "<AB\u{2029}C");
+    select(&mut input, 3, 6);
+    input.input(" ").unwrap();
+    assert_eq!(input.text(), "<AB C");
+}
