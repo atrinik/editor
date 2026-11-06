@@ -1511,36 +1511,32 @@ fn brush_size_controls_clip_at_the_view_edge_and_pending_changes_fence_new_strok
 }
 
 #[test]
-fn a_press_during_a_stroke_reports_the_abandoned_stroke_and_starts_fresh() {
+fn a_press_during_a_stroke_only_ends_it_visibly_wherever_it_lands() {
     let (_temporary, mut app) = brush_application();
-    let first = cell_pixel(&mut app, 0, 1);
-    let second = cell_pixel(&mut app, 2, 3);
-    super::native_pointer(&mut app, first, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
-    acknowledge_ui(&mut app);
-    // A missed release followed by a new press: the old stroke is reported
-    // as ended, never silently dropped or merged into the new one.
-    super::native_pointer(&mut app, second, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
-    assert_eq!(app.notice.as_deref(), Some(super::STROKE_INTERRUPTED));
-    assert_eq!(
-        app.tools.stroke().unwrap().cells().collect::<Vec<_>>(),
-        [[2, 3]]
-    );
-    super::native_stroke_release(&mut app, second, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
-    assert_eq!(terrain_value(&app, 0, 1).as_deref(), Some("grass"));
-    assert_eq!(terrain_value(&app, 2, 3).as_deref(), Some("sand"));
-}
-
-#[test]
-fn a_panel_or_control_press_during_a_stroke_ends_it_unprepared() {
-    let (_temporary, mut app) = brush_application();
-    let start = cell_pixel(&mut app, 1, 1);
-    for panel in [[20.0, 20.0], [1270.0, 400.0]] {
+    let start = cell_pixel(&mut app, 0, 1);
+    let other = cell_pixel(&mut app, 2, 3);
+    // A missed release followed by a press on the world, the Select tool,
+    // a sidebar panel pixel or outside the window: the old stroke is ended
+    // and reported, nothing is prepared, and the press does nothing else.
+    for press in [other, [20.0, 20.0], [1270.0, 400.0], [-5.0, -5.0]] {
         acknowledge_ui(&mut app);
         super::native_pointer(&mut app, start, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
-        acknowledge_ui(&mut app);
-        super::native_pointer(&mut app, panel, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+        assert!(app.tools.stroke().is_some());
+        let error = super::native_pointer(&mut app, press, BRUSH_WINDOW, BRUSH_WINDOW).unwrap_err();
+        assert_eq!(error, super::STROKE_INTERRUPTED);
+        assert_eq!(app.notice.as_deref(), Some(super::STROKE_INTERRUPTED));
         assert!(app.tools.stroke().is_none() && app.stroke_mask.is_none());
-        super::native_stroke_release(&mut app, panel, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+        assert_eq!(
+            app.tools.mode(),
+            tilewright_editor_ui::tools::ToolMode::Terrain
+        );
+        super::native_stroke_release(&mut app, press, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
         assert!(app.session.history().pending().is_none());
     }
+    // The next press starts a fresh stroke.
+    acknowledge_ui(&mut app);
+    super::native_pointer(&mut app, other, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    super::native_stroke_release(&mut app, other, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert_eq!(terrain_value(&app, 0, 1).as_deref(), Some("grass"));
+    assert_eq!(terrain_value(&app, 2, 3).as_deref(), Some("sand"));
 }

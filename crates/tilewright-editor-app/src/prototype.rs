@@ -2086,9 +2086,12 @@ fn native_pointer_selection(
     physical: (u32, u32),
     extend: bool,
 ) -> Result<()> {
-    // A press while a stroke runs means its release was missed: end it
-    // visibly before the press acts, whatever it hits.
-    app.interrupt_stroke();
+    // A press while a stroke runs means its release was missed. It only
+    // ends that stroke, visibly; the press itself does nothing else.
+    if app.tools.stroke().is_some() {
+        app.interrupt_stroke();
+        return Err(STROKE_INTERRUPTED.into());
+    }
     if !app.displayed_input_ready() {
         return Err("input waits for the current displayed frame".into());
     }
