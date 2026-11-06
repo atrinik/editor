@@ -360,3 +360,44 @@ fn large_authoritative_schemas_are_bounded_and_report_truncation() {
         tilewright_editor_ui::inspector::MAX_INSPECTOR_ROWS
     );
 }
+#[test]
+fn stored_line_and_paragraph_separators_open_and_review_unchanged() {
+    let (dir, _, _) = fixture();
+    let chunk_path = dir.path().join("planes/main/layers/0/0_0.jsonc");
+    let mut chunk: serde_json::Value =
+        serde_json::from_slice(&fs::read(&chunk_path).unwrap()).unwrap();
+    let marker = chunk["objects"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|object| object["uid"] == "marker_1")
+        .unwrap();
+    marker["fields"]["label"] = serde_json::json!("A\u{2028}B\u{2029}C");
+    fs::write(chunk_path, serde_json::to_vec(&chunk).unwrap()).unwrap();
+    let document = WorldDocument::open(dir.path()).unwrap();
+    let (catalog, _) = loader::load(
+        document.source(),
+        document.world(),
+        PreviewLimits::default(),
+    )
+    .unwrap();
+    let key = key();
+    let view = inspect(
+        document.world(),
+        &catalog,
+        Some(&key),
+        4,
+        document.revision(),
+    );
+    let mut tools = ToolState::default();
+    tools.begin_field(&view, "label", false).unwrap();
+    assert_eq!(tools.draft_text(), Some("A\u{2028}B\u{2029}C"));
+    // New input cannot add a separator, but editing elsewhere keeps the
+    // stored ones byte for byte through review.
+    assert!(tools.input("\u{2028}").is_err());
+    tools.input("!").unwrap();
+    let Action::SetField { value, .. } = tools.build_action(&view, false).unwrap() else {
+        panic!("expected field")
+    };
+    assert_eq!(value, serde_json::json!("A\u{2028}B\u{2029}C!"));
+}

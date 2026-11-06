@@ -950,6 +950,66 @@ fn deletion_and_clipboard_paste_return_wait_for_displayed_draft() {
 }
 
 #[test]
+fn native_typing_ime_and_paste_reject_line_and_paragraph_separators() {
+    use crate::workspace_ui::Control;
+    use sdl3::{
+        event::Event,
+        keyboard::{Keycode, Mod},
+    };
+    for separator in ["\u{2028}", "\u{2029}"] {
+        let (_temporary, mut app) = application();
+        app.select_visible_object(true).unwrap();
+        app.control(Control::Field("label".into())).unwrap();
+        acknowledge_ui(&mut app);
+        let before = app.tools.draft_snapshot().unwrap();
+        let mut input = crate::native_input::NativeInput::new(7);
+        input.begin_batch(
+            true,
+            app.tools.input_revision().map(|revision| revision.draft),
+        );
+        let typed = Event::TextInput {
+            timestamp: 0,
+            window_id: 7,
+            text: format!("a{separator}b"),
+        };
+        assert!(
+            super::native_text_event(&mut app, &typed, &mut input)
+                .unwrap()
+                .is_err()
+        );
+        let preedit = Event::TextEditing {
+            timestamp: 0,
+            window_id: 7,
+            text: separator.into(),
+            start: 1,
+            length: 0,
+        };
+        assert!(
+            super::native_text_event(&mut app, &preedit, &mut input)
+                .unwrap()
+                .is_err()
+        );
+        let mut paste = input_key(7, Keycode::V, false);
+        if let Event::KeyDown { keymod, .. } = &mut paste {
+            *keymod = Mod::LCTRLMOD;
+        }
+        assert!(
+            super::native_clipboard_event(
+                &mut app,
+                &paste,
+                true,
+                || Ok(format!("pasted{separator}label")),
+                |_| panic!("paste must not write clipboard"),
+            )
+            .unwrap()
+            .is_err()
+        );
+        assert_eq!(app.tools.draft_snapshot().unwrap(), before);
+        assert!(app.session.history().pending().is_none());
+    }
+}
+
+#[test]
 fn switched_or_refocused_draft_rejects_previously_drained_ime_events() {
     use crate::workspace_ui::{Control, WorkspaceUi};
     use sdl3::{event::Event, mouse::MouseButton};
