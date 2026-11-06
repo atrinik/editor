@@ -24,6 +24,21 @@ fn focus_loss_requires_explicit_refocus_and_fresh_return_release() {
     assert!(input.submit_allowed(false));
 }
 #[test]
+fn focus_gain_restores_return_and_fences_old_text() {
+    let mut input = NativeInput::new(1);
+    input.lose_focus();
+    input.begin_batch(false, Some(3));
+    assert!(!input.submit_allowed(false));
+    input.gain_focus(20);
+    assert!(input.focused);
+    assert!(input.submit_allowed(false));
+    assert!(!input.submit_allowed(true));
+    assert!(!input.text_allowed(Some(3), 20));
+    input.begin_batch(false, Some(3));
+    assert!(!input.text_allowed(Some(3), 19));
+    assert!(input.text_allowed(Some(3), 20));
+}
+#[test]
 fn composition_capability_is_set_in_fresh_process() {
     const CHILD: &str = "TILEWRIGHT_TEST_IME_HINT_CHILD";
     if std::env::var_os(CHILD).is_some() {

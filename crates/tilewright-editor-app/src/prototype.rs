@@ -1619,6 +1619,14 @@ fn native_text_event(
             }
             Some(result)
         }
+        Event::Window {
+            win_event: WindowEvent::FocusGained,
+            timestamp,
+            ..
+        } => {
+            input.gain_focus(*timestamp);
+            None
+        }
         Event::KeyUp {
             keycode: Some(Keycode::Return | Keycode::KpEnter),
             ..

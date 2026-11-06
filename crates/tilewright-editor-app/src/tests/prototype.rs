@@ -1259,3 +1259,30 @@ fn backspace_then_left_uses_current_shaped_text_and_return_stays_fenced() {
     assert!(app.session.history().pending().is_none());
     assert_eq!(app.session.history().document().revision(), source);
 }
+
+#[test]
+fn regained_focus_lets_return_reach_world_actions_without_a_draft() {
+    use sdl3::{
+        event::{Event, WindowEvent},
+        keyboard::Keycode,
+    };
+    let (_temporary, mut app) = application();
+    let mut input = crate::native_input::NativeInput::new(7);
+    let window = |win_event| Event::Window {
+        timestamp: 5,
+        window_id: 7,
+        win_event,
+    };
+    let enter = input_key(7, Keycode::Return, false);
+    input.begin_batch(false, None);
+    super::native_text_event(&mut app, &window(WindowEvent::FocusLost), &mut input)
+        .unwrap()
+        .unwrap();
+    assert!(super::native_text_event(&mut app, &enter, &mut input).is_some());
+    assert!(
+        super::native_text_event(&mut app, &window(WindowEvent::FocusGained), &mut input).is_none()
+    );
+    assert!(input.focused);
+    input.begin_batch(false, None);
+    assert!(super::native_text_event(&mut app, &enter, &mut input).is_none());
+}
