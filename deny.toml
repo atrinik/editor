@@ -3,6 +3,13 @@ all-features = true
 
 [advisories]
 yanked = "deny"
+# Temporary: ttf-parser is unmaintained and arrives only through renderer
+# =0.6.2 (cosmic-text 0.19 -> fontdb 0.23 -> ttf-parser 0.25). Ignore this one
+# advisory and nothing else. Remove this entry when the renderer cohort that
+# drops cosmic-text/fontdb/ttf-parser ships and the editor moves to it.
+ignore = [
+  { id = "RUSTSEC-2026-0192", reason = "temporary: unmaintained ttf-parser via renderer 0.6.2 cosmic-text/fontdb; remove when the renderer cohort that drops cosmic-text/fontdb/ttf-parser ships and the editor moves to it" },
+]
 
 [licenses]
 allow = ["Apache-2.0", "ISC", "MIT", "Unicode-3.0", "Zlib"]
