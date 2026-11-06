@@ -24,8 +24,9 @@ SBOM.
 - ICU4X line breaking, segmentation and character properties: `icu_*` 2.4.0
   (including their compiled `*_data` crates), `zerovec`, `zerotrie`,
   `zerofrom`, `yoke`, `litemap`, `tinystr`, `writeable` and `potential_utf`:
-  Unicode License v3; the notice is reproduced below. Exact dependency
-  licenses are checked against the locked graph.
+  Unicode License v3. `parley_data` also embeds pre-generated ICU4X/Unicode
+  data. The Unicode notice is reproduced below. Exact dependency licenses are
+  checked against the locked graph.
 - `png`, compression support, SHA-256 and JSON encoding: MIT-compatible
   alternatives recorded by the exact locked dependency graph.
 
