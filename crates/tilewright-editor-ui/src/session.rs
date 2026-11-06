@@ -473,7 +473,7 @@ impl Session {
                         u16::try_from(y.rem_euclid(32)).map_err(|_| refuse("local y overflow"))?,
                     ];
                     let index = location.path[0];
-                    // World 0.1 forbids object-relative set of `at`. A document
+                    // World 0.2 forbids object-relative set of `at`. A document
                     // pointer plus UID/prototype/old-value tests provides the
                     // supported order-preserving transaction for this chunk.
                     let mut operations = vec![

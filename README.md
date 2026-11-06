@@ -73,7 +73,7 @@ headers installed by `tools/install-linux-native-deps.sh`.
 
 The [offline prototype guide](docs/OFFLINE-PROTOTYPE.md) describes the authored
 neutral sample, safe fresh session provisioning, controls, external adapter
-workflow and Linux checked-editing limits. A Classic map remains external data;
+workflow and Linux checked-editing limits. A game map remains external data;
 its first preview uses authored schematic resources.
 
 ```sh

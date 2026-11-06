@@ -4,7 +4,7 @@ The editor source is MIT. Its exact dependency graph is recorded by
 `Cargo.lock`, checked by `cargo-deny`, and included in each CycloneDX release
 SBOM.
 
-- `tilewright-source`, `tilewright-edit` and `tilewright-jsonc` 0.1.0
+- `tilewright-source`, `tilewright-edit` and `tilewright-jsonc` 0.2.0
   (tilewright-world): MIT.
 - `tilewright-scene` and `tilewright-render-*` 0.6.2 (tilewright-renderer): MIT
   implementation; `tilewright-render-ui` also bundles OFL-1.1 font data.
@@ -26,7 +26,7 @@ SBOM.
 The bundled `samples/prototype-neutral` data and standalone ATX1 resources are
 original MIT geometric fixtures by Seraphina Studios. Exact source, author,
 license, transformation and SHA-256 records are in `provenance/assets.json`.
-No external Classic map or original game artwork is included.
+No external game map or original game artwork is included.
 
 Authored content opened by the editor is not part of this software and retains
 its own license and attribution.
