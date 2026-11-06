@@ -15,7 +15,7 @@ use std::{
 use tilewright_source::{Diagnostic, LoadOptions, Overlay, Projection, SourceRoot, World};
 
 /// The world format and toolkit release the editor builds against.
-pub const TOOLKIT_COMPATIBILITY: &str = "tilewright.world/1 tilewright-source/0.1.0";
+pub const TOOLKIT_COMPATIBILITY: &str = "tilewright.world/1 tilewright-source/0.2.0";
 
 /// Most diagnostics opening a world reports. Past one fewer, the toolkit
 /// keeps the last place for a `source.budget` diagnostic about the rest.
