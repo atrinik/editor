@@ -38,6 +38,15 @@ pub enum Action {
         proto: String,
         expected: [u8; 32],
     },
+    /// One brush gesture: every covered cell in one reviewed `terrain.set`.
+    PaintStroke {
+        plane: String,
+        layer: i32,
+        grid: String,
+        cells: Vec<[i64; 2]>,
+        proto: String,
+        expected: [u8; 32],
+    },
     Accept,
     Cancel,
     Undo,
@@ -340,6 +349,54 @@ impl Session {
             })
         })
     }
+    /// Capability-checked `terrain.set` cells, each expecting its committed
+    /// value. With `skip_unchanged`, cells already holding `proto` are omitted.
+    fn terrain_cells(
+        &self,
+        plane: &str,
+        layer: i32,
+        grid: &str,
+        cells: &[[i64; 2]],
+        proto: &str,
+        skip_unchanged: bool,
+    ) -> Result<Vec<Value>, SessionError> {
+        let (p, l, _) = self.catalog.view();
+        if plane != p
+            || layer != l
+            || !self
+                .catalog
+                .editing()
+                .terrain
+                .get(grid)
+                .is_some_and(|values| values.contains(proto))
+            || !cells.iter().all(|&[x, y]| self.in_bounds(x, y))
+        {
+            return Err(refuse("terrain capability or bounds refused"));
+        }
+        let world = self.history.document().world();
+        let index = world
+            .profile()
+            .ground_layers
+            .iter()
+            .position(|g| g == grid)
+            .ok_or_else(|| refuse("unknown ground grid"))?;
+        let mut operations = Vec::new();
+        for &[x, y] in cells {
+            let local = usize::try_from(y.rem_euclid(32) * 32 + x.rem_euclid(32))
+                .map_err(|_| refuse("cell overflow"))?;
+            let before = world
+                .planes()
+                .get(plane)
+                .and_then(|p| p.chunks.get(&(layer, x.div_euclid(32), y.div_euclid(32))))
+                .and_then(|c| c.ground.get(index))
+                .and_then(|g| g.value(local));
+            if skip_unchanged && before == Some(proto) {
+                continue;
+            }
+            operations.push(json!({"at":[x,y],"value":proto,"expect":before}));
+        }
+        Ok(operations)
+    }
     fn prepare(&mut self, expected: [u8; 32], op: &Value) -> Result<(), SessionError> {
         self.prepare_operations(expected, std::slice::from_ref(op))
     }
@@ -414,6 +471,7 @@ impl Session {
                 Action::Move { .. }
                     | Action::SetField { .. }
                     | Action::Paint { .. }
+                    | Action::PaintStroke { .. }
                     | Action::Undo
                     | Action::Redo
             )
@@ -546,35 +604,32 @@ impl Session {
                 proto,
                 expected,
             } => {
-                let (p, l, _) = self.catalog.view();
-                if plane != p
-                    || layer != l
-                    || !self.in_bounds(x, y)
-                    || !self
-                        .catalog
-                        .editing()
-                        .terrain
-                        .get(&grid)
-                        .is_some_and(|values| values.contains(&proto))
-                {
-                    return Err(refuse("terrain capability or bounds refused"));
+                let cells = self.terrain_cells(&plane, layer, &grid, &[[x, y]], &proto, false)?;
+                self.prepare(expected,&json!({"op":"terrain.set","plane":plane,"layer":layer,"grid":grid,"cells":cells}))
+            }
+            Action::PaintStroke {
+                plane,
+                layer,
+                grid,
+                cells,
+                proto,
+                expected,
+            } => {
+                if cells.is_empty() || cells.len() > crate::brush::MAXIMUM_STROKE_CELLS {
+                    return Err(refuse("brush stroke cell count refused"));
                 }
-                let world = self.history.document().world();
-                let index = world
-                    .profile()
-                    .ground_layers
-                    .iter()
-                    .position(|g| g == &grid)
-                    .ok_or_else(|| refuse("unknown ground grid"))?;
-                let local = usize::try_from(y.rem_euclid(32) * 32 + x.rem_euclid(32))
-                    .map_err(|_| refuse("cell overflow"))?;
-                let before = world
-                    .planes()
-                    .get(&plane)
-                    .and_then(|p| p.chunks.get(&(layer, x.div_euclid(32), y.div_euclid(32))))
-                    .and_then(|c| c.ground.get(index))
-                    .and_then(|g| g.value(local));
-                self.prepare(expected,&json!({"op":"terrain.set","plane":plane,"layer":layer,"grid":grid,"cells":[{"at":[x,y],"value":proto,"expect":before}]}))
+                if !cells.windows(2).all(|pair| pair[0] < pair[1]) {
+                    return Err(refuse("brush stroke cells must be distinct and ordered"));
+                }
+                let cells = self.terrain_cells(&plane, layer, &grid, &cells, &proto, true)?;
+                if cells.is_empty() {
+                    return Err(refuse(
+                        "brush stroke changes no cell: every covered cell already has this terrain",
+                    ));
+                }
+                // One gesture is one operation, so review, recovery, undo and
+                // redo each treat the whole stroke as a single World change.
+                self.prepare(expected,&json!({"op":"terrain.set","plane":plane,"layer":layer,"grid":grid,"cells":cells}))
             }
             Action::Accept => self.accept(recovery),
             Action::Cancel => {

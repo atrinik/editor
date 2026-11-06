@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Local input only; every edit leaves this module as a Session action.
+use crate::brush::{Brush, Stroke};
 use crate::text_input::{TextInput, TextInputSnapshot, TextRevision, TextSelection};
 use crate::{
     Action, SelectionKey,
@@ -62,6 +63,8 @@ pub struct ToolState {
     terrain: Option<TerrainChoice>,
     draft: Option<Draft>,
     next_draft: u64,
+    brush: Brush,
+    stroke: Option<Stroke>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,6 +83,13 @@ impl ToolState {
     pub fn set_mode(&mut self, mode: ToolMode) {
         self.cancel();
         self.mode = mode;
+    }
+    pub fn brush(&self) -> Brush {
+        self.brush
+    }
+    /// A running stroke keeps the brush it began with.
+    pub fn set_brush(&mut self, brush: Brush) {
+        self.brush = brush.resized(0);
     }
     pub fn terrain_choice(&self) -> Option<&TerrainChoice> {
         self.terrain.as_ref()
@@ -166,8 +176,10 @@ impl ToolState {
             let _ = draft.input.backspace();
         }
     }
+    /// Discard local input: the text draft and any running brush stroke.
     pub fn cancel(&mut self) {
         self.draft = None;
+        self.stroke = None;
     }
     pub fn draft_text(&self) -> Option<&str> {
         self.draft.as_ref().map(|draft| draft.input.text())
@@ -322,6 +334,98 @@ impl ToolState {
             proto: choice.prototype.clone(),
             expected: stamp.revision,
         })
+    }
+}
+
+impl ToolState {
+    pub fn stroke(&self) -> Option<&Stroke> {
+        self.stroke.as_ref()
+    }
+    /// Begin a drag stroke at the inspected `cell` with the chosen terrain and
+    /// brush. It uses the same capability, palette and freshness checks as a
+    /// single-cell paint and stamps the press cell immediately.
+    pub fn begin_stroke(
+        &mut self,
+        inspector: &Inspector<'_>,
+        cell: &SelectionKey,
+        pending: bool,
+    ) -> Result<(), ToolError> {
+        let Action::Paint {
+            plane,
+            layer,
+            grid,
+            x,
+            y,
+            proto,
+            expected,
+        } = self.paint_action(inspector, cell, pending)?
+        else {
+            return Err(ToolError("Paint requires a cell"));
+        };
+        let generation = inspector
+            .stamp
+            .as_ref()
+            .map(|stamp| stamp.generation)
+            .ok_or(ToolError("Paint requires the current inspected cell"))?;
+        let (_, _, bounds) = inspector.catalog.view();
+        self.draft = None;
+        let mut stroke = Stroke::begin(
+            plane, layer, grid, proto, self.brush, expected, generation, bounds,
+        );
+        stroke.stamp([x, y]);
+        self.stroke = Some(stroke);
+        Ok(())
+    }
+    /// Add one pointer sample. `cell` must come from the exact cell mask of
+    /// the stroke's own frame `generation`; a changed frame ends the stroke.
+    pub fn extend_stroke(
+        &mut self,
+        cell: &SelectionKey,
+        generation: u64,
+    ) -> Result<usize, ToolError> {
+        let stroke = self.stroke.as_mut().ok_or(ToolError("No brush stroke"))?;
+        if stroke.generation() != generation {
+            self.stroke = None;
+            return Err(ToolError(
+                "View changed during the brush stroke; nothing was prepared",
+            ));
+        }
+        let SelectionKey::Cell {
+            plane,
+            layer,
+            grid,
+            x,
+            y,
+        } = cell
+        else {
+            return Err(ToolError("Brush sample is not a terrain cell"));
+        };
+        if plane != stroke.plane() || *layer != stroke.layer() || grid != stroke.grid() {
+            return Err(ToolError("Brush sample is outside the stroke's grid"));
+        }
+        Ok(stroke.stamp([*x, *y]))
+    }
+    /// End the gesture. Returns the single reviewed paint action for every
+    /// covered cell, or `None` when no stroke was running.
+    pub fn finish_stroke(
+        &mut self,
+        generation: u64,
+        pending: bool,
+    ) -> Result<Option<Action>, ToolError> {
+        let Some(stroke) = self.stroke.take() else {
+            return Ok(None);
+        };
+        if stroke.generation() != generation {
+            return Err(ToolError(
+                "View changed during the brush stroke; nothing was prepared",
+            ));
+        }
+        available(pending)?;
+        stroke.into_action().map(Some)
+    }
+    /// Abandon a running stroke without preparing anything.
+    pub fn cancel_stroke(&mut self) -> bool {
+        self.stroke.take().is_some()
     }
 }
 
