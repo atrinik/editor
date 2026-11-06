@@ -142,18 +142,21 @@ impl PreparedPreview {
         y: u32,
         terrain: bool,
     ) -> Result<Option<SelectionKey>, PreviewError> {
-        if generation == 0 || generation != self.frame_revision {
-            return Err(failure("stale preview frame"));
-        }
-        let scene = if terrain {
-            &self.cell_scene
-        } else {
-            &self.scene
-        };
-        let viewport = scene.viewport();
+        self.check_generation(generation)?;
+        let viewport = self.scene_for(terrain).viewport();
         if x >= viewport.width || y >= viewport.height {
             return Err(failure("pick outside viewport"));
         }
+        self.mask(generation, terrain)?.pick(x, y)
+    }
+
+    /// Render one exact reference mask for this frame, so a gesture can map
+    /// many pointer samples without a render per sample. The mask belongs to
+    /// `generation` only; callers discard it when the frame or viewport changes.
+    pub fn mask(&self, generation: u64, terrain: bool) -> Result<PickMask, PreviewError> {
+        self.check_generation(generation)?;
+        let scene = self.scene_for(terrain);
+        let viewport = scene.viewport();
         let mut renderer = tilewright_render_testkit::ReferenceRenderer::new(
             tilewright_render_api::TargetDescriptor {
                 kind: tilewright_render_api::TargetKind::Offscreen,
@@ -165,23 +168,73 @@ impl PreparedPreview {
         .map_err(|e| failure(e.to_string()))?;
         let frame = render_scene(&mut renderer, scene, self.resources.clone())
             .map_err(|e| failure(e.to_string()))?;
-        let index = usize::try_from(u64::from(y) * u64::from(frame.width) + u64::from(x))
+        let expected = u64::from(frame.width) * u64::from(frame.height);
+        if usize::try_from(expected).ok() != Some(frame.semantic_ids.len()) {
+            return Err(failure("invalid renderer mask"));
+        }
+        Ok(PickMask {
+            generation,
+            width: frame.width,
+            height: frame.height,
+            ids: frame.semantic_ids,
+            picks: if terrain {
+                self.cell_picks.clone()
+            } else {
+                self.picks.clone()
+            },
+        })
+    }
+
+    fn check_generation(&self, generation: u64) -> Result<(), PreviewError> {
+        if generation == 0 || generation != self.frame_revision {
+            return Err(failure("stale preview frame"));
+        }
+        Ok(())
+    }
+
+    fn scene_for(&self, terrain: bool) -> &SceneBundle {
+        if terrain {
+            &self.cell_scene
+        } else {
+            &self.scene
+        }
+    }
+}
+
+/// An exact semantic mask for one prepared frame and its pick identities.
+#[derive(Clone, Debug)]
+pub struct PickMask {
+    generation: u64,
+    width: u32,
+    height: u32,
+    ids: Vec<u32>,
+    picks: BTreeMap<SemanticId, SelectionKey>,
+}
+impl PickMask {
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+    /// Physical `[width, height]` of the frame this mask was rendered for.
+    pub const fn size(&self) -> [u32; 2] {
+        [self.width, self.height]
+    }
+    /// The semantic selection under physical pixel `x, y`, if any.
+    pub fn pick(&self, x: u32, y: u32) -> Result<Option<SelectionKey>, PreviewError> {
+        if x >= self.width || y >= self.height {
+            return Err(failure("pick outside viewport"));
+        }
+        let index = usize::try_from(u64::from(y) * u64::from(self.width) + u64::from(x))
             .map_err(|_| failure("pixel index overflow"))?;
         let id = SemanticId(
-            *frame
-                .semantic_ids
+            *self
+                .ids
                 .get(index)
                 .ok_or_else(|| failure("invalid renderer mask"))?,
         );
         if id.0 == 0 {
             return Ok(None);
         }
-        let picks = if terrain {
-            &self.cell_picks
-        } else {
-            &self.picks
-        };
-        picks
+        self.picks
             .get(&id)
             .cloned()
             .map(Some)

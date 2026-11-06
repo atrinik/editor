@@ -67,7 +67,8 @@ outside this private-directory/advisory-lock model.
 
 The native window presents the prepared scene through the shared wgpu/SDL3
 adapter and remains open until the user closes it. A toolbar selects Select,
-Move or Terrain mode and exposes Clear, Undo and Redo. The inspector shows
+Move or Terrain mode and exposes Clear, Undo and Redo. Terrain mode paints
+with the drag brush described below. The inspector shows
 the selected object's identity, position and schema fields, or the selected
 cell and explicit terrain choices. Only profile-authorized scalar fields are
 editable; structured values remain read-only.
@@ -97,6 +98,47 @@ positions convert to physical pixels once. Opaque panel hit regions consume
 input before world picking. The world remains full-window behind the panels;
 the editor does not translate or rasterize world geometry. Resize/camera/session changes
 invalidate earlier masks.
+
+### Terrain drag brush
+
+In Terrain mode, choose an explicit palette value, then press on a cell and
+drag. One press-move-release gesture is one brush stroke. The press selects
+its cell through the ordinary exact cell mask; selection then prepares an
+identical frame, and the stroke keeps that frame's exact cell mask for its
+samples, so each pointer sample costs no extra render.
+The brush stamps its footprint at every sample and along the straight cell
+line from the previous sample, so a fast drag leaves no gaps; a single jump
+of more than 4,096 cells stamps only where it lands. Footprint cells outside
+the catalog's editable view bounds are dropped. Samples over panels or map
+background add nothing, and the next cell hit joins the line from the last
+covered cell, as the earlier brush prototype did.
+
+The brush is a square (the default) or a disc around the pointer's cell, with
+a radius of 0 (one cell) to 8 (17 x 17). A disc covers the cells whose
+centres lie within half a cell past the radius. The Terrain sidebar shows the
+brush and offers smaller, larger and shape controls; `[` and `]` change the
+size and `B` the shape. A stroke keeps the brush it began with and covers at
+most 4,096 distinct cells (the default view's cell budget); a stamp that would
+pass the cap is refused whole and the stroke stops growing.
+
+While the button is held the status line counts the covered cells; nothing is
+prepared or drawn as changed yet. Release turns the whole gesture into one
+semantic `terrain.set` operation in one World transaction, with each changed
+cell expecting its committed value; cells that already hold the chosen value
+are left out, and a stroke that changes nothing prepares nothing. That one
+transaction becomes the pending diff: the scene shows it and the review panel
+lists it, and only Accept publishes it. History's World undo check covers the
+whole stroke before the diff is shown, Accept retains one exact inverse
+recovery record for it, and Undo and Redo restore or repeat the whole stroke
+in one reviewed step.
+
+A stroke can start only when no change is pending; it never merges into an
+existing pending diff. Escape abandons a running stroke, and other world
+shortcuts are ignored until release. A resize, rebuild, focus loss or
+minimize ends the stroke without preparing anything. A new press (after a
+missed release) also ends it and does nothing else. Motion that arrives
+without the button held finishes the stroke where the release was missed.
+The brush never saves on release: there is no autosave.
 
 Planned edits are visible before acceptance. Accept retains the exact inverse
 before World publication; Cancel publishes nothing. Undo and redo prepare World

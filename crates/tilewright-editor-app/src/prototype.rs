@@ -14,7 +14,9 @@ use std::{
 };
 use tilewright_editor_commands::History;
 use tilewright_editor_document::{WorldDocument, terminal_field, terminal_safe};
-use tilewright_editor_preview::{PreparedPreview, PreviewLimits, SelectionKey, ViewSpec, loader};
+use tilewright_editor_preview::{
+    PickMask, PreparedPreview, PreviewLimits, SelectionKey, ViewSpec, loader,
+};
 use tilewright_editor_recovery::{DurableRecovery, RecoveryLimits};
 use tilewright_editor_ui::inspector::{self, SelectionSummary};
 use tilewright_editor_ui::tools::{self, ToolMode, ToolState};
@@ -27,7 +29,8 @@ use tilewright_render_wgpu::WgpuRenderer;
 use tilewright_scene::SemanticId;
 use tilewright_source::SourceRoot;
 
-const HELP: &str = "Select / Move / Terrain | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+const HELP: &str = "Select / Move / Terrain | drag paints | [ ] brush size | B brush shape | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+const STROKE_INTERRUPTED: &str = "Brush stroke ended before release; nothing was prepared.";
 
 type Result<T> = std::result::Result<T, String>;
 type UiRows = Vec<(String, Option<Control>, bool, bool)>;
@@ -58,6 +61,8 @@ struct Application {
     text: tilewright_render_ui::TextSystem,
     displayed_text: Option<crate::workspace_render::EditableGeometry>,
     presented_text_revision: Option<tilewright_editor_ui::text_input::TextRevision>,
+    /// The exact cell mask of the frame a running brush stroke samples.
+    stroke_mask: Option<PickMask>,
 }
 
 /// This command is intentionally a deployment seam, not arbitrary recovery-path
@@ -122,6 +127,7 @@ pub fn run(arguments: &[String]) -> Result<()> {
         text,
         displayed_text: None,
         presented_text_revision: None,
+        stroke_mask: None,
     };
     println!(
         "{}\n{}",
@@ -169,6 +175,7 @@ impl Application {
 
     fn rebuild_inner(&mut self) -> Result<()> {
         self.presented_generation = None;
+        self.interrupt_stroke();
         self.tools.cancel();
         self.session
             .invalidate_frame()
@@ -194,6 +201,7 @@ impl Application {
 
     fn reflow(&mut self) -> Result<()> {
         self.presented_generation = None;
+        self.interrupt_stroke();
         self.prepared = tilewright_editor_preview::prepare(
             self.session.world(),
             self.session.catalog(),
@@ -380,6 +388,93 @@ impl Application {
         self.action(action)
     }
 
+    /// Press: select the cell under the pointer through the ordinary exact
+    /// mask, then begin a stroke there and keep that frame's cell mask for
+    /// the drag samples. Nothing is prepared until release.
+    fn begin_stroke(&mut self, x: u32, y: u32) -> Result<()> {
+        self.click(x, y)?;
+        let key = self
+            .session
+            .selection()
+            .ok_or("select a cell in terrain mode first")?;
+        let inspected = inspector::inspect(
+            self.session.world(),
+            self.session.catalog(),
+            self.session.selection(),
+            self.session.generation(),
+            self.session.history().document().revision(),
+        );
+        self.tools
+            .begin_stroke(
+                &inspected,
+                key,
+                self.blocked.is_some() || !self.session.can_prepare(),
+            )
+            .map_err(|error| error.to_string())?;
+        match self.prepared.mask(self.view.frame_revision, true) {
+            Ok(mask) => {
+                self.stroke_mask = Some(mask);
+                Ok(())
+            }
+            Err(error) => {
+                self.tools.cancel_stroke();
+                Err(error.to_string())
+            }
+        }
+    }
+
+    /// One drag sample at a physical world pixel. Samples off the map add
+    /// nothing; the next hit joins the line from the last covered cell.
+    fn stroke_sample(&mut self, x: u32, y: u32) -> Result<()> {
+        if self.tools.stroke().is_none() {
+            return Ok(());
+        }
+        let Some(mask) = &self.stroke_mask else {
+            self.interrupt_stroke();
+            return Err(STROKE_INTERRUPTED.into());
+        };
+        // Reflow keeps the generation, so also require the mask's own size;
+        // reflow and rebuild end the stroke before either can change.
+        let viewport = self.prepared.cell_scene.viewport();
+        if mask.generation() != self.view.frame_revision
+            || mask.size() != [viewport.width, viewport.height]
+        {
+            self.interrupt_stroke();
+            return Err(STROKE_INTERRUPTED.into());
+        }
+        let Some(cell) = mask.pick(x, y).map_err(|error| error.to_string())? else {
+            return Ok(());
+        };
+        self.tools
+            .extend_stroke(&cell, self.view.frame_revision)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Release: the whole gesture becomes one pending reviewed transaction.
+    fn finish_stroke(&mut self) -> Result<()> {
+        self.stroke_mask = None;
+        let action = self
+            .tools
+            .finish_stroke(
+                self.view.frame_revision,
+                self.blocked.is_some() || !self.session.can_prepare(),
+            )
+            .map_err(|error| error.to_string())?;
+        match action {
+            Some(action) => self.action(action),
+            None => Ok(()),
+        }
+    }
+
+    /// Abandon a running stroke without preparing anything.
+    fn interrupt_stroke(&mut self) {
+        self.stroke_mask = None;
+        if self.tools.cancel_stroke() {
+            self.notice = Some(STROKE_INTERRUPTED.into());
+        }
+    }
+
     fn displayed_input_ready(&self) -> bool {
         self.presented_generation == Some(self.view.frame_revision)
             && self.presented_text_revision == self.tools.input_revision()
@@ -544,6 +639,7 @@ impl Application {
             )),
         }
         if mode == ToolMode::Terrain {
+            self.brush_rows(&mut rows);
             rows.push(("Terrain palette".into(), None, true, false));
             for choice in tools::terrain_palette(self.session.catalog()) {
                 let active = self.tools.terrain_choice() == Some(&choice);
@@ -559,6 +655,39 @@ impl Application {
             }
         }
         rows
+    }
+
+    fn brush_rows(&self, rows: &mut UiRows) {
+        let brush = self.tools.brush();
+        rows.push((
+            format!(
+                "Brush: {} {}x{}",
+                brush.shape.as_str(),
+                brush.diameter(),
+                brush.diameter()
+            ),
+            None,
+            true,
+            false,
+        ));
+        rows.push((
+            "Brush smaller  [".into(),
+            Some(Control::BrushSize(-1)),
+            brush.radius > 0,
+            false,
+        ));
+        rows.push((
+            "Brush larger  ]".into(),
+            Some(Control::BrushSize(1)),
+            brush.radius < tilewright_editor_ui::brush::MAXIMUM_RADIUS,
+            false,
+        ));
+        rows.push((
+            format!("Use {} brush  B", brush.toggled_shape().shape.as_str()),
+            Some(Control::BrushShape),
+            true,
+            false,
+        ));
     }
 
     fn object_rows(
@@ -811,6 +940,18 @@ impl Application {
         if self.blocked.is_some() || self.session.status().phase == SessionPhase::Blocked {
             return "Editing blocked. Recovery details below.".into();
         }
+        if let Some(stroke) = self.tools.stroke() {
+            return format!(
+                "Painting {} cells with {}; release to review.{}",
+                stroke.len(),
+                stroke.prototype(),
+                if stroke.capped() {
+                    " Brush limit reached."
+                } else {
+                    ""
+                }
+            );
+        }
         if self.notice.is_some() {
             return "Input not applied. Details below.".into();
         }
@@ -922,6 +1063,15 @@ impl Application {
             Control::Undo => self.action(Action::Undo),
             Control::Redo => self.action(Action::Redo),
             Control::Nudge(delta) => self.nudge(delta),
+            Control::BrushSize(delta) => {
+                self.tools
+                    .set_brush(self.tools.brush().resized(i32::from(delta)));
+                Ok(())
+            }
+            Control::BrushShape => {
+                self.tools.set_brush(self.tools.brush().toggled_shape());
+                Ok(())
+            }
             Control::Palette { grid, prototype } => {
                 self.tools
                     .choose_terrain(self.session.catalog(), &grid, &prototype)
@@ -1379,6 +1529,18 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
             {
                 break 'running;
             }
+            if matches!(
+                event,
+                Event::Window {
+                    win_event: WindowEvent::FocusLost | WindowEvent::Minimized,
+                    ..
+                }
+            ) && app.tools.stroke().is_some()
+            {
+                app.interrupt_stroke();
+                dirty = true;
+            }
+            let stroke_before = app.tools.stroke().map(|s| (s.len(), s.capped()));
             let scroll_before = (app.sidebar_scroll, app.review_scroll);
             let composing = app.tools.is_composing();
             let draft_before = app.tools.input_revision().map(|revision| revision.draft);
@@ -1450,7 +1612,9 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
                 }
                 input.started = should_start;
             }
-            dirty |= update_input_presentation(&mut app, scroll_before) || result.is_err();
+            dirty |= update_input_presentation(&mut app, scroll_before)
+                || result.is_err()
+                || stroke_before != app.tools.stroke().map(|s| (s.len(), s.capped()));
             if let Err(error) = result {
                 eprintln!("{}", terminal_field(&error));
                 app.notice = Some(error);
@@ -1823,6 +1987,23 @@ fn native_event(
             window.size_in_pixels(),
             extend_selection,
         ),
+        Event::MouseMotion {
+            mousestate, x, y, ..
+        } if !*minimized && app.tools.stroke().is_some() => native_stroke_motion(
+            app,
+            [*x, *y],
+            mousestate.left(),
+            window.size(),
+            window.size_in_pixels(),
+        ),
+        Event::MouseButtonUp {
+            mouse_btn: MouseButton::Left,
+            x,
+            y,
+            ..
+        } if app.tools.stroke().is_some() => {
+            native_stroke_release(app, [*x, *y], window.size(), window.size_in_pixels())
+        }
         Event::MouseWheel {
             integer_y,
             mouse_x,
@@ -1905,6 +2086,12 @@ fn native_pointer_selection(
     physical: (u32, u32),
     extend: bool,
 ) -> Result<()> {
+    // A press while a stroke runs means its release was missed. It only
+    // ends that stroke, visibly; the press itself does nothing else.
+    if app.tools.stroke().is_some() {
+        app.interrupt_stroke();
+        return Err(STROKE_INTERRUPTED.into());
+    }
     if !app.displayed_input_ready() {
         return Err("input waits for the current displayed frame".into());
     }
@@ -1949,14 +2136,57 @@ fn native_pointer_selection(
         Hit::Control(control) => app.control(control),
         Hit::World(x, y) => {
             app.tools.cancel();
-            app.click(x, y)?;
             if app.tools.mode() == ToolMode::Terrain {
-                app.paint()
+                app.begin_stroke(x, y)
             } else {
-                Ok(())
+                app.click(x, y)
             }
         }
         Hit::Panel | Hit::Outside => Ok(()),
+    }
+}
+
+/// A drag sample while a stroke runs. Motion without the left button means
+/// the release was missed (for example outside the window): finish there.
+fn native_stroke_motion(
+    app: &mut Application,
+    position: [f32; 2],
+    held: bool,
+    logical: (u32, u32),
+    physical: (u32, u32),
+) -> Result<()> {
+    if !held {
+        return app.finish_stroke();
+    }
+    stroke_position(app, position, logical, physical)
+}
+
+fn native_stroke_release(
+    app: &mut Application,
+    position: [f32; 2],
+    logical: (u32, u32),
+    physical: (u32, u32),
+) -> Result<()> {
+    // The finish outcome is what the user sees: a last-sample problem must
+    // neither hide a refused stroke nor mark a prepared one as not applied.
+    if let Err(error) = stroke_position(app, position, logical, physical) {
+        eprintln!("{}", terminal_field(&error));
+    }
+    app.finish_stroke()
+}
+
+/// Panels and pixels outside the window are misses, like map background.
+fn stroke_position(
+    app: &mut Application,
+    position: [f32; 2],
+    logical: (u32, u32),
+    physical: (u32, u32),
+) -> Result<()> {
+    match crate::viewport::physical_pixel(position, logical, physical)
+        .map(|(x, y)| app.ui.hit(x, y))
+    {
+        Some(Hit::World(x, y)) => app.stroke_sample(x, y),
+        _ => Ok(()),
     }
 }
 
@@ -1977,6 +2207,15 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
             _ => Ok(()),
         };
     }
+    if app.tools.stroke().is_some() {
+        // A running stroke owns the keyboard: Escape abandons it, and other
+        // world shortcuts are ignored so the gesture keeps its frame.
+        if key == Keycode::Escape {
+            app.interrupt_stroke();
+            app.notice = Some("Brush stroke cancelled; nothing was prepared.".into());
+        }
+        return Ok(());
+    }
     match key {
         Keycode::Return | Keycode::KpEnter => app.action(Action::Accept),
         Keycode::Escape => app.action(Action::Cancel),
@@ -1988,6 +2227,13 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
         Keycode::Up if app.tools.mode() == ToolMode::Move => app.nudge([0, -1]),
         Keycode::Down if app.tools.mode() == ToolMode::Move => app.nudge([0, 1]),
         Keycode::T => app.control(Control::Terrain),
+        Keycode::LeftBracket if app.tools.mode() == ToolMode::Terrain => {
+            app.control(Control::BrushSize(-1))
+        }
+        Keycode::RightBracket if app.tools.mode() == ToolMode::Terrain => {
+            app.control(Control::BrushSize(1))
+        }
+        Keycode::B if app.tools.mode() == ToolMode::Terrain => app.control(Control::BrushShape),
         Keycode::W | Keycode::A | Keycode::S | Keycode::D => {
             let change = match key {
                 Keycode::W => [0.0, -1.0],

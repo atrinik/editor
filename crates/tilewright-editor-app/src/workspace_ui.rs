@@ -29,6 +29,8 @@ pub enum Control {
     Cancel,
     Coordinates,
     Nudge([i64; 2]),
+    BrushSize(i8),
+    BrushShape,
     Field(String),
     Palette { grid: String, prototype: String },
     EditDraft,

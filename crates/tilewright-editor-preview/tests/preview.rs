@@ -469,3 +469,34 @@ fn coincident_object_source_order_survives_sorted_semantic_ids() {
         })
     );
 }
+
+#[test]
+fn a_retained_gesture_mask_matches_every_single_pick_and_only_its_frame() {
+    let (_dir, root, world, _) = fixture(true, true);
+    let limits = PreviewLimits::default();
+    let (catalog, cache) = loader::load(&root, &world, limits).unwrap();
+    let p = prepare(
+        &world,
+        &catalog,
+        &cache,
+        &catalog.default_view(&world, 128, 96, 5),
+        limits,
+    )
+    .unwrap();
+    for terrain in [false, true] {
+        let mask = p.mask(5, terrain).unwrap();
+        assert_eq!(mask.generation(), 5);
+        assert_eq!(mask.size(), [128, 96]);
+        for (x, y) in [(52, 44), (72, 52), (40, 36), (87, 44), (0, 0), (127, 95)] {
+            assert_eq!(
+                mask.pick(x, y).unwrap(),
+                p.pick(5, x, y, terrain).unwrap(),
+                "{x},{y}"
+            );
+        }
+        assert!(mask.pick(128, 0).is_err());
+        assert!(mask.pick(0, 96).is_err());
+    }
+    assert!(p.mask(4, true).is_err());
+    assert!(p.mask(0, true).is_err());
+}

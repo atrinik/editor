@@ -84,6 +84,7 @@ fn application_with_source(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, A
         text: crate::font_pack::test_system(),
         displayed_text: None,
         presented_text_revision: None,
+        stroke_mask: None,
     };
     (temporary, app)
 }
@@ -1350,4 +1351,252 @@ fn regained_focus_lets_a_fresh_return_reach_world_actions_without_a_draft() {
         .unwrap()
         .unwrap();
     assert!(super::native_text_event(&mut app, &enter, &mut input).is_none());
+}
+
+const BRUSH_WINDOW: (u32, u32) = (1280, 800);
+
+/// A 1280x800 workspace whose full neutral view lies beside the panels, in
+/// Terrain mode with sand chosen and the current frame acknowledged.
+fn brush_application() -> (tempfile::TempDir, Application) {
+    use crate::workspace_ui::{Control, WorkspaceUi};
+    let (temporary, mut app) = application();
+    app.ui = WorkspaceUi::new(BRUSH_WINDOW, BRUSH_WINDOW);
+    app.view.camera.width = BRUSH_WINDOW.0;
+    app.view.camera.height = BRUSH_WINDOW.1;
+    app.rebuild().unwrap();
+    app.control(Control::Terrain).unwrap();
+    app.control(Control::Palette {
+        grid: "floor".into(),
+        prototype: "sand".into(),
+    })
+    .unwrap();
+    acknowledge_ui(&mut app);
+    (temporary, app)
+}
+
+/// A world pixel of `cell` in the exact cell mask, outside every panel.
+fn cell_pixel(app: &mut Application, x: i64, y: i64) -> [f32; 2] {
+    use crate::workspace_ui::Hit;
+    use tilewright_editor_preview::SelectionKey;
+    app.refresh_ui();
+    let frame = app.frame(true).unwrap();
+    let id = app
+        .prepared
+        .cell_picks
+        .iter()
+        .find_map(|(id, key)| match key {
+            SelectionKey::Cell { x: cx, y: cy, .. } if (*cx, *cy) == (x, y) => Some(id.0),
+            _ => None,
+        })
+        .unwrap();
+    let width = usize::try_from(frame.width).unwrap();
+    let index = frame
+        .semantic_ids
+        .iter()
+        .enumerate()
+        .position(|(index, sample)| {
+            let px = u32::try_from(index % width).unwrap();
+            let py = u32::try_from(index / width).unwrap();
+            *sample == id && app.ui.hit(px, py) == Hit::World(px, py)
+        })
+        .unwrap();
+    #[allow(clippy::cast_precision_loss)]
+    [(index % width) as f32 + 0.5, (index / width) as f32 + 0.5]
+}
+
+fn terrain_value(app: &Application, x: i64, y: i64) -> Option<String> {
+    let chunk = &app.session.world().planes()["main"].chunks[&(0, 0, 0)];
+    let local = usize::try_from(y * 32 + x).unwrap();
+    chunk.ground[0].value(local).map(str::to_owned)
+}
+
+#[test]
+fn one_drag_paints_every_crossed_cell_into_one_reviewed_change_with_one_recovery_record() {
+    let (temporary, mut app) = brush_application();
+    let chunk = temporary
+        .path()
+        .join("world/planes/main/layers/0/0_0.jsonc");
+    let original = fs::read(&chunk).unwrap();
+    let start = cell_pixel(&mut app, 0, 1);
+    let end = cell_pixel(&mut app, 3, 1);
+    super::native_pointer(&mut app, start, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert_eq!(app.tools.stroke().unwrap().len(), 1);
+    assert!(app.session.history().pending().is_none());
+    // A single fast sample from the first cell to the fourth leaves no gap.
+    super::native_stroke_motion(&mut app, end, true, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert_eq!(app.tools.stroke().unwrap().len(), 4);
+    assert!(app.status_label().starts_with("Painting 4 cells with sand"));
+    assert!(app.session.history().pending().is_none());
+    super::native_stroke_release(&mut app, end, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert!(app.tools.stroke().is_none() && app.stroke_mask.is_none());
+    // Release prepares exactly one reviewed diff; nothing is on disk yet.
+    let pending = app.session.history().pending().unwrap();
+    assert_eq!(pending.changed().count(), 1);
+    assert_eq!(pending.sealed().matches(r#""op":"terrain.set""#).count(), 1);
+    for x in 0..4 {
+        assert_eq!(terrain_value(&app, x, 1).as_deref(), Some("sand"));
+    }
+    assert_eq!(terrain_value(&app, 0, 2).as_deref(), Some("grass"));
+    assert_eq!(fs::read(&chunk).unwrap(), original);
+    assert!(app.recovery.records().is_empty());
+    assert!(app.source_review().complete);
+    assert_eq!(app.status_label(), "Review changes, then Accept or Cancel.");
+    // Accept retains one durable inverse for the whole gesture, then publishes.
+    app.action(Action::Accept).unwrap();
+    assert_eq!(app.recovery.records().len(), 1);
+    assert_eq!(app.session.history().depths(), (1, 0));
+    let painted = fs::read(&chunk).unwrap();
+    assert_ne!(painted, original);
+    // Undo restores every stroke cell in one reviewed step.
+    app.action(Action::Undo).unwrap();
+    assert_eq!(terrain_value(&app, 2, 1).as_deref(), Some("grass"));
+    app.action(Action::Accept).unwrap();
+    assert_eq!(fs::read(&chunk).unwrap(), original);
+    assert_eq!(app.recovery.records().len(), 2);
+    app.action(Action::Redo).unwrap();
+    app.action(Action::Accept).unwrap();
+    assert_eq!(fs::read(&chunk).unwrap(), painted);
+}
+
+#[test]
+fn drag_misses_panels_joins_across_them_and_a_missed_release_finishes_the_stroke() {
+    let (_temporary, mut app) = brush_application();
+    let start = cell_pixel(&mut app, 0, 3);
+    let end = cell_pixel(&mut app, 2, 3);
+    super::native_pointer(&mut app, start, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    // Toolbar and sidebar pixels are misses, not cells or controls.
+    for panel in [[20.0, 20.0], [1270.0, 400.0], [-5.0, 9000.0]] {
+        super::native_stroke_motion(&mut app, panel, true, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    }
+    assert_eq!(
+        app.tools.mode(),
+        tilewright_editor_ui::tools::ToolMode::Terrain
+    );
+    assert_eq!(app.tools.stroke().unwrap().len(), 1);
+    super::native_stroke_motion(&mut app, end, true, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert_eq!(app.tools.stroke().unwrap().len(), 3);
+    // Motion without the button means the release happened elsewhere.
+    super::native_stroke_motion(&mut app, start, false, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert!(app.tools.stroke().is_none());
+    assert!(app.session.history().pending().is_some());
+    for x in 0..3 {
+        assert_eq!(terrain_value(&app, x, 3).as_deref(), Some("sand"));
+    }
+}
+
+#[test]
+fn escape_and_view_changes_abandon_a_stroke_without_preparing_anything() {
+    use sdl3::keyboard::Keycode;
+    let (_temporary, mut app) = brush_application();
+    let revision = app.session.world().source_digest();
+    let start = cell_pixel(&mut app, 1, 1);
+    let end = cell_pixel(&mut app, 3, 1);
+    super::native_pointer(&mut app, start, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    super::native_stroke_motion(&mut app, end, true, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    // World shortcuts wait for the release so the stroke keeps its frame.
+    let camera = app.view.camera.center;
+    for key in [Keycode::W, Keycode::Z, Keycode::Y, Keycode::RightBracket] {
+        super::native_key(&mut app, key).unwrap();
+    }
+    assert_eq!(
+        app.view.camera.center.map(f64::to_bits),
+        camera.map(f64::to_bits)
+    );
+    assert_eq!(app.tools.brush().radius, 0);
+    assert_eq!(app.tools.stroke().unwrap().len(), 3);
+    super::native_key(&mut app, Keycode::Escape).unwrap();
+    assert!(app.tools.stroke().is_none() && app.stroke_mask.is_none());
+    super::native_stroke_release(&mut app, end, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert!(app.session.history().pending().is_none());
+    assert!(app.notice.as_deref().unwrap().contains("cancelled"));
+
+    // A resize or rebuild replaces the mask: the stroke ends unprepared.
+    acknowledge_ui(&mut app);
+    super::native_pointer(&mut app, start, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    app.reflow().unwrap();
+    assert!(app.tools.stroke().is_none() && app.stroke_mask.is_none());
+    super::native_stroke_release(&mut app, end, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert_eq!(app.notice.as_deref(), Some(super::STROKE_INTERRUPTED));
+    acknowledge_ui(&mut app);
+    super::native_pointer(&mut app, start, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    app.rebuild().unwrap();
+    assert!(app.tools.stroke().is_none());
+    super::native_stroke_release(&mut app, end, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert!(app.session.history().pending().is_none());
+    assert_eq!(app.session.world().source_digest(), revision);
+}
+
+#[test]
+fn brush_size_controls_clip_at_the_view_edge_and_pending_changes_fence_new_strokes() {
+    use crate::workspace_ui::Control;
+    use sdl3::keyboard::Keycode;
+    let (_temporary, mut app) = brush_application();
+    super::native_key(&mut app, Keycode::RightBracket).unwrap();
+    assert_eq!(app.tools.brush().radius, 1);
+    app.refresh_ui();
+    assert!(
+        app.ui
+            .widgets
+            .iter()
+            .any(|widget| widget.text == "Brush: square 3x3")
+    );
+    acknowledge_ui(&mut app);
+    let corner = cell_pixel(&mut app, 0, 0);
+    super::native_pointer(&mut app, corner, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    // A 3x3 square at the view corner keeps its four in-bounds cells.
+    assert_eq!(
+        app.tools.stroke().unwrap().cells().collect::<Vec<_>>(),
+        [[0, 0], [0, 1], [1, 0], [1, 1]]
+    );
+    super::native_stroke_release(&mut app, corner, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    let pending = app.session.history().pending().unwrap().sealed().to_owned();
+    assert_eq!(pending.matches(r#""at":"#).count(), 4);
+    // Another drag cannot start or merge while that change is pending.
+    acknowledge_ui(&mut app);
+    let other = cell_pixel(&mut app, 2, 3);
+    let error = super::native_pointer(&mut app, other, BRUSH_WINDOW, BRUSH_WINDOW).unwrap_err();
+    assert!(error.contains("Accept or cancel"), "{error}");
+    assert!(app.tools.stroke().is_none());
+    assert_eq!(app.session.history().pending().unwrap().sealed(), pending);
+    app.control(Control::BrushShape).unwrap();
+    app.control(Control::BrushSize(-1)).unwrap();
+    app.control(Control::BrushSize(-1)).unwrap();
+    assert_eq!(
+        app.tools.brush(),
+        tilewright_editor_ui::brush::Brush {
+            shape: tilewright_editor_ui::brush::BrushShape::Circle,
+            radius: 0
+        }
+    );
+}
+
+#[test]
+fn a_press_during_a_stroke_only_ends_it_visibly_wherever_it_lands() {
+    let (_temporary, mut app) = brush_application();
+    let start = cell_pixel(&mut app, 0, 1);
+    let other = cell_pixel(&mut app, 2, 3);
+    // A missed release followed by a press on the world, the Select tool,
+    // a sidebar panel pixel or outside the window: the old stroke is ended
+    // and reported, nothing is prepared, and the press does nothing else.
+    for press in [other, [20.0, 20.0], [1270.0, 400.0], [-5.0, -5.0]] {
+        acknowledge_ui(&mut app);
+        super::native_pointer(&mut app, start, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+        assert!(app.tools.stroke().is_some());
+        let error = super::native_pointer(&mut app, press, BRUSH_WINDOW, BRUSH_WINDOW).unwrap_err();
+        assert_eq!(error, super::STROKE_INTERRUPTED);
+        assert_eq!(app.notice.as_deref(), Some(super::STROKE_INTERRUPTED));
+        assert!(app.tools.stroke().is_none() && app.stroke_mask.is_none());
+        assert_eq!(
+            app.tools.mode(),
+            tilewright_editor_ui::tools::ToolMode::Terrain
+        );
+        super::native_stroke_release(&mut app, press, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+        assert!(app.session.history().pending().is_none());
+    }
+    // The next press starts a fresh stroke.
+    acknowledge_ui(&mut app);
+    super::native_pointer(&mut app, other, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    super::native_stroke_release(&mut app, other, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert_eq!(terrain_value(&app, 0, 1).as_deref(), Some("grass"));
+    assert_eq!(terrain_value(&app, 2, 3).as_deref(), Some("sand"));
 }
