@@ -26,20 +26,27 @@ license. Attribution and unknown licensing fields remain lossless data.
 Dependency notice text in `THIRD_PARTY_NOTICES.md` is retained verbatim from
 `libloading` 0.8.9 `LICENSE` (ISC; crates.io archive SHA-256
 `d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55`)
-and `unicode-ident` 1.0.27 `LICENSE-UNICODE` (Unicode-3.0; archive SHA-256
-`a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563`).
+`unicode-ident` 1.0.27 `LICENSE-UNICODE` (Unicode-3.0; archive SHA-256
+`a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563`)
+and `icu_segmenter` 2.4.0 `LICENSE` (Unicode-3.0; archive SHA-256
+`61b195dc605f81aa181bec9b3bd14e26cc71b903e4644f6af578ca9772c7a710`;
+file SHA-256 `f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2`,
+identical in every locked ICU4X 2.4.0 and support crate that the renderer's
+Parley text layout brings in).
 Transformation: verbatim license notice inclusion for binary/source package
 attribution; no dependency implementation is copied into editor source.
 
 ## Shared renderer UI font
 
 The package policy and production Cargo graph pin `tilewright-render-ui`
-**0.6.2** from crates.io, archive SHA-256
-`f7b4aa08c2ef95ab0718873c8c32a4c9f070a717745a59d08d5c7588c084ac54`.
-All eight renderer 0.6.2 registry archives match the immutable renderer
-[v1.21.0 release](https://github.com/seraphinastudios/tilewright-renderer/releases/tag/v1.21.0),
-source revision `55f13ac311a5574b242e2520942377e51fd6b7cb`, release manifest
-SHA-256 `a5f5157fed68245b7eb74766f82a66b85f58920e31382512c3462d61dc14d43f`.
+**0.6.3** from crates.io, archive SHA-256
+`03d20cf60fbc093a215afdbeb1d73e911fa51f075efa3f610154e0775595739c`.
+All eight renderer 0.6.3 registry archives match the immutable renderer
+[v1.24.0 release](https://github.com/seraphinastudios/tilewright-renderer/releases/tag/v1.24.0),
+source revision `95d764d946baf1c74e20125bf9476183cf58e8b8`, release manifest
+SHA-256 `aedca02d97e0fbf5a61c5d4f0fd4ee7d7ee0f833c91e23cce24c0e2eca94fa6d`.
+Its bundled font, atlas, metrics and Unicode font-pack metadata are
+byte-identical to 0.6.2, so the font notice policy hashes are unchanged.
 This attribution and dependency migration do not claim text-coverage acceptance.
 
 The shared renderer implementation is MIT. Its bundled Roboto Mono source,
@@ -77,7 +84,7 @@ producer assets and attribution. The original neutral-sample asset allowlist
 is independent of these dependency assets and remains exact.
 
 The cargo-deny OFL exception uses the exact package specification
-`tilewright-render-ui@0.6.2`, following the pinned
+`tilewright-render-ui@0.6.3`, following the pinned
 [cargo-deny 0.20.2 license exception](https://github.com/EmbarkStudios/cargo-deny/blob/0.20.2/docs/src/checks/licenses/cfg.md#the-exceptions-field-optional)
 and [exact PackageSpecs syntax](https://github.com/EmbarkStudios/cargo-deny/blob/0.20.2/docs/src/checks/cfg.md#exact).
 No global OFL allowance is added.
@@ -88,7 +95,7 @@ The editor packages the unchanged source fonts and original per-family OFL
 notices in `font-pack/`, separately from the shared renderer's public crate.
 The crate supplies only the exact `assets/unicode-font-pack.json` metadata.
 Production preparation/staging obtains this metadata from the immutable
-checksum-verified `tilewright-render-ui` 0.6.2 registry archive; local candidate
+checksum-verified `tilewright-render-ui` 0.6.3 registry archive; local candidate
 metadata is an explicit separate mode and never establishes registry proof.
 
 The 17 faces are Noto Sans, Arabic, Hebrew, Devanagari, Bengali, Gujarati,

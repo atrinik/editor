@@ -45,7 +45,7 @@ service, or server lifecycle.
 
 The editor opens world source trees with tilewright-world's `tilewright-source`
 and carries out edits as its `tilewright-edit` transactions; it builds scenes
-with tilewright-renderer 0.6.2, including its shared UI/text compiler.
+with tilewright-renderer 0.6.3, including its shared UI/text compiler.
 The production manifests target exact crates.io
 versions, recorded with their repositories in `policy/released-dependencies.json`.
 The registry lockfile records their actual archive checksums; producer path/Git

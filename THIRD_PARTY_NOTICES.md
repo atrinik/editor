@@ -6,7 +6,7 @@ SBOM.
 
 - `tilewright-source`, `tilewright-edit` and `tilewright-jsonc` 0.2.0
   (tilewright-world): MIT.
-- `tilewright-scene` and `tilewright-render-*` 0.6.2 (tilewright-renderer): MIT
+- `tilewright-scene` and `tilewright-render-*` 0.6.3 (tilewright-renderer): MIT
   implementation; `tilewright-render-ui` also bundles OFL-1.1 font data.
 - `sdl3` Rust bindings: MIT.
 - SDL native library: Zlib License.
@@ -16,10 +16,17 @@ SBOM.
   License v3; its Unicode data notice remains in the dependency source.
 - `wgpu` and graphics/shader support: MIT or Apache-2.0, with exact versions
   and selected alternatives recorded by the dependency license check/SBOM.
-- `cosmic-text` 0.19.0, `swash` 0.2.10, `skrifa` 0.40.0/0.44.0,
-  `ttf-parser` 0.25.1 and Unicode shaping support: MIT or Apache-2.0;
-  `harfrust` 0.5.2 and `fontdb` 0.23.0: MIT; `unicode-linebreak` 0.1.5:
-  Apache-2.0. Exact dependency licenses are checked against the locked graph.
+- Shared renderer text layout: `parley`, `parley_engine`, `parley_data`,
+  `fontique` 0.12.0, `parlance` 0.1.1, `swash` 0.2.10, `skrifa` 0.44.0,
+  `read-fonts` 0.41.0 and `font-types` 0.12.7: MIT or Apache-2.0;
+  `parley_emoji` 0.12.0 and `harfrust` 0.12.0: MIT. `fontique` is built
+  without its `system` feature, so no system font discovery is linked.
+- ICU4X line breaking, segmentation and character properties: `icu_*` 2.4.0
+  (including their compiled `*_data` crates), `zerovec`, `zerotrie`,
+  `zerofrom`, `yoke`, `litemap`, `tinystr`, `writeable` and `potential_utf`:
+  Unicode License v3. `parley_data` also embeds pre-generated ICU4X/Unicode
+  data. The Unicode notice is reproduced below. Exact dependency licenses are
+  checked against the locked graph.
 - `png`, compression support, SHA-256 and JSON encoding: MIT-compatible
   alternatives recorded by the exact locked dependency graph.
 
@@ -88,9 +95,58 @@ not be used in advertising or otherwise to promote the sale, use or other
 dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 
+## ICU4X 2.4.0 — Unicode data notice
+
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 2020-2024 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+
+SPDX-License-Identifier: Unicode-3.0
+
+—
+
+Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
+ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
+
 ## Shared renderer UI font — OFL 1.1
 
-`tilewright-render-ui` 0.6.2 combines MIT implementation with bundled Roboto Mono
+`tilewright-render-ui` 0.6.3 combines MIT implementation with bundled Roboto Mono
 font source and derived atlas, metrics and glyph data under **SIL Open Font
 License 1.1 (`OFL-1.1`)**. The exact released registry archive is pinned in
 `Cargo.lock`; its checksum and source/notice hashes are recorded in

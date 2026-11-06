@@ -41,7 +41,7 @@ class PackageFontNoticeTests(unittest.TestCase):
         crate = base / 'registry/src/index.crates.io-test' / f'{font.NAME}-{font.VERSION}'
         for path in (root / 'policy', crate / 'assets', stage):
             path.mkdir(parents=True)
-        (root / 'Cargo.toml').write_text('[workspace.dependencies]\ntilewright-render-ui = "=0.6.2"\n')
+        (root / 'Cargo.toml').write_text(f'[workspace.dependencies]\ntilewright-render-ui = "={font.VERSION}"\n')
         # Original synthetic test bytes: no external font is copied into tests.
         blobs = {'OFL.txt': b'synthetic notice bytes for packaging test\n',
                  'RobotoMono-Regular.ttf': b'synthetic source bytes',
@@ -127,7 +127,7 @@ class PackageFontNoticeTests(unittest.TestCase):
                     font.package_font(root, stage, metadata)
 
     def test_unreviewed_version_local_override_and_license_drift_refused(self):
-        for key, value in (('version', '0.6.3'), ('source', None), ('license', 'MIT')):
+        for key, value in (('version', '0.6.4'), ('source', None), ('license', 'MIT')):
             with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
                 root, _, stage, metadata, _ = self.fixture(Path(directory))
                 metadata['packages'][0][key] = value
@@ -135,7 +135,7 @@ class PackageFontNoticeTests(unittest.TestCase):
                     font.package_font(root, stage, metadata)
 
     def test_lock_version_source_and_manifest_override_refused(self):
-        for old, new in (('0.6.2', '0.6.3'), (font.REGISTRY, 'path+file:///local-ui')):
+        for old, new in ((font.VERSION, '0.6.4'), (font.REGISTRY, 'path+file:///local-ui')):
             with self.subTest(new=new), tempfile.TemporaryDirectory() as directory:
                 root, _, stage, metadata, _ = self.fixture(Path(directory))
                 lock = root / 'Cargo.lock'
@@ -173,7 +173,7 @@ class PackageFontNoticeTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         licenses = tomllib.loads((root / 'deny.toml').read_text())['licenses']
         self.assertNotIn('OFL-1.1', licenses['allow'])
-        self.assertEqual(licenses['exceptions'], [{'crate': 'tilewright-render-ui@0.6.2', 'allow': ['OFL-1.1']}])
+        self.assertEqual(licenses['exceptions'], [{'crate': 'tilewright-render-ui@0.6.3', 'allow': ['OFL-1.1']}])
         self.assertEqual(json.loads((root / 'policy/font-notice.json').read_text())['package'],
                          {'name': font.NAME, 'version': font.VERSION, 'license': font.LICENSE})
 
