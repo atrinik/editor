@@ -1148,6 +1148,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdl3"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3572dbec21c786677f13d758350b6d236c994e7bf102674440f3d42fd06084d4"
+dependencies = [
+ "bitflags",
+ "libc",
+ "sdl3-image-sys",
+ "sdl3-mixer-sys",
+ "sdl3-sys",
+ "sdl3-ttf-sys",
+]
+
+[[package]]
 name = "sdl3-image-src"
 version = "3.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1449,7 +1463,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "pollster",
- "sdl3",
+ "sdl3 0.22.0",
  "serde_json",
  "sha2",
  "tempfile",
@@ -1582,7 +1596,7 @@ version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97120a8f2437148531ff71646c78606587342ac3bdb6ff6764d6acff7dbf6d4e"
 dependencies = [
- "sdl3",
+ "sdl3 0.20.0",
  "tilewright-render-api",
  "tilewright-render-wgpu",
  "wgpu",
