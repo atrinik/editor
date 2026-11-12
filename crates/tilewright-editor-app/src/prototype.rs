@@ -1183,7 +1183,7 @@ impl Application {
             "committed_revision":tilewright_editor_document::revision_hex(&self.session.history().document().revision()),
             "catalog_revision":tilewright_editor_document::revision_hex(&self.prepared.catalog_revision),
             "width":frame.width,"height":frame.height,"status":self.session.status().to_string(),
-            "toolkit":"0.2.0","renderer":"0.6.3","pending":self.session.history().pending().is_some()
+            "toolkit":"0.2.0","renderer":"0.7.0","pending":self.session.history().pending().is_some()
         })).map_err(|error| error.to_string())?.as_bytes())
     }
 
