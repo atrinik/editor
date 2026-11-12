@@ -293,6 +293,33 @@ impl ToolState {
             }
         }
     }
+    /// Delete the inspected object. The selection must be current and its
+    /// prototype granted deletion; the session checks both again.
+    pub fn remove_action(
+        &self,
+        inspector: &Inspector<'_>,
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        let stamp = inspector
+            .stamp
+            .as_ref()
+            .ok_or(ToolError("Select an object to delete"))?;
+        match inspector.selection {
+            Some(SelectionSummary::Object {
+                uid,
+                deletable: true,
+                ..
+            }) => Ok(Action::Remove {
+                uid: uid.into(),
+                expected: stamp.revision,
+            }),
+            Some(SelectionSummary::Object { .. }) => Err(ToolError(
+                "The catalog does not allow deleting this object's type",
+            )),
+            _ => Err(ToolError("Select an object to delete")),
+        }
+    }
     pub fn paint_action(
         &self,
         inspector: &Inspector<'_>,

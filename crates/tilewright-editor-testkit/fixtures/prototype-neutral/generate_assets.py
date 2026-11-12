@@ -67,7 +67,8 @@ def outputs():
                    resources=resources,
                    prototypes=[dict(proto=n, resource=n, anchor='standing' if n == 'marker' else 'ground') for n in names],
                    editing=dict(movable_uids=['marker_1'], terrain=[dict(grid='floor', values=['grass', 'sand'])],
-                                fields=[dict(uid='marker_1', field='label')]))
+                                fields=[dict(uid='marker_1', field='label')],
+                                objects=[dict(proto='marker', layer='item', fields=['label'])]))
     result[ROOT / 'preview.jsonc'] = (json.dumps(catalog, indent=2) + '\n').encode()
     result[REPO / 'provenance/assets.json'] = (json.dumps(dict(schema_version=1, assets=assets), indent=2) + '\n').encode()
     return result

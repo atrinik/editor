@@ -23,6 +23,7 @@ pub enum Control {
     Move,
     Terrain,
     Clear,
+    Delete,
     Undo,
     Redo,
     Accept,

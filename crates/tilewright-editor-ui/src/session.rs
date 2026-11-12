@@ -47,6 +47,12 @@ pub enum Action {
         proto: String,
         expected: [u8; 32],
     },
+    /// Delete one placed object in the active view, with its inventory, as
+    /// one reviewed `object.remove`.
+    Remove {
+        uid: String,
+        expected: [u8; 32],
+    },
     Accept,
     Cancel,
     Undo,
@@ -212,6 +218,13 @@ impl Session {
             .checked_add(1)
             .ok_or_else(|| refuse("frame generation exhausted"))?;
         Ok(())
+    }
+    /// Review warnings for every object the pending transaction removes,
+    /// judged against the committed World. They never block Accept.
+    pub fn pending_warnings(&self) -> Vec<String> {
+        self.history.pending().map_or_else(Vec::new, |pending| {
+            crate::removal::warnings(self.history.document().world(), pending.sealed())
+        })
     }
     fn verify_catalog(&self) -> Result<(), SessionError> {
         loader::revalidate(
@@ -472,6 +485,7 @@ impl Session {
                     | Action::SetField { .. }
                     | Action::Paint { .. }
                     | Action::PaintStroke { .. }
+                    | Action::Remove { .. }
                     | Action::Undo
                     | Action::Redo
             )
@@ -502,10 +516,13 @@ impl Session {
                 y,
                 expected,
             } => {
-                if !self.catalog.editing().movable_uids.contains(&uid) || !self.in_bounds(x, y) {
+                let world = self.history.document().world();
+                let proto = world
+                    .object(&uid)
+                    .map_or("", |object| object.proto.as_str());
+                if !self.catalog.editing().can_move(&uid, proto) || !self.in_bounds(x, y) {
                     return Err(refuse("movement capability or bounds refused"));
                 }
-                let world = self.history.document().world();
                 let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
                 let location = world
                     .object_location(&uid)
@@ -563,15 +580,13 @@ impl Session {
                 expected,
             } => {
                 bounded_value(&value)?;
-                if !self
-                    .catalog
-                    .editing()
-                    .fields
-                    .contains(&(uid.clone(), field.clone()))
-                {
+                let world = self.history.document().world();
+                let proto = world
+                    .object(&uid)
+                    .map_or("", |object| object.proto.as_str());
+                if !self.catalog.editing().can_edit_field(&uid, proto, &field) {
                     return Err(refuse("field capability or value budget refused"));
                 }
-                let world = self.history.document().world();
                 if world.profile().object_fields.field(&field).is_none() {
                     return Err(refuse("field absent from authoritative schema"));
                 }
@@ -630,6 +645,50 @@ impl Session {
                 // One gesture is one operation, so review, recovery, undo and
                 // redo each treat the whole stroke as a single World change.
                 self.prepare(expected,&json!({"op":"terrain.set","plane":plane,"layer":layer,"grid":grid,"cells":cells}))
+            }
+            Action::Remove { uid, expected } => {
+                let world = self.history.document().world();
+                let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
+                if !self.catalog.editing().can_delete(&object.proto) {
+                    return Err(refuse(
+                        "deletion capability refused: the catalog does not grant this object's prototype",
+                    ));
+                }
+                let location = world
+                    .object_location(&uid)
+                    .ok_or_else(|| refuse("unknown UID location"))?;
+                let (plane, layer, _) = self.catalog.view();
+                let at = object
+                    .at
+                    .ok_or_else(|| refuse("placed object has no coordinates"))?;
+                let size = world
+                    .planes()
+                    .get(&location.plane)
+                    .map(|plane| i64::from(plane.chunk_size))
+                    .ok_or_else(|| refuse("missing authoritative object plane"))?;
+                let global = |chunk: i64, local: u16| {
+                    chunk
+                        .checked_mul(size)
+                        .and_then(|value| value.checked_add(i64::from(local)))
+                };
+                let inside = global(location.chunk.1, at[0])
+                    .zip(global(location.chunk.2, at[1]))
+                    .is_some_and(|(x, y)| self.in_bounds(x, y));
+                if location.path.len() != 1
+                    || location.plane != plane
+                    || location.chunk.0 != layer
+                    || !inside
+                {
+                    return Err(refuse(
+                        "only placed objects in the active view can be deleted",
+                    ));
+                }
+                // Addressed by uid and guarded by prototype, like the
+                // cross-chunk move: the inverse reinserts the exact bytes.
+                self.prepare(
+                    expected,
+                    &json!({"op":"object.remove","uid":uid,"expect":{"proto":object.proto}}),
+                )
             }
             Action::Accept => self.accept(recovery),
             Action::Cancel => {

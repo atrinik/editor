@@ -64,6 +64,18 @@
           "visits": 3
         }
       }
+    },
+    {
+      "uid": "marker_2",
+      "at": [
+        1,
+        4
+      ],
+      "proto": "marker",
+      "layer": "item",
+      "fields": {
+        "label": "Spare marker"
+      }
     }
   ]
 }

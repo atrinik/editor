@@ -142,5 +142,6 @@ pub use tilewright_editor_preview::SelectionKey;
 
 pub mod brush;
 pub mod inspector;
+mod removal;
 pub mod text_input;
 pub mod tools;

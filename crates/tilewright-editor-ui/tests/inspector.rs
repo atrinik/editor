@@ -53,14 +53,20 @@ fn fixture() -> (tempfile::TempDir, WorldDocument, PreviewCatalog) {
     );
     fs::write(path, serde_json::to_vec(&catalog).unwrap()).unwrap();
     // The profile requirement applies to every fixture object, including
-    // the off-view marker in the negative chunk.
-    let chunk_path = dir.path().join("planes/main/layers/0/-1_0.jsonc");
-    let mut chunk: serde_json::Value =
-        serde_json::from_slice(&fs::read(&chunk_path).unwrap()).unwrap();
-    for object in chunk["objects"].as_array_mut().unwrap() {
-        object["fields"]["settings"] = serde_json::json!({"active":true,"visits":0});
+    // the off-view marker in the negative chunk and the spare marker.
+    for name in ["-1_0", "0_0"] {
+        let chunk_path = dir
+            .path()
+            .join(format!("planes/main/layers/0/{name}.jsonc"));
+        let mut chunk: serde_json::Value =
+            serde_json::from_slice(&fs::read(&chunk_path).unwrap()).unwrap();
+        for object in chunk["objects"].as_array_mut().unwrap() {
+            if object["fields"].get("settings").is_none() {
+                object["fields"]["settings"] = serde_json::json!({"active":true,"visits":0});
+            }
+        }
+        fs::write(chunk_path, serde_json::to_vec(&chunk).unwrap()).unwrap();
     }
-    fs::write(chunk_path, serde_json::to_vec(&chunk).unwrap()).unwrap();
     let document = WorldDocument::open(dir.path()).unwrap();
     let (catalog, _) = loader::load(
         document.source(),

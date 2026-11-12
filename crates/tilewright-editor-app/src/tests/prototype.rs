@@ -118,7 +118,7 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
 #[test]
 fn rejected_pending_undo_refreshes_actual_pending_scene_and_invalidates_old_picks() {
     let (_temporary, mut app) = application();
-    app.select_visible_object(false).unwrap();
+    app.select_visible_object(super::Capability::Move).unwrap();
     app.nudge([1, 0]).unwrap();
     let pending = app.session.world().source_digest();
     let pending_generation = app.view.frame_revision;
@@ -151,7 +151,7 @@ fn focused_text_consumes_global_shortcuts_without_invalidating_world_generation(
     use crate::workspace_ui::Control;
     use sdl3::keyboard::Keycode;
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     let generation = app.session.generation();
     let camera = app.view.camera.center;
@@ -213,7 +213,7 @@ fn terrain_requires_explicit_palette_and_panel_controls_never_publish() {
 fn combining_text_reaches_review_without_normalization_or_source_write() {
     use crate::workspace_ui::Control;
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.select_all().unwrap();
     app.tools
@@ -364,7 +364,7 @@ fn cpu_evidence_png_contains_shared_workspace_ui_and_preserves_world_revision_pr
 fn readable_controls_and_inspector_copy_fit_960_and_1280_windows() {
     use crate::workspace_ui::{Control, WorkspaceUi};
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     for size in [(960, 640), (1280, 800)] {
         app.ui = WorkspaceUi::new(size, size);
         app.refresh_ui();
@@ -440,7 +440,7 @@ fn long_display_labels_elide_using_shared_measurements_and_keep_full_draft() {
     assert!(fitted.ends_with("..."));
     assert_ne!(fitted, original);
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.input(" extended visible field draft").unwrap();
     let draft = app.tools.draft_text().unwrap().to_owned();
@@ -490,7 +490,7 @@ fn compact_chunk_review_shows_changed_label_before_accept_and_undo_restores_exac
     });
     let path = temporary.path().join("world").join(chunk_path);
     let original = fs::read(&path).unwrap();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     while app.tools.draft_text().is_some_and(|text| !text.is_empty()) {
         app.tools.backspace();
@@ -639,7 +639,7 @@ fn oversized_review_blocks_button_enter_and_scripted_accept_without_losing_pendi
 fn long_utf8_draft_shows_working_tail_and_caret_while_full_value_reaches_review() {
     use crate::workspace_ui::{Control, WorkspaceUi};
     let (temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.ui = WorkspaceUi::new((960, 640), (960, 640));
     app.control(Control::Field("label".into())).unwrap();
     while app.tools.draft_text().is_some_and(|text| !text.is_empty()) {
@@ -746,7 +746,7 @@ fn real_sdl_events_preserve_preedit_offsets_focus_and_submission_order() {
         keyboard::Keycode,
     };
     let (temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.select_all().unwrap();
     let original = fs::read(
@@ -820,7 +820,7 @@ fn real_sdl_events_preserve_preedit_offsets_focus_and_submission_order() {
     );
     assert!(!app.displayed_input_ready());
     app.action(Action::Cancel).unwrap();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     let prior = app.tools.draft_text().unwrap().to_owned();
     input.begin_batch(
@@ -862,7 +862,7 @@ fn real_sdl_events_preserve_preedit_offsets_focus_and_submission_order() {
 fn stale_displayed_geometry_blocks_pointer_but_keyboard_uses_current_draft() {
     use crate::workspace_ui::{Control, WorkspaceUi};
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.ui = WorkspaceUi::new((960, 640), (320, 240));
     app.control(Control::Field("label".into())).unwrap();
     app.refresh_ui();
@@ -890,7 +890,7 @@ fn deletion_and_clipboard_paste_return_wait_for_displayed_draft() {
     use tilewright_editor_ui::text_input::{TextCursor, TextSelection};
     for key in [Keycode::Backspace, Keycode::Delete, Keycode::V] {
         let (_temporary, mut app) = application();
-        app.select_visible_object(true).unwrap();
+        app.select_visible_object(super::Capability::Field).unwrap();
         app.control(Control::Field("label".into())).unwrap();
         app.tools.select_all().unwrap();
         app.tools.input("abc").unwrap();
@@ -958,7 +958,7 @@ fn native_typing_ime_and_paste_reject_line_and_paragraph_separators() {
     };
     for separator in ["\u{2028}", "\u{2029}"] {
         let (_temporary, mut app) = application();
-        app.select_visible_object(true).unwrap();
+        app.select_visible_object(super::Capability::Field).unwrap();
         app.control(Control::Field("label".into())).unwrap();
         acknowledge_ui(&mut app);
         let before = app.tools.draft_snapshot().unwrap();
@@ -1014,7 +1014,7 @@ fn switched_or_refocused_draft_rejects_previously_drained_ime_events() {
     use crate::workspace_ui::{Control, WorkspaceUi};
     use sdl3::{event::Event, mouse::MouseButton};
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.ui = WorkspaceUi::new((960, 640), (320, 240));
     app.control(Control::Field("label".into())).unwrap();
     acknowledge_ui(&mut app);
@@ -1102,7 +1102,7 @@ fn escape_composition_cancel_fences_queued_text_and_allows_fresh_input() {
     use crate::workspace_ui::Control;
     use sdl3::{event::Event, keyboard::Keycode};
     let (temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.select_all().unwrap();
     let committed = app.tools.draft_snapshot().unwrap();
@@ -1221,7 +1221,7 @@ fn real_shift_and_repeated_arrows_use_current_draft_without_intermediate_frames(
     use tilewright_editor_ui::text_input::{TextCursor, TextSelection};
     for (shift, arrows) in [(true, 1), (true, 2), (false, 2)] {
         let (_temporary, mut app) = application();
-        app.select_visible_object(true).unwrap();
+        app.select_visible_object(super::Capability::Field).unwrap();
         app.control(Control::Field("label".into())).unwrap();
         app.tools.select_all().unwrap();
         app.tools.input("e\u{301}a🙂b").unwrap();
@@ -1290,7 +1290,7 @@ fn backspace_then_left_uses_current_shaped_text_and_return_stays_fenced() {
     use crate::workspace_ui::Control;
     use sdl3::keyboard::Keycode;
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.select_all().unwrap();
     app.tools.input("e\u{301}a🙂b").unwrap();
