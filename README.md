@@ -4,7 +4,7 @@ Tilewright editor is an MIT-licensed Rust world editor for isometric and
 top-down tile games, with built-in agent tooling. Humans and agents edit the
 same world through one command engine. The bounded offline prototype provides
 a native toolbar, scalar inspector, coordinate tools, a terrain drag brush,
-reviewed changes and undo/redo. Deterministic reference capture accompanies native
+object deletion, reviewed changes and undo/redo. Deterministic reference capture accompanies native
 window testing; an editor MCP server and a full widget system remain future work.
 
 Tilewright is maintained by Seraphina Studios alongside

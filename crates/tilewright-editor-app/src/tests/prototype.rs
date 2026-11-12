@@ -98,8 +98,12 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         && value == &tilewright_source::FieldValue::String("Edited offline".into())));
     let chunk = &app.session.world().planes()["main"].chunks[&(0, 0, 0)];
     assert_eq!(chunk.ground[0].value(4 * 32 + 6), Some("sand"));
+    // The scripted deletion takes the spare marker and leaves the edited one.
+    assert!(app.session.world().object("marker_2").is_none());
+    assert_eq!(app.session.history().depths(), (4, 0));
     for phase in [
-        "before", "pending", "cancel", "after", "undo", "redo", "field", "terrain",
+        "before", "pending", "cancel", "after", "undo", "redo", "field", "terrain", "delete",
+        "deleted",
     ] {
         assert!(
             temporary
@@ -1599,4 +1603,123 @@ fn a_press_during_a_stroke_only_ends_it_visibly_wherever_it_lands() {
     super::native_stroke_release(&mut app, other, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
     assert_eq!(terrain_value(&app, 0, 1).as_deref(), Some("grass"));
     assert_eq!(terrain_value(&app, 2, 3).as_deref(), Some("sand"));
+}
+
+fn delete_application(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, Application) {
+    use crate::workspace_ui::WorkspaceUi;
+    let (temporary, mut app) = application_with_source(prepare);
+    app.ui = WorkspaceUi::new(BRUSH_WINDOW, BRUSH_WINDOW);
+    app.view.camera.width = BRUSH_WINDOW.0;
+    app.view.camera.height = BRUSH_WINDOW.1;
+    app.rebuild().unwrap();
+    acknowledge_ui(&mut app);
+    (temporary, app)
+}
+
+fn toolbar_delete_enabled(app: &mut Application) -> bool {
+    app.refresh_ui();
+    app.ui
+        .widgets
+        .iter()
+        .find(|widget| widget.control == Some(crate::workspace_ui::Control::Delete))
+        .unwrap()
+        .enabled
+}
+
+#[test]
+fn the_delete_key_reviews_one_deletion_with_warnings_and_text_focus_keeps_it() {
+    use crate::workspace_ui::Control;
+    use sdl3::keyboard::Keycode;
+    use tilewright_editor_preview::SelectionKey;
+    let (temporary, mut app) = delete_application(|_| {});
+    let chunk = temporary
+        .path()
+        .join("world/planes/main/layers/0/0_0.jsonc");
+    let original = fs::read(&chunk).unwrap();
+    // Nothing selected: the key is refused with a plain reason.
+    let error = super::native_key(&mut app, Keycode::Delete).unwrap_err();
+    assert!(error.contains("Select an object"), "{error}");
+    assert!(!toolbar_delete_enabled(&mut app));
+
+    app.select_visible_object(super::Capability::Delete)
+        .unwrap();
+    assert_eq!(
+        app.session.selection(),
+        Some(&SelectionKey::Object {
+            uid: "marker_2".into()
+        })
+    );
+    assert!(toolbar_delete_enabled(&mut app));
+
+    // A focused text draft owns Delete: it edits the draft, never the World.
+    app.control(Control::Field("label".into())).unwrap();
+    acknowledge_ui(&mut app);
+    let mut input = crate::native_input::NativeInput::new(7);
+    input.begin_batch(false, app.tools.input_revision().map(|r| r.draft));
+    super::native_text_event(&mut app, &input_key(7, Keycode::Delete, false), &mut input)
+        .unwrap()
+        .unwrap();
+    super::native_key(&mut app, Keycode::Delete).unwrap();
+    assert!(app.session.history().pending().is_none());
+    app.control(Control::CancelDraft).unwrap();
+    acknowledge_ui(&mut app);
+
+    // Without a draft the real key event falls through to world shortcuts.
+    assert!(
+        super::native_text_event(&mut app, &input_key(7, Keycode::Delete, false), &mut input)
+            .is_none()
+    );
+    super::native_key(&mut app, Keycode::Delete).unwrap();
+    assert!(app.session.history().pending().is_some());
+    assert_eq!(fs::read(&chunk).unwrap(), original);
+    let review = app.diff_lines();
+    assert!(
+        review[0].contains("marker_2") && review[0].contains("do not reuse"),
+        "{review:?}"
+    );
+    assert!(app.source_review().complete);
+    // A pending deletion fences every other preparation, Delete included.
+    assert!(!toolbar_delete_enabled(&mut app));
+    let error = app.delete_selected().unwrap_err();
+    assert!(error.contains("pending"), "{error}");
+
+    acknowledge_ui(&mut app);
+    super::native_key(&mut app, Keycode::Return).unwrap();
+    assert!(app.session.history().pending().is_none());
+    assert!(app.session.world().object("marker_2").is_none());
+    assert_eq!(app.recovery.records().len(), 1);
+    assert!(!fs::read_to_string(&chunk).unwrap().contains("marker_2"));
+    acknowledge_ui(&mut app);
+    super::native_key(&mut app, Keycode::Z).unwrap();
+    acknowledge_ui(&mut app);
+    super::native_key(&mut app, Keycode::Return).unwrap();
+    assert_eq!(fs::read(&chunk).unwrap(), original);
+    assert_eq!(app.recovery.records().len(), 2);
+}
+
+#[test]
+fn objects_without_a_prototype_grant_show_delete_disabled_and_refuse_the_key() {
+    use sdl3::keyboard::Keycode;
+    let (temporary, mut app) = delete_application(|world| {
+        let path = world.join("preview.jsonc");
+        let mut catalog: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        catalog["editing"]
+            .as_object_mut()
+            .unwrap()
+            .remove("objects");
+        fs::write(path, serde_json::to_vec_pretty(&catalog).unwrap()).unwrap();
+    });
+    let chunk = temporary
+        .path()
+        .join("world/planes/main/layers/0/0_0.jsonc");
+    let original = fs::read(&chunk).unwrap();
+    // marker_1 keeps its per-uid movement grant, which never implies deletion.
+    app.select_visible_object(super::Capability::Move).unwrap();
+    assert!(!toolbar_delete_enabled(&mut app));
+    let error = super::native_key(&mut app, Keycode::Delete).unwrap_err();
+    assert!(error.contains("does not allow deleting"), "{error}");
+    assert!(app.session.history().pending().is_none());
+    assert!(app.recovery.records().is_empty());
+    assert_eq!(fs::read(chunk).unwrap(), original);
 }

@@ -67,8 +67,8 @@ outside this private-directory/advisory-lock model.
 
 The native window presents the prepared scene through the shared wgpu/SDL3
 adapter and remains open until the user closes it. A toolbar selects Select,
-Move or Terrain mode and exposes Clear, Undo and Redo. Terrain mode paints
-with the drag brush described below. The inspector shows
+Move or Terrain mode and exposes Clear, Undo, Redo and Delete. Terrain mode
+paints with the drag brush described below; deletion is described after it. The inspector shows
 the selected object's identity, position and schema fields, or the selected
 cell and explicit terrain choices. Only profile-authorized scalar fields are
 editable; structured values remain read-only.
@@ -139,6 +139,27 @@ minimize ends the stroke without preparing anything. A new press (after a
 missed release) also ends it and does nothing else. Motion that arrives
 without the button held finishes the stroke where the release was missed.
 The brush never saves on release: there is no autosave.
+
+### Deleting objects
+
+Select an object, then press Delete or choose Delete in the toolbar or the
+inspector. Deletion is offered only when the catalog's optional
+`editing.objects` list has an entry for the object's prototype, and only for a
+placed object in the active view; otherwise the control is disabled and the
+key reports why. A focused text draft keeps the Delete key for itself. One
+deletion is one World transaction with one `object.remove` addressed by uid
+and guarded by the object's prototype; the object's inventory goes with it.
+It joins the pending fence like every other edit. The review panel shows the
+diff with warnings above it: when the object holds inventory objects, when a
+portal anywhere or an anchor in its plane targets its tile, and always that its
+uid is removed and must not be reused. The warnings inform; they never refuse
+the deletion or disable Accept. Accept retains one inverse recovery record;
+Undo reinserts the object with its exact source bytes, and when the deletion
+emptied a chunk, its file is deleted and Undo restores it.
+
+The same `editing.objects` entry also grants movement and the entry's listed
+field edits for every object of that prototype, alongside the per-uid
+`movable_uids` and `fields` grants. Placing new objects is not offered yet.
 
 Planned edits are visible before acceptance. Accept retains the exact inverse
 before World publication; Cancel publishes nothing. Undo and redo prepare World

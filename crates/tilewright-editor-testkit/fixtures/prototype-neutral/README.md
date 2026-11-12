@@ -11,13 +11,18 @@ capabilities and the default `main` plane, spatial layer 0, bounds `[0,0,8,6]`.
 The marker `marker_1` starts at `(3,2)` on render layer `item`; its typed `label`
 is `Trail marker`, and its nested typed `settings` holds `active` and `visits`.
 Move it to `(4,2)`, change its label, or paint `floor` at the empty cell `(6,4)`
-with `grass` or `sand`. The floor's grass/sand seam derives directional edge
+with `grass` or `sand`. A second marker, `marker_2` at `(1,4)` labelled
+`Spare marker`, is the one the scripted demonstration deletes. The floor's grass/sand seam derives directional edge
 prototypes through the released World's transition resolver.
 
 For negative/cross-chunk picking, use the same world with bounds `[-2,0,4,3]`.
-Chunk `[-1,0]` contains ground at x=-2/-1 and the read-only marker
-`marker_negative` at `(-1,1)`; chunk `[0,0]` continues the ground at x=0/1.
-The default catalog deliberately grants movement only to `marker_1`.
+Chunk `[-1,0]` contains ground at x=-2/-1 and the marker `marker_negative` at
+`(-1,1)`; chunk `[0,0]` continues the ground at x=0/1.
+The catalog grants movement and the `label` field to `marker_1` by uid, and
+grants the `marker` prototype through `editing.objects` (render layer `item`,
+field `label`): every marker, `marker_negative` included, can be deleted,
+moved and relabelled. Deletion needs the object inside the view bounds. A
+catalog without `editing.objects` keeps `marker_negative` read-only.
 
 From the repository root:
 
