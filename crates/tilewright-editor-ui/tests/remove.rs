@@ -211,6 +211,10 @@ fn one_deletion_is_one_reviewed_object_remove_with_byte_exact_undo_and_redo() {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("marker_2") && warnings[0].contains("do not reuse"));
 
+    // Publication is checked on Linux only; other platforms refuse it.
+    if !cfg!(target_os = "linux") {
+        return;
+    }
     session.dispatch(Action::Accept, &mut records).unwrap();
     let deleted = fs::read(&path).unwrap();
     assert_ne!(deleted, original);
@@ -303,6 +307,10 @@ fn deleting_a_chunks_last_content_deletes_the_file_and_undo_restores_its_bytes()
     let change = pending.changed().next().unwrap();
     assert_eq!(change.path, lone);
     assert!(change.after.is_none());
+    // Publication is checked on Linux only; other platforms refuse it.
+    if !cfg!(target_os = "linux") {
+        return;
+    }
     session.dispatch(Action::Accept, &mut records).unwrap();
     assert!(!path.exists());
     assert_eq!(records.0.len(), 1);
@@ -353,7 +361,25 @@ fn review_warns_about_inventory_portals_and_anchors_but_never_blocks_accept() {
     }
     assert!(!warnings[1].contains("elsewhere"));
     assert!(warnings[2].contains("marker_2") && warnings[2].contains("do not reuse"));
+    session.dispatch(Action::Cancel, &mut records).unwrap();
+    assert!(session.pending_warnings().is_empty());
+
+    // A deleted portal never warns about its own target tile.
+    session
+        .dispatch(remove(&session, "gate_1"), &mut records)
+        .unwrap();
+    assert_eq!(session.pending_warnings().len(), 1);
+    session.dispatch(Action::Cancel, &mut records).unwrap();
+
+    // Publication is checked on Linux only; other platforms refuse it.
+    if !cfg!(target_os = "linux") {
+        return;
+    }
     // Warnings inform; Accept publishes as usual.
+    session
+        .dispatch(remove(&session, "marker_2"), &mut records)
+        .unwrap();
+    assert_eq!(session.pending_warnings().len(), 3);
     session.dispatch(Action::Accept, &mut records).unwrap();
     assert_eq!(records.0.len(), 1);
     assert!(session.world().object("marker_2").is_none());
@@ -363,10 +389,4 @@ fn review_warns_about_inventory_portals_and_anchors_but_never_blocks_accept() {
             .unwrap()
             .contains("gate_2")
     );
-
-    // A deleted portal never warns about its own target tile.
-    session
-        .dispatch(remove(&session, "gate_1"), &mut records)
-        .unwrap();
-    assert_eq!(session.pending_warnings().len(), 1);
 }
