@@ -9,6 +9,11 @@ use tilewright_render_ui::{FontBlob, FontPack, TextLimits, TextSystem, unicode_f
 use tilewright_source::SourceRoot;
 
 pub fn load(path: &Path, world: &Path) -> Result<TextSystem, String> {
+    let (pack, limits) = load_pack(path, world)?;
+    TextSystem::new(pack, limits).map_err(|error| error.to_string())
+}
+
+pub fn load_pack(path: &Path, world: &Path) -> Result<(FontPack, TextLimits), String> {
     let canonical = path
         .canonicalize()
         .map_err(|error| format!("font pack: {error}"))?;
@@ -50,11 +55,10 @@ pub fn load(path: &Path, world: &Path) -> Result<TextSystem, String> {
             / 4,
         ..TextLimits::default()
     };
-    TextSystem::new(
+    Ok((
         FontPack::new(fonts, limits).map_err(|error| error.to_string())?,
         limits,
-    )
-    .map_err(|error| error.to_string())
+    ))
 }
 
 #[cfg(test)]

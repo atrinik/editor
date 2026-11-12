@@ -62,6 +62,7 @@ pub struct ToolState {
     terrain: Option<TerrainChoice>,
     draft: Option<Draft>,
     next_draft: u64,
+    shared_field: Option<(SnapshotStamp, String)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,6 +124,7 @@ impl ToolState {
             return Err(ToolError("Input exceeds byte budget"));
         }
         let input = self.new_input(text)?;
+        self.shared_field = None;
         self.draft = Some(Draft {
             stamp,
             kind: DraftKind::Field(field.into()),
@@ -130,6 +132,44 @@ impl ToolState {
         });
         Ok(())
     }
+    /// Transfer the initial value to a host-owned shared editor. Only binding
+    /// metadata stays here; there is no second editable text store.
+    pub fn begin_shared_field(
+        &mut self,
+        inspector: &Inspector<'_>,
+        field: &str,
+        pending: bool,
+    ) -> Result<String, ToolError> {
+        self.begin_field(inspector, field, pending)?;
+        let draft = self.draft.take().ok_or(ToolError("No input draft"))?;
+        let text = draft.input.text().to_owned();
+        self.shared_field = Some((draft.stamp, field.into()));
+        Ok(text)
+    }
+
+    pub fn shared_stamp(&self) -> Option<&SnapshotStamp> {
+        self.shared_field.as_ref().map(|(stamp, _)| stamp)
+    }
+
+    pub fn shared_field_name(&self) -> Option<&str> {
+        self.shared_field.as_ref().map(|(_, field)| field.as_str())
+    }
+
+    /// The shared control supplies immutable submit bytes. The existing schema
+    /// validation and captured source precondition still own command creation.
+    pub fn build_shared_action(
+        &self,
+        inspector: &Inspector<'_>,
+        pending: bool,
+        text: &str,
+    ) -> Result<Action, ToolError> {
+        let (stamp, field) = self
+            .shared_field
+            .as_ref()
+            .ok_or(ToolError("No shared field"))?;
+        build_field_action(inspector, pending, stamp, field, text)
+    }
+
     pub fn begin_move(
         &mut self,
         inspector: &Inspector<'_>,
@@ -145,6 +185,7 @@ impl ToolState {
             return Err(ToolError("Selection has no movement capability"));
         };
         let input = self.new_input(format!("{x},{y}"))?;
+        self.shared_field = None;
         self.draft = Some(Draft {
             stamp: inspector
                 .stamp
@@ -167,6 +208,7 @@ impl ToolState {
         }
     }
     pub fn cancel(&mut self) {
+        self.shared_field = None;
         self.draft = None;
     }
     pub fn draft_text(&self) -> Option<&str> {
@@ -239,18 +281,7 @@ impl ToolState {
         };
         match &draft.kind {
             DraftKind::Field(field) => {
-                let row = inspector
-                    .rows
-                    .iter()
-                    .find(|row| row.name == field && row.editable)
-                    .ok_or(ToolError("Field is no longer editable"))?;
-                let value = parse_scalar(&row.spec.field_type, draft.input.text(), inspector)?;
-                Ok(Action::SetField {
-                    uid: uid.clone(),
-                    field: field.clone(),
-                    value,
-                    expected: draft.stamp.revision,
-                })
+                build_field_action(inspector, pending, &draft.stamp, field, draft.input.text())
             }
             DraftKind::Move => {
                 if !matches!(
@@ -323,6 +354,39 @@ impl ToolState {
             expected: stamp.revision,
         })
     }
+}
+
+fn build_field_action(
+    inspector: &Inspector<'_>,
+    pending: bool,
+    stamp: &SnapshotStamp,
+    field: &str,
+    text: &str,
+) -> Result<Action, ToolError> {
+    available(pending)?;
+    if inspector.stamp.as_ref() != Some(stamp) {
+        return Err(ToolError(
+            "Draft selection, generation or source revision is stale",
+        ));
+    }
+    if text.len() > MAX_INPUT_BYTES {
+        return Err(ToolError("Input exceeds byte budget"));
+    }
+    let SelectionKey::Object { uid } = &stamp.key else {
+        return Err(ToolError("Draft requires an object"));
+    };
+    let row = inspector
+        .rows
+        .iter()
+        .find(|row| row.name == field && row.editable)
+        .ok_or(ToolError("Field is no longer editable"))?;
+    let value = parse_scalar(&row.spec.field_type, text, inspector)?;
+    Ok(Action::SetField {
+        uid: uid.clone(),
+        field: field.into(),
+        value,
+        expected: stamp.revision,
+    })
 }
 
 fn available(pending: bool) -> Result<(), ToolError> {

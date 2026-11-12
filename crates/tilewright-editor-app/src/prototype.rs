@@ -48,6 +48,7 @@ struct Application {
     view: ViewSpec,
     prepared: PreparedPreview,
     tools: ToolState,
+    shared: Option<crate::shared_inspector::SharedInspector>,
     ui: WorkspaceUi,
     notice: Option<String>,
     sidebar_scroll: usize,
@@ -105,6 +106,14 @@ pub fn run(arguments: &[String]) -> Result<()> {
         RecoveryLimits::default(),
     )
     .map_err(|error| error.to_string())?;
+    let shared = if arguments.iter().any(|arg| arg == "--shared-inspector") {
+        let (fonts, limits) = crate::font_pack::load_pack(std::path::Path::new(font_path), &world)?;
+        Some(crate::shared_inspector::SharedInspector::new(
+            fonts, limits,
+        )?)
+    } else {
+        None
+    };
     let mut app = Application {
         session,
         recovery,
@@ -112,6 +121,7 @@ pub fn run(arguments: &[String]) -> Result<()> {
         view,
         prepared,
         tools: ToolState::default(),
+        shared,
         ui: WorkspaceUi::new((1280, 800), (1280, 800)),
         notice: None,
         sidebar_scroll: 0,
@@ -169,7 +179,9 @@ impl Application {
 
     fn rebuild_inner(&mut self) -> Result<()> {
         self.presented_generation = None;
-        self.tools.cancel();
+        if !self.shared_active() {
+            self.tools.cancel();
+        }
         self.session
             .invalidate_frame()
             .map_err(|error| error.to_string())?;
@@ -193,6 +205,9 @@ impl Application {
     }
 
     fn reflow(&mut self) -> Result<()> {
+        if let Some(shared) = &mut self.shared {
+            shared.invalidate()?;
+        }
         self.presented_generation = None;
         self.prepared = tilewright_editor_preview::prepare(
             self.session.world(),
@@ -213,6 +228,7 @@ impl Application {
             self.notice = Some(REVIEW_LIMIT_MESSAGE.into());
             return Err(REVIEW_LIMIT_MESSAGE.into());
         }
+        let keep_on_failure = self.shared_active() && matches!(action, Action::SetField { .. });
         let result = self
             .session
             .dispatch(action, &mut self.recovery)
@@ -225,6 +241,9 @@ impl Application {
                 record.name,
                 tilewright_editor_document::revision_hex(&record.sha256)
             ));
+        }
+        if !keep_on_failure || result.is_ok() {
+            self.retire_shared()?;
         }
         // Failed commands may still invalidate pending state (for example an
         // empty Undo). Always rebuild from Session's actual current World.
@@ -348,6 +367,22 @@ impl Application {
             .map(|(_, field)| field.clone())
             .ok_or("selected object has no field capability")?;
         self.control(Control::Field(field))?;
+        if let Some(shared) = &mut self.shared
+            && shared.active()
+        {
+            let target = shared.app.ui().text_target().ok_or("no shared focus")?;
+            shared
+                .app
+                .apply(tilewright_ui::Input::ReplaceText {
+                    target,
+                    text: "Edited offline".into(),
+                    selection: tilewright_ui::TextSelection::caret(tilewright_ui::TextCursor::new(
+                        14,
+                    )),
+                })
+                .map_err(|e| e.to_string())?;
+            return self.control(Control::ApplyDraft);
+        }
         while self.tools.draft_text().is_some_and(|text| !text.is_empty()) {
             self.tools.backspace();
         }
@@ -380,9 +415,108 @@ impl Application {
         self.action(action)
     }
 
+    fn shared_active(&self) -> bool {
+        self.shared
+            .as_ref()
+            .is_some_and(crate::shared_inspector::SharedInspector::active)
+    }
+    fn input_identity(&self) -> Option<u128> {
+        if let Some(shared) = self.shared.as_ref().filter(|s| s.active()) {
+            Some((1_u128 << 64) | u128::from(shared.app.ui().composer_widget().generation.get()))
+        } else {
+            self.tools
+                .input_revision()
+                .map(|revision| u128::from(revision.draft))
+        }
+    }
+    fn has_input(&self) -> bool {
+        self.shared_active() || self.tools.draft_text().is_some()
+    }
+    fn composing(&self) -> bool {
+        self.shared.as_ref().filter(|s| s.active()).map_or_else(
+            || self.tools.is_composing(),
+            |s| s.app.ui().snapshot().composer.composition.is_some(),
+        )
+    }
+    fn retire_shared(&mut self) -> Result<()> {
+        if let Some(shared) = &mut self.shared
+            && shared.active()
+        {
+            shared.retire()?;
+        }
+        Ok(())
+    }
+    fn shared_actions(&mut self) -> Result<()> {
+        let Some(shared) = &mut self.shared else {
+            return Ok(());
+        };
+        let Some(batch) = shared.app.ui().peek_actions().cloned() else {
+            return Ok(());
+        };
+        // One bounded batch transfers to synchronous host validation exactly once.
+        // Failed validation preserves shared text; retired identities are discarded.
+        shared
+            .app
+            .ack_actions(batch.id)
+            .map_err(|e| e.to_string())?;
+        for action in batch.actions {
+            let tilewright_ui::Action::SubmitField {
+                widget,
+                revision,
+                text,
+            } = action
+            else {
+                continue;
+            };
+            let Some(shared) = self.shared.as_ref() else {
+                continue;
+            };
+            if shared.binding.as_ref().map(|b| b.0) != Some(widget)
+                || shared.app.ui().snapshot().composer.revision != revision
+            {
+                continue;
+            }
+            if shared.app.ui().snapshot().composer.composition.is_some() {
+                return Err("finish composition before review".into());
+            }
+            let inspected = inspector::inspect(
+                self.session.world(),
+                self.session.catalog(),
+                self.session.selection(),
+                self.session.generation(),
+                self.session.history().document().revision(),
+            );
+            if shared.binding.as_ref().map(|b| &b.1) != self.tools.shared_stamp()
+                || shared.binding.as_ref().map(|b| b.2.as_str()) != self.tools.shared_field_name()
+            {
+                return Err("stale shared binding".into());
+            }
+            let layout = self
+                .text
+                .layout(&text, 18.0, None)
+                .map_err(|e| e.to_string())?;
+            if !layout.missing_glyphs().is_empty() {
+                return Err("missing font glyphs: review blocked; draft preserved".into());
+            }
+            let action = self
+                .tools
+                .build_shared_action(
+                    &inspected,
+                    self.blocked.is_some() || !self.session.can_prepare(),
+                    &text,
+                )
+                .map_err(|e| e.to_string())?;
+            self.action(action)?;
+        }
+        Ok(())
+    }
     fn displayed_input_ready(&self) -> bool {
         self.presented_generation == Some(self.view.frame_revision)
             && self.presented_text_revision == self.tools.input_revision()
+            && self
+                .shared
+                .as_ref()
+                .is_none_or(crate::shared_inspector::SharedInspector::ready)
     }
 
     fn refresh_ui(&mut self) {
@@ -656,12 +790,53 @@ impl Application {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Keep the bounded sidebar paint order together.
     fn sidebar(&mut self, ui: &mut WorkspaceUi) {
         let ready = self.blocked.is_none() && self.session.can_prepare();
         let x = ui.sidebar_x();
         let width = ui.sidebar_width();
         let rows = self.inspector_rows();
         let mut y = 56;
+        if self.shared_active() {
+            let bounds = Rect {
+                x,
+                y,
+                width,
+                height: 52,
+            };
+            if let Some(shared) = &mut self.shared
+                && let Err(error) = shared.layout(ui.logical_size(), ui.size, bounds)
+            {
+                self.blocked = Some(error);
+            }
+            y += 56;
+            ui.widget(
+                Rect {
+                    x,
+                    y,
+                    width,
+                    height: 22,
+                },
+                "Shared value / Apply opens review",
+                None,
+                true,
+                false,
+            );
+            y += 26;
+            ui.widget(
+                Rect {
+                    x,
+                    y,
+                    width,
+                    height: 28,
+                },
+                "Discard",
+                Some(Control::CancelDraft),
+                true,
+                false,
+            );
+            y += 36;
+        }
         if let Some(snapshot) = self.tools.draft_snapshot() {
             let supported = self
                 .text
@@ -903,9 +1078,25 @@ impl Application {
         review
     }
 
+    #[allow(clippy::too_many_lines)] // One explicit dispatch table for host controls.
     fn control(&mut self, control: Control) -> Result<()> {
         self.presented_generation = None;
         self.notice = None;
+        if !matches!(
+            control,
+            Control::EditDraft | Control::ApplyDraft | Control::Field(_)
+        ) {
+            self.retire_shared()?;
+        }
+        if control == Control::ApplyDraft && self.shared_active() {
+            self.shared
+                .as_mut()
+                .expect("active")
+                .app
+                .apply(tilewright_ui::Input::Activate(tilewright_ui::SUBMIT))
+                .map_err(|e| e.to_string())?;
+            return self.shared_actions();
+        }
         match control {
             Control::Select | Control::Move | Control::Terrain => {
                 self.tools.set_mode(match control {
@@ -951,10 +1142,38 @@ impl Application {
                         .tools
                         .begin_move(&inspected, unavailable)
                         .map_err(|error| error.to_string()),
-                    Control::Field(field) => self
-                        .tools
-                        .begin_field(&inspected, &field, unavailable)
-                        .map_err(|error| error.to_string()),
+                    Control::Field(field) => {
+                        let shared_string = self.shared.is_some()
+                            && inspected.rows.iter().any(|row| {
+                                row.name == field
+                                    && matches!(
+                                        row.spec.field_type,
+                                        tilewright_source::FieldType::String { .. }
+                                    )
+                            });
+                        if shared_string {
+                            let mut tools = self.tools.clone();
+                            let text = tools
+                                .begin_shared_field(&inspected, &field, unavailable)
+                                .map_err(|e| e.to_string())?;
+                            let stamp = tools.shared_stamp().cloned().ok_or("no shared stamp")?;
+                            self.shared
+                                .as_mut()
+                                .expect("enabled")
+                                .bind(text, stamp, field)?;
+                            self.tools = tools;
+                            Ok(())
+                        } else {
+                            if let Some(shared) = &mut self.shared
+                                && shared.active()
+                            {
+                                shared.retire()?;
+                            }
+                            self.tools
+                                .begin_field(&inspected, &field, unavailable)
+                                .map_err(|e| e.to_string())
+                        }
+                    }
                     _ => {
                         let snapshot = self.tools.draft_snapshot().ok_or("no draft")?;
                         let layout = self
@@ -1033,7 +1252,7 @@ impl Application {
             "committed_revision":tilewright_editor_document::revision_hex(&self.session.history().document().revision()),
             "catalog_revision":tilewright_editor_document::revision_hex(&self.prepared.catalog_revision),
             "width":frame.width,"height":frame.height,"status":self.session.status().to_string(),
-            "toolkit":"0.1.0","renderer":"0.6.0","pending":self.session.history().pending().is_some()
+            "toolkit":"0.1.0","renderer":"0.6.1","pending":self.session.history().pending().is_some()
         })).map_err(|error| error.to_string())?.as_bytes())
     }
 
@@ -1351,7 +1570,7 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
     'running: loop {
         let batch: Vec<Event> = events.poll_iter().collect();
         input.begin_batch(batch.iter().any(|event| matches!(event,
-            Event::TextInput { window_id, .. } | Event::TextEditing { window_id, .. } if *window_id == input.window_id)), app.tools.input_revision().map(|revision| revision.draft));
+            Event::TextInput { window_id, .. } | Event::TextEditing { window_id, .. } if *window_id == input.window_id)), app.input_identity());
         for event in batch {
             if event
                 .get_window_id()
@@ -1375,36 +1594,60 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
                     keycode: Some(Keycode::Q),
                     ..
                 }
-            ) && app.tools.draft_text().is_none()
+            ) && !app.has_input()
             {
                 break 'running;
             }
             let scroll_before = (app.sidebar_scroll, app.review_scroll);
-            let composing = app.tools.is_composing();
-            let draft_before = app.tools.input_revision().map(|revision| revision.draft);
+            let composing = app.composing();
+            let draft_before = app.input_identity();
             let refocus = if let Event::MouseButtonDown { x, y, .. } = event {
                 crate::viewport::physical_pixel([x, y], window.size(), window.size_in_pixels())
-                    .is_some_and(|(x, y)| app.ui.hit(x, y) == Hit::Control(Control::EditDraft))
+                    .is_some_and(|(px, py)| app.ui.hit(px, py) == Hit::Control(Control::EditDraft))
+                    || app
+                        .shared
+                        .as_ref()
+                        .and_then(|shared| shared.geometry())
+                        .is_some_and(|g| g.clip.contains(x, y))
             } else {
                 false
             };
-            let result = native_clipboard_event(
+            let result = native_shared_event(
                 &mut app,
                 &event,
-                input.focused,
+                &mut input,
                 || {
                     video
                         .clipboard()
                         .clipboard_text()
-                        .map_err(|error| error.to_string())
+                        .map_err(|e| e.to_string())
                 },
                 |text| {
                     video
                         .clipboard()
                         .set_clipboard_text(text)
-                        .map_err(|error| error.to_string())
+                        .map_err(|e| e.to_string())
                 },
             )
+            .or_else(|| {
+                native_clipboard_event(
+                    &mut app,
+                    &event,
+                    input.focused,
+                    || {
+                        video
+                            .clipboard()
+                            .clipboard_text()
+                            .map_err(|error| error.to_string())
+                    },
+                    |text| {
+                        video
+                            .clipboard()
+                            .set_clipboard_text(text)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+            })
             .or_else(|| native_text_event(&mut app, &event, &mut input))
             .unwrap_or_else(|| {
                 native_event(
@@ -1416,14 +1659,15 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
                     input.shift,
                 )
             });
+            let result = result.and_then(|()| app.shared_actions());
             if composing
-                && !app.tools.is_composing()
+                && !app.composing()
                 && !matches!(event, Event::TextInput { .. } | Event::TextEditing { .. })
             {
                 input.cancel_composition();
                 crate::native_input::clear_composition(&window)?;
             }
-            let draft_after = app.tools.input_revision().map(|revision| revision.draft);
+            let draft_after = app.input_identity();
             if draft_before != draft_after {
                 crate::native_input::clear_composition(&window)?;
             }
@@ -1431,7 +1675,7 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
             {
                 input.refocus(event.get_timestamp());
             }
-            let should_start = input.focused && !minimized && app.tools.draft_text().is_some();
+            let should_start = input.focused && !minimized && app.has_input();
             if should_start != input.started {
                 if should_start {
                     video
@@ -1475,6 +1719,22 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
                 && let Some(geometry) = &app.displayed_text
             {
                 update_ime_area(&video, &window, geometry);
+            }
+            if input.started
+                && let Some(geometry) = app
+                    .shared
+                    .as_ref()
+                    .and_then(crate::shared_inspector::SharedInspector::geometry)
+                && let Some(caret) = geometry.caret()
+            {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let rect = sdl3::rect::Rect::new(
+                    caret.x as i32,
+                    caret.y as i32,
+                    caret.width.max(1.0) as u32,
+                    caret.height.max(1.0) as u32,
+                );
+                video.text_input().set_rect(&window, rect, 0);
             }
             dirty = false;
         }
@@ -1525,6 +1785,220 @@ fn update_ime_area(
         let cursor =
             (geometry.origin[0] + caret.x - geometry.clip.x).clamp(0.0, geometry.clip.width) as i32;
         video.text_input().set_rect(window, area, cursor);
+    }
+}
+
+/// Route shared ownership before legacy shortcuts/clipboard. A consumed error
+/// remains consumed; physical key identity is SDL's scancode, never text.
+#[allow(clippy::too_many_lines)]
+fn native_shared_event(
+    app: &mut Application,
+    event: &Event,
+    input: &mut crate::native_input::NativeInput,
+    read: impl FnOnce() -> Result<String>,
+    write: impl FnOnce(&str) -> Result<()>,
+) -> Option<Result<()>> {
+    use tilewright_ui::{Disposition, Input, Key, KeyEvent};
+    let displayed_input_ready = app.displayed_input_ready();
+    let shared = app.shared.as_mut()?;
+    if event
+        .get_window_id()
+        .is_some_and(|id| id != input.window_id)
+    {
+        return Some(Ok(()));
+    }
+    if let Event::Window { win_event, .. } = event {
+        if matches!(win_event, WindowEvent::FocusLost | WindowEvent::Minimized) {
+            input.lose_focus();
+            let result = shared
+                .app
+                .apply(Input::WindowFocused(false))
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+                .and_then(|()| shared.invalidate());
+            if result.is_err() {
+                return Some(result);
+            }
+        } else if matches!(win_event, WindowEvent::FocusGained) {
+            let result = shared
+                .app
+                .apply(Input::WindowFocused(true))
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            if result.is_err() {
+                return Some(result);
+            }
+        }
+        return None;
+    }
+    match event {
+        Event::TextInput {
+            text, timestamp, ..
+        }
+        | Event::TextEditing {
+            text, timestamp, ..
+        } if shared.active() => {
+            let identity = Some(
+                (1_u128 << 64) | u128::from(shared.app.ui().composer_widget().generation.get()),
+            );
+            if !input.text_allowed(identity, *timestamp) {
+                return Some(Ok(()));
+            }
+            let Some(target) = shared.app.ui().text_target() else {
+                return Some(Ok(()));
+            };
+            let command = if let Event::TextEditing { start, length, .. } = event {
+                input.text_activity();
+                Input::Preedit {
+                    target,
+                    text: text.clone(),
+                    start: *start,
+                    length: *length,
+                }
+            } else {
+                if shared.app.ui().snapshot().composer.composition.is_some() {
+                    input.text_activity();
+                }
+                Input::TextCommit {
+                    target,
+                    text: text.clone(),
+                }
+            };
+            Some(
+                shared
+                    .app
+                    .apply(command)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+            )
+        }
+        Event::KeyDown {
+            keycode,
+            scancode,
+            keymod,
+            repeat,
+            ..
+        }
+        | Event::KeyUp {
+            keycode,
+            scancode,
+            keymod,
+            repeat,
+            ..
+        } => {
+            let pressed = matches!(event, Event::KeyDown { .. });
+            let command = keymod.intersects(
+                sdl3::keyboard::Mod::LCTRLMOD
+                    | sdl3::keyboard::Mod::RCTRLMOD
+                    | sdl3::keyboard::Mod::LGUIMOD
+                    | sdl3::keyboard::Mod::RGUIMOD,
+            );
+            input.shift =
+                keymod.intersects(sdl3::keyboard::Mod::LSHIFTMOD | sdl3::keyboard::Mod::RSHIFTMOD);
+            let key = match keycode {
+                Some(Keycode::Return | Keycode::KpEnter) => Key::Enter,
+                Some(Keycode::Backspace) => Key::Backspace,
+                Some(Keycode::Delete) => Key::Delete,
+                Some(Keycode::A) if command => Key::SelectAll,
+                Some(Keycode::Escape) => Key::Escape,
+                _ => Key::Other,
+            };
+            let physical = scancode
+                .and_then(|code| u16::try_from(code as i32).ok())
+                .unwrap_or(u16::MAX);
+            let composing = shared.app.ui().snapshot().composer.composition.is_some();
+            if !pressed && key == Key::Enter {
+                input.return_released(composing);
+            }
+            let unseen_submit = pressed
+                && key == Key::Enter
+                && input.submit_allowed(composing)
+                && !displayed_input_ready;
+            let platform_composing =
+                pressed && key == Key::Enter && (!input.submit_allowed(composing) || unseen_submit);
+            let disposition = shared.app.apply(Input::Key(KeyEvent {
+                physical,
+                key,
+                pressed,
+                repeat: *repeat,
+                platform_composing,
+            }));
+            match disposition {
+                Err(error) => return Some(Err(error.to_string())),
+                Ok(Disposition::Unhandled) => return shared.active().then_some(Ok(())),
+                Ok(Disposition::Consumed) => (),
+            }
+            if unseen_submit {
+                return Some(Err("review waits for the current displayed input".into()));
+            }
+            if !pressed || !shared.app.ui().can_apply_key_effect(physical) {
+                return Some(Ok(()));
+            }
+            if key == Key::Escape {
+                if composing {
+                    input.cancel_composition();
+                    return Some(Ok(()));
+                }
+                return Some(app.control(Control::CancelDraft));
+            }
+            if composing {
+                return Some(Ok(()));
+            }
+            let effect = (|| {
+                if let Some(key @ (Keycode::Left | Keycode::Right | Keycode::Home | Keycode::End)) =
+                    keycode
+                {
+                    use tilewright_ui_render::VisualMotion;
+                    let motion = match key {
+                        Keycode::Left => VisualMotion::Left,
+                        Keycode::Right => VisualMotion::Right,
+                        Keycode::Home => VisualMotion::Home,
+                        _ => VisualMotion::End,
+                    };
+                    shared.move_visual(motion, input.shift)?;
+                } else if command && !repeat {
+                    let identity = Some(
+                        (1_u128 << 64)
+                            | u128::from(shared.app.ui().composer_widget().generation.get()),
+                    );
+                    if !input.text_allowed(identity, event.get_timestamp()) {
+                        return Ok(());
+                    }
+                    let Some(target) = shared.app.ui().text_target() else {
+                        return Ok(());
+                    };
+                    match keycode {
+                        Some(Keycode::V) => {
+                            let text = read()?;
+                            shared
+                                .app
+                                .apply(Input::TextCommit { target, text })
+                                .map_err(|e| e.to_string())?;
+                        }
+                        Some(Keycode::C | Keycode::X) => {
+                            let snapshot = shared.app.ui().snapshot();
+                            let range = snapshot.composer.selection.range();
+                            if !range.is_empty() {
+                                write(&snapshot.composer.committed[range])?;
+                                if *keycode == Some(Keycode::X) {
+                                    shared
+                                        .app
+                                        .apply(Input::TextCommit {
+                                            target,
+                                            text: String::new(),
+                                        })
+                                        .map_err(|e| e.to_string())?;
+                                }
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+                Ok(())
+            })();
+            Some(effect)
+        }
+        _ => None,
     }
 }
 
@@ -1630,7 +2104,9 @@ fn native_text_event(
             text, timestamp, ..
         } => {
             if !input.text_allowed(
-                app.tools.input_revision().map(|revision| revision.draft),
+                app.tools
+                    .input_revision()
+                    .map(|revision| u128::from(revision.draft)),
                 *timestamp,
             ) {
                 return Some(Ok(()));
@@ -1652,7 +2128,9 @@ fn native_text_event(
             ..
         } => {
             if !input.text_allowed(
-                app.tools.input_revision().map(|revision| revision.draft),
+                app.tools
+                    .input_revision()
+                    .map(|revision| u128::from(revision.draft)),
                 *timestamp,
             ) {
                 return Some(Ok(()));
@@ -1714,6 +2192,11 @@ fn native_text_event(
 fn update_input_presentation(app: &mut Application, scroll_before: (usize, usize)) -> bool {
     if scroll_before != (app.sidebar_scroll, app.review_scroll) {
         app.presented_generation = None;
+        if let Some(shared) = &mut app.shared
+            && let Err(error) = shared.invalidate()
+        {
+            app.blocked = Some(error);
+        }
     }
     !app.displayed_input_ready()
 }
@@ -1903,6 +2386,11 @@ fn native_pointer_selection(
     let (px, py) = crate::viewport::physical_pixel(position, logical, physical)
         .ok_or("pointer outside physical viewport")?;
     app.refresh_ui();
+    if let Some(shared) = &mut app.shared
+        && shared.pointer(position, extend)?
+    {
+        return app.shared_actions();
+    }
     match app.ui.hit(px, py) {
         Hit::Control(Control::EditDraft) => {
             let geometry = app
@@ -1940,7 +2428,10 @@ fn native_pointer_selection(
         }
         Hit::Control(control) => app.control(control),
         Hit::World(x, y) => {
-            app.tools.cancel();
+            // A missed pick cannot retire only half of a shared binding.
+            if !app.shared_active() {
+                app.tools.cancel();
+            }
             app.click(x, y)?;
             if app.tools.mode() == ToolMode::Terrain {
                 app.paint()
@@ -2043,6 +2534,9 @@ fn native_present(
         },
     ) {
         Ok(proof) => {
+            if let Some(shared) = &mut app.shared {
+                shared.ack_presented()?;
+            }
             app.presented_generation = Some(app.view.frame_revision);
             app.presented_text_revision = app.tools.input_revision();
             app.displayed_text = presentation.editable;
@@ -2056,6 +2550,10 @@ fn native_present(
             Ok(true)
         }
         Err(error) => {
+            if let Some(shared) = &mut app.shared {
+                shared.invalidate()?;
+            }
+            app.presented_generation = None;
             let reason = error.to_string();
             app.blocked = Some(reason.clone());
             window
@@ -2088,6 +2586,13 @@ fn workspace_presentation(app: &mut Application) -> Result<crate::workspace_rend
             app.prepared.resources.clone(),
         )
         .map_err(|error| error.to_string())?;
+    }
+    if let Some(shared) = &mut app.shared
+        && shared.active()
+    {
+        let composed = shared.compose(&presentation.scene, presentation.resources.clone())?;
+        presentation.scene = composed.scene;
+        presentation.resources = composed.resources;
     }
     Ok(presentation)
 }

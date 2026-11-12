@@ -138,6 +138,7 @@ def main():
     parser.add_argument('--editor', type=Path, help='trusted built editor executable; omit to provision only')
     parser.add_argument('--font-pack', type=Path, help='explicit absolute immutable font pack; required for editor launch')
     parser.add_argument('--demo-script', action='store_true')
+    parser.add_argument('--shared-inspector', action='store_true', help='opt in to the private shared string field candidate')
     parser.add_argument('--reference', action='store_true', help='headless reference proof, no native acceptance')
     args = parser.parse_args()
     font_record = None
@@ -205,6 +206,8 @@ def main():
                        '--font-pack', str(args.font_pack)]
             if args.demo_script:
                 command.append('--demo-script')
+            if args.shared_inspector:
+                command.append('--shared-inspector')
             if args.reference:
                 command.append('--reference')
             result = subprocess.run(command, pass_fds=tuple(children.values()), check=False)

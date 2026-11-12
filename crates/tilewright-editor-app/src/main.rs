@@ -6,6 +6,7 @@
 mod font_pack;
 mod native_input;
 mod prototype;
+mod shared_inspector;
 mod viewport;
 mod workspace_render;
 mod workspace_ui;

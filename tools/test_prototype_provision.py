@@ -1,6 +1,10 @@
 """Check private fresh-root provisioning and refusal without source mutation."""
 # Copyright 2026 Seraphina Studios. SPDX-License-Identifier: MIT
 import importlib.util
+import contextlib
+import io
+from types import SimpleNamespace
+from unittest.mock import patch
 import os
 from pathlib import Path
 import stat
@@ -45,6 +49,45 @@ class ProvisionTests(unittest.TestCase):
             before = (destination/'provision.json').read_bytes()
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
             self.assertEqual((destination/'provision.json').read_bytes(), before)
+
+    def test_shared_inspector_launch_flag_is_opt_in_and_preserves_descriptors(self):
+        # This tests launch wiring only; dedicated font-pack tests validate bytes.
+        fonts = SimpleNamespace(MAX_MANIFEST=1024,
+                                read_regular=lambda *_: b'manifest',
+                                verify=lambda *_: {})
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory(
+                    dir=os.environ.get('TILEWRIGHT_PERSISTENT_TEST_ROOT')) as temporary:
+                root = Path(temporary)
+                fd = provision.directory(root)
+                try:
+                    try:
+                        provision.persistent_mount(fd)
+                    except ValueError as error:
+                        self.skipTest(f'persistent test root unavailable: {error}')
+                finally:
+                    os.close(fd)
+                source = root / 'source'
+                source.mkdir()
+                (source / 'world.jsonc').write_bytes(b'{}\n')
+                arguments = [str(SCRIPT), '--world', str(source),
+                             '--destination', str(root / 'session'),
+                             '--editor', sys.executable, '--font-pack', str(root / 'fonts')]
+                if enabled:
+                    arguments.append('--shared-inspector')
+                with patch.object(sys, 'argv', arguments), \
+                        patch.dict(sys.modules, {'font_pack': fonts}), \
+                        patch.object(provision.subprocess, 'run') as launch, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    launch.return_value.returncode = 0
+                    self.assertEqual(provision.main(), 0)
+                command = launch.call_args.args[0]
+                self.assertEqual(command.count('--shared-inspector'), int(enabled))
+                self.assertIn('--world-fd', command)
+                self.assertIn('--recovery-fd', command)
+                self.assertIn('--evidence-fd', command)
+                self.assertEqual(len(launch.call_args.kwargs['pass_fds']), 3)
+                self.assertFalse(launch.call_args.kwargs['check'])
 
     def test_volatile_tmpfs_is_refused_before_creating_a_session(self):
         with tempfile.TemporaryDirectory(dir='/dev/shm' if Path('/dev/shm').is_dir() and os.access('/dev/shm', os.W_OK) else '/tmp') as temporary:

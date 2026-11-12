@@ -1,6 +1,6 @@
 # Offline editing prototype
 
-The prototype targets World 0.1.0 and renderer 0.6.0. Release builds require
+The prototype targets World 0.1.0 and renderer 0.6.1. Release builds require
 the exact published registry dependencies; local source candidates do not
 establish released-consumer acceptance. The generic
 editor opens ordinary World data and its strict `preview.jsonc` catalog. A
@@ -183,3 +183,22 @@ The pack covers a finite repertoire, including common Latin/Greek/Cyrillic,
 Arabic/Hebrew, the selected Indic scripts, Thai, SC CJK, Korean Hangul and
 monochrome emoji. Missing scalars and shaping/variation sequences still require
 diagnostics; this is not a promise of universal font coverage.
+
+### Private shared inspector candidate
+
+`prototype --shared-inspector` opts in to a single shared string-value field in
+this same inspector sidebar. Pass `--shared-inspector` to
+`tools/provision-prototype.py` to forward it through the normal trusted launcher. Other field kinds use the existing editor input.
+Click an editable string row (the neutral fixture's `label` is the acceptance
+example). Shared **Apply** prepares the existing source review. Only the normal
+review **Accept** publishes the World transaction; Cancel/Discard never writes
+source. Text/schema/glyph/stale-binding errors retain the draft. Switching the
+selection or discarding the field retires its native input and queued actions.
+
+This source candidate requires the separately reviewed, unpublished
+`tilewright-ui`, `tilewright-app`, and `tilewright-ui-render` 0.1.0 APIs. Its
+registry version declarations are release-order placeholders: it is not a
+resolvable production release graph until those crates are published. Private
+validation uses copied sources, external Cargo patches and a generated snapshot
+lock; no path/git override belongs in the production manifests or lock. Native
+embedding, packaging, and final registry-only acceptance remain separate gates.

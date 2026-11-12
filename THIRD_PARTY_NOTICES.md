@@ -85,7 +85,7 @@ authorization of the copyright holder.
 
 ## Shared renderer UI font candidate — OFL 1.1
 
-`tilewright-render-ui` 0.6.0 combines MIT implementation with bundled Roboto Mono
+`tilewright-render-ui` 0.6.1 combines MIT implementation with bundled Roboto Mono
 font source and derived atlas, metrics and glyph data under **SIL Open Font
 License 1.1 (`OFL-1.1`)**. This policy prepares a candidate; it does not claim
 that this coordinate is published or that the owner accepted its limited text

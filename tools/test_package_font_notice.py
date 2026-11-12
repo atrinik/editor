@@ -23,8 +23,8 @@ class PackageFontNoticeTests(unittest.TestCase):
         root, crate, stage = (base / name for name in ('editor', 'registry-ui', 'stage'))
         for path in (root / 'policy', crate / 'assets', stage):
             path.mkdir(parents=True)
-        (root / 'Cargo.toml').write_text('[workspace.dependencies]\ntilewright-render-ui = "=0.6.0"\n')
-        (root / 'Cargo.lock').write_text(f'[[package]]\nname = "{font.NAME}"\nversion = "0.6.0"\nsource = "{font.REGISTRY}"\nchecksum = "{CHECKSUM}"\n')
+        (root / 'Cargo.toml').write_text('[workspace.dependencies]\ntilewright-render-ui = "=0.6.1"\n')
+        (root / 'Cargo.lock').write_text(f'[[package]]\nname = "{font.NAME}"\nversion = "0.6.1"\nsource = "{font.REGISTRY}"\nchecksum = "{CHECKSUM}"\n')
         # Original synthetic test bytes: no external font is copied into tests.
         blobs = {'OFL.txt': b'synthetic notice bytes for packaging test\n',
                  'RobotoMono-Regular.ttf': b'synthetic source bytes',
@@ -89,7 +89,7 @@ class PackageFontNoticeTests(unittest.TestCase):
                 font.package_font(root, stage, metadata)
 
     def test_unreviewed_version_local_override_and_license_drift_refused(self):
-        for key, value in (('version', '0.6.1'), ('source', None), ('license', 'MIT')):
+        for key, value in (('version', '0.6.2'), ('source', None), ('license', 'MIT')):
             with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
                 root, _, stage, metadata, _ = self.fixture(Path(directory))
                 metadata['packages'][0][key] = value
@@ -97,7 +97,7 @@ class PackageFontNoticeTests(unittest.TestCase):
                     font.package_font(root, stage, metadata)
 
     def test_lock_version_source_and_manifest_override_refused(self):
-        for old, new in (('0.6.0', '0.6.1'), (font.REGISTRY, 'path+file:///local-ui')):
+        for old, new in (('0.6.1', '0.6.2'), (font.REGISTRY, 'path+file:///local-ui')):
             with self.subTest(new=new), tempfile.TemporaryDirectory() as directory:
                 root, _, stage, metadata, _ = self.fixture(Path(directory))
                 lock = root / 'Cargo.lock'
@@ -135,7 +135,7 @@ class PackageFontNoticeTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         licenses = tomllib.loads((root / 'deny.toml').read_text())['licenses']
         self.assertNotIn('OFL-1.1', licenses['allow'])
-        self.assertEqual(licenses['exceptions'], [{'crate': 'tilewright-render-ui@0.6.0', 'allow': ['OFL-1.1']}])
+        self.assertEqual(licenses['exceptions'], [{'crate': 'tilewright-render-ui@0.6.1', 'allow': ['OFL-1.1']}])
         self.assertEqual(json.loads((root / 'policy/font-notice.json').read_text())['package'],
                          {'name': font.NAME, 'version': font.VERSION, 'license': font.LICENSE})
 

@@ -10,7 +10,7 @@ import tomllib
 
 REGISTRY = 'registry+https://github.com/rust-lang/crates.io-index'
 NAME = 'tilewright-render-ui'
-VERSION = '0.6.0'
+VERSION = '0.6.1'
 LICENSE = 'MIT AND OFL-1.1'
 DESTINATION = 'licenses/OFL-RobotoMono.txt'
 

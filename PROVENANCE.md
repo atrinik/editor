@@ -33,7 +33,7 @@ attribution; no dependency implementation is copied into editor source.
 
 ## Shared renderer UI font candidate
 
-The package policy prepares attribution for `tilewright-render-ui` **0.6.0**
+The package policy prepares attribution for `tilewright-render-ui` **0.6.1**
 only. This is a reviewable common-Latin font candidate; this record does not
 claim owner acceptance, publication, or a released consumer migration. Production
 Cargo pins remain the immutable released graph until that separate transition.
@@ -72,7 +72,7 @@ producer assets and attribution. The original neutral-sample asset allowlist
 is independent of these dependency assets and remains exact.
 
 The cargo-deny OFL exception uses the exact package specification
-`tilewright-render-ui@0.6.0`, following the pinned
+`tilewright-render-ui@0.6.1`, following the pinned
 [cargo-deny 0.20.2 license exception](https://github.com/EmbarkStudios/cargo-deny/blob/0.20.2/docs/src/checks/licenses/cfg.md#the-exceptions-field-optional)
 and [exact PackageSpecs syntax](https://github.com/EmbarkStudios/cargo-deny/blob/0.20.2/docs/src/checks/cfg.md#exact).
 No global OFL allowance is added.
@@ -83,7 +83,7 @@ The editor packages the unchanged source fonts and original per-family OFL
 notices in `font-pack/`, separately from the shared renderer's public crate.
 The crate supplies only the exact `assets/unicode-font-pack.json` metadata.
 Production preparation/staging obtains this metadata from the immutable
-checksum-verified `tilewright-render-ui` 0.6.0 registry archive; local candidate
+checksum-verified `tilewright-render-ui` 0.6.1 registry archive; local candidate
 metadata is an explicit separate mode and never establishes registry proof.
 
 The 17 faces are Noto Sans, Arabic, Hebrew, Devanagari, Bengali, Gujarati,

@@ -74,6 +74,7 @@ fn application_with_source(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, A
         view,
         prepared,
         tools: tilewright_editor_ui::tools::ToolState::default(),
+        shared: None,
         ui: crate::workspace_ui::WorkspaceUi::new((320, 240), (320, 240)),
         notice: None,
         sidebar_scroll: 0,
@@ -324,7 +325,7 @@ fn cpu_evidence_png_contains_shared_workspace_ui_and_preserves_world_revision_pr
     .unwrap();
     assert_eq!(proof["format"], "tilewright.prototype-frame/1");
     assert_eq!(proof["path"], "cpu-reference");
-    assert_eq!(proof["renderer"], "0.6.0");
+    assert_eq!(proof["renderer"], "0.6.1");
     let actual_keys: std::collections::BTreeSet<_> = proof
         .as_object()
         .unwrap()
@@ -706,6 +707,9 @@ fn acknowledge_ui(app: &mut Application) {
     app.refresh_ui();
     let presentation = super::workspace_presentation(app).unwrap();
     app.displayed_text = presentation.editable;
+    if let Some(shared) = &mut app.shared {
+        shared.ack_presented().unwrap();
+    }
     app.presented_generation = Some(app.view.frame_revision);
     app.presented_text_revision = app.tools.input_revision();
 }
@@ -759,7 +763,9 @@ fn real_sdl_events_preserve_preedit_offsets_focus_and_submission_order() {
     let mut input = crate::native_input::NativeInput::new(7);
     input.begin_batch(
         true,
-        app.tools.input_revision().map(|revision| revision.draft),
+        app.tools
+            .input_revision()
+            .map(|revision| u128::from(revision.draft)),
     );
     let preedit = Event::TextEditing {
         timestamp: 0,
@@ -806,7 +812,9 @@ fn real_sdl_events_preserve_preedit_offsets_focus_and_submission_order() {
     acknowledge_ui(&mut app);
     input.begin_batch(
         false,
-        app.tools.input_revision().map(|revision| revision.draft),
+        app.tools
+            .input_revision()
+            .map(|revision| u128::from(revision.draft)),
     );
     super::native_text_event(&mut app, &input_key(7, Keycode::Return, false), &mut input)
         .unwrap()
@@ -824,7 +832,9 @@ fn real_sdl_events_preserve_preedit_offsets_focus_and_submission_order() {
     let prior = app.tools.draft_text().unwrap().to_owned();
     input.begin_batch(
         true,
-        app.tools.input_revision().map(|revision| revision.draft),
+        app.tools
+            .input_revision()
+            .map(|revision| u128::from(revision.draft)),
     );
     super::native_text_event(&mut app, &preedit, &mut input)
         .unwrap()
@@ -867,6 +877,9 @@ fn stale_displayed_geometry_blocks_pointer_but_keyboard_uses_current_draft() {
     app.refresh_ui();
     let presentation = super::workspace_presentation(&mut app).unwrap();
     app.displayed_text = presentation.editable;
+    if let Some(shared) = &mut app.shared {
+        shared.ack_presented().unwrap();
+    }
     app.presented_generation = Some(app.view.frame_revision);
     app.presented_text_revision = app.tools.input_revision();
     assert!(app.displayed_input_ready());
@@ -904,7 +917,9 @@ fn deletion_and_clipboard_paste_return_wait_for_displayed_draft() {
         let mut input = crate::native_input::NativeInput::new(7);
         input.begin_batch(
             false,
-            app.tools.input_revision().map(|revision| revision.draft),
+            app.tools
+                .input_revision()
+                .map(|revision| u128::from(revision.draft)),
         );
         let mut edit = input_key(7, key, false);
         if key == Keycode::V {
@@ -938,7 +953,9 @@ fn deletion_and_clipboard_paste_return_wait_for_displayed_draft() {
         acknowledge_ui(&mut app);
         input.begin_batch(
             false,
-            app.tools.input_revision().map(|revision| revision.draft),
+            app.tools
+                .input_revision()
+                .map(|revision| u128::from(revision.draft)),
         );
         super::native_text_event(&mut app, &input_key(7, Keycode::Return, false), &mut input)
             .unwrap()
@@ -960,7 +977,9 @@ fn switched_or_refocused_draft_rejects_previously_drained_ime_events() {
     let mut input = crate::native_input::NativeInput::new(7);
     input.begin_batch(
         true,
-        app.tools.input_revision().map(|revision| revision.draft),
+        app.tools
+            .input_revision()
+            .map(|revision| u128::from(revision.draft)),
     );
     let old = app.tools.input_revision().unwrap().draft;
     // Reopening the same field is a new draft identity, just as switching fields.
@@ -1005,7 +1024,9 @@ fn switched_or_refocused_draft_rejects_previously_drained_ime_events() {
     assert!(!app.tools.is_composing());
     input.begin_batch(
         true,
-        app.tools.input_revision().map(|revision| revision.draft),
+        app.tools
+            .input_revision()
+            .map(|revision| u128::from(revision.draft)),
     );
     input.refocus(40);
     let delayed = Event::TextInput {
@@ -1019,7 +1040,9 @@ fn switched_or_refocused_draft_rejects_previously_drained_ime_events() {
     assert_eq!(app.tools.draft_text(), Some(original.as_str()));
     input.begin_batch(
         true,
-        app.tools.input_revision().map(|revision| revision.draft),
+        app.tools
+            .input_revision()
+            .map(|revision| u128::from(revision.draft)),
     );
     let fresh = Event::TextInput {
         timestamp: 60,
@@ -1051,7 +1074,7 @@ fn escape_composition_cancel_fences_queued_text_and_allows_fresh_input() {
     let source = fs::read(&path).unwrap();
     let revision = app.session.history().document().revision();
     let mut input = crate::native_input::NativeInput::new(7);
-    input.begin_batch(true, Some(committed.revision.draft));
+    input.begin_batch(true, Some(u128::from(committed.revision.draft)));
     let preedit = Event::TextEditing {
         timestamp: 1,
         window_id: 7,
@@ -1091,7 +1114,9 @@ fn escape_composition_cancel_fences_queued_text_and_allows_fresh_input() {
     assert_eq!(fs::read(&path).unwrap(), source);
     input.begin_batch(
         true,
-        app.tools.input_revision().map(|revision| revision.draft),
+        app.tools
+            .input_revision()
+            .map(|revision| u128::from(revision.draft)),
     );
     let fresh_preedit = Event::TextEditing {
         timestamp: 4,
@@ -1175,7 +1200,9 @@ fn real_shift_and_repeated_arrows_use_current_draft_without_intermediate_frames(
         let mut input = crate::native_input::NativeInput::new(7);
         input.begin_batch(
             false,
-            app.tools.input_revision().map(|revision| revision.draft),
+            app.tools
+                .input_revision()
+                .map(|revision| u128::from(revision.draft)),
         );
         let modifiers = if shift { Mod::LSHIFTMOD } else { Mod::NOMOD };
         if shift {
@@ -1238,7 +1265,9 @@ fn backspace_then_left_uses_current_shaped_text_and_return_stays_fenced() {
     let mut input = crate::native_input::NativeInput::new(7);
     input.begin_batch(
         false,
-        app.tools.input_revision().map(|revision| revision.draft),
+        app.tools
+            .input_revision()
+            .map(|revision| u128::from(revision.draft)),
     );
     dispatch_draft_event(
         &mut app,
@@ -1258,4 +1287,481 @@ fn backspace_then_left_uses_current_shaped_text_and_return_stays_fenced() {
     );
     assert!(app.session.history().pending().is_none());
     assert_eq!(app.session.history().document().revision(), source);
+}
+
+fn shared_application() -> (tempfile::TempDir, Application) {
+    let (temporary, mut app) = application();
+    let path = std::env::var_os("TILEWRIGHT_UNICODE_FONT_ROOT").unwrap();
+    let (fonts, limits) =
+        crate::font_pack::load_pack(Path::new(&path), &temporary.path().join("world")).unwrap();
+    app.shared = Some(crate::shared_inspector::SharedInspector::new(fonts, limits).unwrap());
+    app.ui = crate::workspace_ui::WorkspaceUi::new((1280, 800), (1280, 800));
+    app.view.camera.width = 1280;
+    app.view.camera.height = 800;
+    app.reflow().unwrap();
+    app.select_visible_object(false).unwrap();
+    app.control(crate::workspace_ui::Control::Field("label".into()))
+        .unwrap();
+    (temporary, app)
+}
+fn shared_replace(app: &mut Application, text: &str) {
+    use tilewright_ui::{Input, TextCursor, TextSelection};
+    let shared = app.shared.as_mut().unwrap();
+    let target = shared.app.ui().text_target().unwrap();
+    shared
+        .app
+        .apply(Input::ReplaceText {
+            target,
+            text: text.into(),
+            selection: TextSelection::caret(TextCursor::new(text.len())),
+        })
+        .unwrap();
+}
+fn shared_text(app: &Application) -> String {
+    app.shared
+        .as_ref()
+        .unwrap()
+        .app
+        .ui()
+        .snapshot()
+        .composer
+        .committed
+}
+
+#[test]
+fn shared_field_unicode_empty_review_cancel_accept_and_exact_history() {
+    use crate::workspace_ui::Control;
+    let (temporary, mut app) = shared_application();
+    assert!(
+        app.tools.draft_text().is_none(),
+        "shared text has one editable owner"
+    );
+    let path = temporary
+        .path()
+        .join("world/planes/main/layers/0/0_0.jsonc");
+    let before = fs::read(&path).unwrap();
+    shared_replace(&mut app, "Café Ελληνικά 日本語");
+    app.control(Control::ApplyDraft).unwrap();
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "Review never writes source"
+    );
+    app.action(Action::Cancel).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    app.select_visible_object(false).unwrap();
+    app.control(Control::Field("label".into())).unwrap();
+    shared_replace(&mut app, "");
+    app.control(Control::ApplyDraft).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    app.action(Action::Accept).unwrap();
+    let after = fs::read(&path).unwrap();
+    assert_ne!(before, after);
+    assert!(
+        app.session
+            .world()
+            .object("marker_1")
+            .unwrap()
+            .fields
+            .iter()
+            .any(|(name, value)| name == "label"
+                && value == &tilewright_source::FieldValue::String(String::new()))
+    );
+    app.action(Action::Undo).unwrap();
+    app.action(Action::Accept).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    app.action(Action::Redo).unwrap();
+    app.action(Action::Accept).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), after);
+}
+
+#[test]
+fn shared_field_validation_and_stale_submit_keep_exact_draft() {
+    use crate::workspace_ui::Control;
+    let (_temporary, mut app) = shared_application();
+    let too_long = "x".repeat(3000);
+    shared_replace(&mut app, &too_long);
+    assert!(app.control(Control::ApplyDraft).is_err());
+    assert_eq!(shared_text(&app), too_long);
+    assert!(app.session.history().pending().is_none());
+    shared_replace(&mut app, "a\u{10ffff}");
+    assert!(
+        app.control(Control::ApplyDraft)
+            .unwrap_err()
+            .contains("glyph")
+    );
+    assert_eq!(shared_text(&app), "a\u{10ffff}");
+    shared_replace(&mut app, "retained");
+    app.session.invalidate_frame().unwrap();
+    assert!(
+        app.control(Control::ApplyDraft)
+            .unwrap_err()
+            .contains("stale")
+    );
+    assert_eq!(shared_text(&app), "retained");
+}
+
+#[test]
+fn shared_rebind_rejects_old_ime_clipboard_and_queued_submit() {
+    use crate::workspace_ui::Control;
+    use tilewright_ui::Input;
+    let (_temporary, mut app) = shared_application();
+    shared_replace(&mut app, "never apply this old value");
+    let shared = app.shared.as_mut().unwrap();
+    let target = shared.app.ui().text_target().unwrap();
+    shared
+        .app
+        .apply(Input::Activate(tilewright_ui::SUBMIT))
+        .unwrap();
+    shared
+        .app
+        .apply(Input::Preedit {
+            target,
+            text: "中".into(),
+            start: 0,
+            length: 1,
+        })
+        .unwrap();
+    app.control(Control::Field("label".into())).unwrap();
+    let before = shared_text(&app);
+    assert!(
+        app.shared
+            .as_mut()
+            .unwrap()
+            .app
+            .apply(Input::TextCommit {
+                target,
+                text: "late clipboard".into()
+            })
+            .is_err()
+    );
+    app.shared_actions().unwrap();
+    assert!(app.session.history().pending().is_none());
+    assert_eq!(shared_text(&app), before);
+    assert!(
+        app.shared
+            .as_ref()
+            .unwrap()
+            .app
+            .ui()
+            .snapshot()
+            .composer
+            .composition
+            .is_none()
+    );
+}
+
+#[test]
+fn shared_prepared_failed_reordered_and_moved_geometry_never_authorizes_input() {
+    let (_temporary, mut app) = shared_application();
+    app.refresh_ui();
+    super::workspace_presentation(&mut app).unwrap();
+    assert!(!app.shared.as_ref().unwrap().ready());
+    assert!(
+        app.shared
+            .as_mut()
+            .unwrap()
+            .pointer([990.0, 75.0], false)
+            .is_err()
+    );
+    app.shared.as_mut().unwrap().ack_presented().unwrap();
+    assert!(app.shared.as_ref().unwrap().ready());
+    let shared = app.shared.as_mut().unwrap();
+    let old = shared.app.prepare_current().unwrap();
+    let new = shared.app.prepare_current().unwrap();
+    shared.app.ack_presented(new.stamp).unwrap();
+    assert!(shared.app.ack_presented(old.stamp).is_err());
+    shared.app.discard_prepared(old.stamp).unwrap();
+    shared
+        .layout(
+            (1280, 800),
+            (1280, 800),
+            crate::workspace_ui::Rect {
+                x: 960,
+                y: 100,
+                width: 300,
+                height: 52,
+            },
+        )
+        .unwrap();
+    assert!(!shared.ready());
+    assert!(shared.app.ack_presented(new.stamp).is_err());
+    assert!(shared.pointer([990.0, 75.0], false).is_err());
+}
+
+#[test]
+fn shared_full_queue_preserves_text_selection_and_failed_cut() {
+    use tilewright_ui::Input;
+    let (_temporary, mut app) = shared_application();
+    shared_replace(&mut app, "選択 exact");
+    let shared = app.shared.as_mut().unwrap();
+    for _ in 0..shared.app.ui().limits().queued_batches {
+        shared
+            .app
+            .apply(Input::Activate(tilewright_ui::SUBMIT))
+            .unwrap();
+    }
+    let before = shared.app.ui().snapshot();
+    assert!(
+        shared
+            .app
+            .apply(Input::Activate(tilewright_ui::SUBMIT))
+            .is_err()
+    );
+    assert_eq!(shared.app.ui().snapshot(), before);
+    let target = shared.app.ui().text_target().unwrap();
+    shared
+        .app
+        .apply(Input::Edit {
+            target,
+            command: tilewright_ui::TextCommand::SelectAll,
+        })
+        .unwrap();
+    let before = shared_text(&app);
+    let mut input = crate::native_input::NativeInput::new(1);
+    input.begin_batch(false, app.input_identity());
+    let event = sdl3::event::Event::KeyDown {
+        timestamp: 1,
+        window_id: 1,
+        keycode: Some(sdl3::keyboard::Keycode::X),
+        scancode: Some(sdl3::keyboard::Scancode::X),
+        keymod: sdl3::keyboard::Mod::LCTRLMOD,
+        repeat: false,
+        which: 0,
+        raw: 0,
+    };
+    let result = super::native_shared_event(
+        &mut app,
+        &event,
+        &mut input,
+        || panic!("read not used"),
+        |_| Err("clipboard denied".into()),
+    )
+    .unwrap();
+    assert!(result.is_err());
+    assert_eq!(shared_text(&app), before);
+}
+
+#[test]
+fn shared_native_ime_batch_and_stale_clipboard_are_fenced() {
+    use sdl3::{
+        event::Event,
+        keyboard::{Keycode, Mod, Scancode},
+    };
+    let (_temporary, mut app) = shared_application();
+    shared_replace(&mut app, "");
+    let mut input = crate::native_input::NativeInput::new(7);
+    input.begin_batch(true, app.input_identity());
+    let route =
+        |app: &mut Application, input: &mut crate::native_input::NativeInput, event: &Event| {
+            super::native_shared_event(
+                app,
+                event,
+                input,
+                || panic!("unexpected clipboard read"),
+                |_| panic!("unexpected clipboard write"),
+            )
+            .unwrap()
+            .unwrap();
+        };
+    let preedit = Event::TextEditing {
+        timestamp: 1,
+        window_id: 7,
+        text: "é🙂青".into(),
+        start: 1,
+        length: 1,
+    };
+    route(&mut app, &mut input, &preedit);
+    assert_eq!(
+        app.shared
+            .as_ref()
+            .unwrap()
+            .app
+            .ui()
+            .snapshot()
+            .composer
+            .composition
+            .unwrap()
+            .selection,
+        Some(2..6)
+    );
+    route(&mut app, &mut input, &input_key(7, Keycode::Return, false));
+    route(
+        &mut app,
+        &mut input,
+        &Event::TextInput {
+            timestamp: 2,
+            window_id: 7,
+            text: "é🙂青".into(),
+        },
+    );
+    route(&mut app, &mut input, &input_key(7, Keycode::Return, true));
+    app.shared_actions().unwrap();
+    assert_eq!(shared_text(&app), "é🙂青");
+    assert!(app.session.history().pending().is_none());
+    // A newly bound native owner rejects clipboard keys from an older drain.
+    input.refocus(10);
+    input.begin_batch(false, app.input_identity());
+    let paste = Event::KeyDown {
+        timestamp: 5,
+        window_id: 7,
+        keycode: Some(Keycode::V),
+        scancode: Some(Scancode::V),
+        keymod: Mod::LCTRLMOD,
+        repeat: false,
+        which: 0,
+        raw: 0,
+    };
+    route(&mut app, &mut input, &paste);
+    assert_eq!(shared_text(&app), "é🙂青");
+}
+
+#[test]
+fn shared_obsolete_submit_revision_never_overwrites_newer_draft() {
+    use tilewright_ui::Input;
+    let (_temporary, mut app) = shared_application();
+    shared_replace(&mut app, "old review");
+    app.shared
+        .as_mut()
+        .unwrap()
+        .app
+        .apply(Input::Activate(tilewright_ui::SUBMIT))
+        .unwrap();
+    shared_replace(&mut app, "newer draft");
+    app.shared_actions().unwrap();
+    assert!(app.session.history().pending().is_none());
+    assert_eq!(shared_text(&app), "newer draft");
+}
+
+#[test]
+fn shared_visual_selection_collapses_and_repeats_with_unicode_graphemes() {
+    use tilewright_ui::{Input, TextCommand};
+    use tilewright_ui_render::VisualMotion;
+    let (_temporary, mut app) = shared_application();
+    shared_replace(&mut app, "ae\u{301}🙂");
+    app.refresh_ui();
+    let shared = app.shared.as_mut().unwrap();
+    let target = shared.app.ui().text_target().unwrap();
+    shared
+        .app
+        .apply(Input::Edit {
+            target,
+            command: TextCommand::SelectAll,
+        })
+        .unwrap();
+    shared.move_visual(VisualMotion::Left, false).unwrap();
+    assert_eq!(shared.app.ui().snapshot().composer.selection.focus.byte, 0);
+    shared.move_visual(VisualMotion::Right, false).unwrap();
+    assert_eq!(shared.app.ui().snapshot().composer.selection.focus.byte, 1);
+    shared.move_visual(VisualMotion::Right, false).unwrap();
+    assert_eq!(shared.app.ui().snapshot().composer.selection.focus.byte, 4);
+}
+
+#[test]
+fn shared_script_field_uses_the_shared_authority() {
+    let (_temporary, mut app) = shared_application();
+    app.field().unwrap();
+    assert!(app.session.history().pending().is_some());
+    assert!(
+        app.session
+            .world()
+            .object("marker_1")
+            .unwrap()
+            .fields
+            .iter()
+            .any(|(name, value)| name == "label"
+                && value == &tilewright_source::FieldValue::String("Edited offline".into()))
+    );
+    assert!(app.tools.draft_text().is_none());
+}
+
+#[test]
+fn shared_native_enter_waits_for_display_after_edit() {
+    use sdl3::keyboard::Keycode;
+    let (_temporary, mut app) = shared_application();
+    acknowledge_ui(&mut app);
+    let mut input = crate::native_input::NativeInput::new(7);
+    input.begin_batch(false, app.input_identity());
+    shared_replace(&mut app, "not yet displayed");
+    let result = super::native_shared_event(
+        &mut app,
+        &input_key(7, Keycode::Return, false),
+        &mut input,
+        || unreachable!(),
+        |_| unreachable!(),
+    )
+    .unwrap();
+    assert!(result.unwrap_err().contains("displayed"));
+    app.shared_actions().unwrap();
+    assert!(app.session.history().pending().is_none());
+    assert_eq!(shared_text(&app), "not yet displayed");
+    assert!(
+        !app.shared
+            .as_ref()
+            .unwrap()
+            .app
+            .ui()
+            .can_apply_key_effect(u16::MAX)
+    );
+}
+
+#[test]
+fn shared_missed_world_pick_preserves_complete_binding() {
+    use crate::workspace_ui::Hit;
+    let (_temporary, mut app) = shared_application();
+    shared_replace(&mut app, "retained after missed pick");
+    acknowledge_ui(&mut app);
+    let frame = app.frame(false).unwrap();
+    let point = frame
+        .semantic_ids
+        .iter()
+        .enumerate()
+        .find_map(|(index, id)| {
+            let x = u32::try_from(index % usize::try_from(frame.width).unwrap()).unwrap();
+            let y = u32::try_from(index / usize::try_from(frame.width).unwrap()).unwrap();
+            (*id == 0 && matches!(app.ui.hit(x, y), Hit::World(..))).then_some((x, y))
+        })
+        .unwrap();
+    #[allow(clippy::cast_precision_loss)]
+    let position = [point.0 as f32, point.1 as f32];
+    assert!(super::native_pointer(&mut app, position, (1280, 800), (1280, 800)).is_err());
+    assert_eq!(shared_text(&app), "retained after missed pick");
+    assert!(app.tools.shared_stamp().is_some());
+    app.control(crate::workspace_ui::Control::ApplyDraft)
+        .unwrap();
+    assert!(app.session.history().pending().is_some());
+}
+
+#[test]
+fn shared_composer_click_cancels_preedit_and_retires_old_target() {
+    use tilewright_ui::Input;
+    let (_temporary, mut app) = shared_application();
+    shared_replace(&mut app, "exact original");
+    let shared = app.shared.as_mut().unwrap();
+    let target = shared.app.ui().text_target().unwrap();
+    shared
+        .app
+        .apply(Input::Preedit {
+            target,
+            text: "中".into(),
+            start: 0,
+            length: 1,
+        })
+        .unwrap();
+    acknowledge_ui(&mut app);
+    let shared = app.shared.as_mut().unwrap();
+    let clip = shared.geometry().unwrap().clip;
+    assert!(shared.pointer([clip.x + 1.0, clip.y + 1.0], false).unwrap());
+    assert!(shared.app.ui().snapshot().composer.composition.is_none());
+    assert!(!shared.ready());
+    assert!(
+        shared
+            .app
+            .apply(Input::TextCommit {
+                target,
+                text: "late commit".into()
+            })
+            .is_err()
+    );
+    assert_eq!(shared_text(&app), "exact original");
 }

@@ -8,7 +8,7 @@ yanked = "deny"
 allow = ["Apache-2.0", "ISC", "MIT", "Unicode-3.0", "Zlib"]
 # Font data only; never allow OFL for arbitrary packages or future UI versions.
 # cargo-deny 0.20.2 PackageSpecs uses @ for an exact version.
-exceptions = [{ crate = "tilewright-render-ui@0.6.0", allow = ["OFL-1.1"] }]
+exceptions = [{ crate = "tilewright-render-ui@0.6.1", allow = ["OFL-1.1"] }]
 
 [bans]
 multiple-versions = "allow"
