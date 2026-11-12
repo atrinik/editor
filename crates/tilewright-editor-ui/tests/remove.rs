@@ -448,27 +448,30 @@ fn prototype_grants_reach_only_top_level_objects_in_the_active_view() {
     let (_dir, mut session) = fixture_with(out_of_scope_objects);
     // Another spatial layer (inside the x/y bounds), an inventory entry, and
     // a top-level object outside the view bounds.
-    for uid in ["upper_1", "marker_2_item", "marker_negative"] {
+    for object in ["upper_1", "marker_2_item", "marker_negative"] {
         let error = session
-            .dispatch(label(&session, uid, "label", json!("No")), &mut records)
+            .dispatch(label(&session, object, "label", json!("No")), &mut records)
             .unwrap_err();
         assert!(
             error.to_string().contains("field capability"),
-            "{uid}: {error}"
+            "{object}: {error}"
         );
         let error = session
-            .dispatch(remove(&session, uid), &mut records)
+            .dispatch(remove(&session, object), &mut records)
             .unwrap_err();
-        assert!(error.to_string().contains("active view"), "{uid}: {error}");
+        assert!(
+            error.to_string().contains("active view"),
+            "{object}: {error}"
+        );
         assert!(session.history().pending().is_none());
     }
-    for (uid, x, y) in [("upper_1", 2, 2), ("marker_negative", 4, 2)] {
+    for (object, x, y) in [("upper_1", 2, 2), ("marker_negative", 4, 2)] {
         let error = session
-            .dispatch(movement(&session, uid, x, y), &mut records)
+            .dispatch(movement(&session, object, x, y), &mut records)
             .unwrap_err();
         assert!(
             error.to_string().contains("movement capability"),
-            "{uid}: {error}"
+            "{object}: {error}"
         );
         assert!(session.history().pending().is_none());
     }
