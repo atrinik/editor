@@ -88,7 +88,6 @@ pub fn inspect<'a>(
                 return result;
             };
             let location = world.object_location(uid).expect("object has location");
-            let editing = catalog.editing();
             if location.path.len() != 1
                 || location.plane != view_plane
                 || location.chunk.0 != view_layer
@@ -103,8 +102,8 @@ pub fn inspect<'a>(
                 plane: &location.plane,
                 layer: location.chunk.0,
                 at,
-                movable: at.is_some() && editing.can_move(uid, &object.proto),
-                deletable: at.is_some() && editing.can_delete(&object.proto),
+                movable: at.is_some() && catalog.can_move(world, uid),
+                deletable: catalog.can_delete(world, uid),
             });
             let fields = world.profile().object_fields.fields();
             result.truncated = fields.len() > MAX_INSPECTOR_ROWS;
@@ -208,7 +207,7 @@ fn inspect_fields<'a>(
             Some("Structured field is read-only")
         } else if current.is_none() && spec.required {
             Some("Required field is absent; source must be repaired")
-        } else if !catalog.editing().can_edit_field(uid, &object.proto, name) {
+        } else if !catalog.can_edit_field(world, uid, name) {
             Some("Field has no editing capability")
         } else if !choices_bounded(world, &spec.field_type) {
             Some("Field choices exceed input budget")

@@ -522,10 +522,11 @@ fn optional_object_grants_parse_strictly_and_their_absence_changes_nothing() {
     let (absent, _) = loader::load(&root, &world, limits).unwrap();
     let editing = absent.editing();
     assert!(editing.objects.is_empty());
-    assert!(!editing.can_delete("marker"));
-    assert!(editing.can_move("marker_1", "marker"));
-    assert!(!editing.can_move("marker_2", "marker"));
-    assert!(!editing.can_edit_field("marker_1", "marker", "label"));
+    assert!(!absent.can_delete(&world, "marker_1"));
+    assert!(absent.can_move(&world, "marker_1"));
+    assert!(!absent.can_move(&world, "unknown_uid"));
+    assert!(!absent.can_edit_field(&world, "marker_1", "label"));
+    assert!(absent.editable_fields(&world, "marker_1").is_empty());
 
     let mut granted = original.clone();
     granted["editing"]["objects"] = json!([{"proto": "marker", "layer": "item", "fields": ["label"]}, {"proto": "grass", "layer": "floor"}]);
@@ -543,10 +544,12 @@ fn optional_object_grants_parse_strictly_and_their_absence_changes_nothing() {
         }
     );
     assert!(editing.objects["grass"].fields.is_empty());
-    assert!(editing.can_delete("marker") && editing.can_move("any_uid", "marker"));
-    assert!(editing.can_edit_field("any_uid", "marker", "label"));
-    assert!(!editing.can_edit_field("any_uid", "marker", "note"));
-    assert_eq!(editing.editable_fields("any_uid", "marker"), ["label"]);
+    assert!(catalog.in_active_view(&world, "marker_1"));
+    assert!(catalog.can_delete(&world, "marker_1"));
+    assert!(catalog.can_edit_field(&world, "marker_1", "label"));
+    assert!(!catalog.can_edit_field(&world, "marker_1", "note"));
+    assert_eq!(catalog.editable_fields(&world, "marker_1"), ["label"]);
+    assert!(!catalog.can_delete(&world, "unknown_uid"));
     granted["editing"]["objects"] = json!([]);
     put(dir.path(), "preview.jsonc", &granted.to_string());
     assert!(

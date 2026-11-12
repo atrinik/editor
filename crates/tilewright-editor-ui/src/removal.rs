@@ -55,7 +55,7 @@ fn describe(world: &World, uid: &str, lines: &mut Vec<String>) {
     let Some(object) = world.object(uid) else {
         return;
     };
-    let carried = inventory_count(object);
+    let (carried, mut uids) = inventory(object);
     if carried > 0 {
         lines.push(format!(
             "Warning: {name} holds {carried} inventory object{}; deleting it deletes them too.",
@@ -65,38 +65,55 @@ fn describe(world: &World, uid: &str, lines: &mut Vec<String>) {
     if let Some((plane, layer, at)) = tile(world, uid) {
         let dependents = dependents(world, uid, &plane, layer, at);
         if !dependents.is_empty() {
-            let mut listed = dependents
-                .iter()
-                .take(MAXIMUM_NAMES)
-                .cloned()
-                .collect::<Vec<_>>();
-            if dependents.len() > MAXIMUM_NAMES {
-                listed.push(format!("{} more", dependents.len() - MAXIMUM_NAMES));
-            }
-            let listed = listed.join(", ");
+            let listed = list(&dependents);
+            let one = dependents.len() == 1;
             lines.push(format!(
-                "Warning: {listed} target{} this tile ({}, {}); {} will point at an empty tile.",
-                if dependents.len() == 1 { "s" } else { "" },
+                "Warning: {listed} target{} this object's tile ({}, {}); {} will still target that tile after the deletion.",
+                if one { "s" } else { "" },
                 at[0],
                 at[1],
-                if dependents.len() == 1 { "it" } else { "they" },
+                if one { "it" } else { "they" },
             ));
         }
     }
+    uids.insert(0, name);
+    let one = uids.len() == 1;
     lines.push(format!(
-        "Uid {name} is removed with the object; do not reuse it for another object."
+        "Uid{} {} {} removed with the object; do not reuse {} for other objects.",
+        if one { "" } else { "s" },
+        list(&uids),
+        if one { "is" } else { "are" },
+        if one { "it" } else { "them" },
     ));
 }
 
-/// Every object nested in the inventory, at any depth.
-fn inventory_count(object: &Object) -> usize {
+/// The first names, then a count of the rest.
+fn list(names: &[String]) -> String {
+    let mut listed = names
+        .iter()
+        .take(MAXIMUM_NAMES)
+        .cloned()
+        .collect::<Vec<_>>();
+    if names.len() > MAXIMUM_NAMES {
+        listed.push(format!("{} more", names.len() - MAXIMUM_NAMES));
+    }
+    listed.join(", ")
+}
+
+/// The number of objects nested in the inventory at any depth, and the
+/// shortened uids among them in source order.
+fn inventory(object: &Object) -> (usize, Vec<String>) {
     let mut count = 0usize;
-    let mut pending: Vec<&Object> = object.inventory.iter().collect();
+    let mut uids = Vec::new();
+    let mut pending: Vec<&Object> = object.inventory.iter().rev().collect();
     while let Some(entry) = pending.pop() {
         count = count.saturating_add(1);
-        pending.extend(entry.inventory.iter());
+        if let Some(uid) = &entry.uid {
+            uids.push(short(uid));
+        }
+        pending.extend(entry.inventory.iter().rev());
     }
-    count
+    (count, uids)
 }
 
 /// The plane, spatial layer and plane coordinates of a placed object.
@@ -176,4 +193,102 @@ fn short(text: &str) -> String {
     let mut cut: String = text.chars().take(MAXIMUM_NAME_CHARS - 1).collect();
     cut.push('…');
     cut
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAXIMUM_DESCRIBED, MAXIMUM_NAME_CHARS, warnings};
+    use serde_json::{Value, json};
+    use std::{fs, path::Path};
+
+    fn copy_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn removals(uids: &[&str]) -> String {
+        let operations: Vec<Value> = uids
+            .iter()
+            .map(|uid| json!({"op": "object.remove", "uid": uid, "expect": {"proto": "marker"}}))
+            .collect();
+        json!({"format": "tilewright.transaction/1", "title": "t", "actor": "test",
+            "operations": operations})
+        .to_string()
+    }
+
+    #[test]
+    fn descriptions_names_and_identifiers_are_bounded() {
+        let long = format!("long_{}", "x".repeat(70));
+        let dir = tempfile::tempdir().unwrap();
+        copy_tree(
+            &tilewright_editor_testkit::fixture_world("prototype-neutral"),
+            dir.path(),
+        );
+        let path = dir.path().join("planes/main/layers/0/0_0.jsonc");
+        let mut chunk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let objects = chunk["objects"].as_array_mut().unwrap();
+        for index in 0..9 {
+            objects.push(json!({"uid": format!("t_{index}"), "at": [index, 10],
+                "proto": "marker", "layer": "item"}));
+        }
+        for index in 0..4 {
+            objects.push(json!({"uid": format!("p_{index}"), "at": [index, 11],
+                "proto": "marker", "layer": "item", "portal": {"layer": 0, "at": [0, 10]}}));
+        }
+        objects.push(json!({"uid": long, "at": [0, 12], "proto": "marker", "layer": "item"}));
+        let held: Vec<Value> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|id| json!({"uid": format!("held_{id}"), "proto": "marker"}))
+            .collect();
+        objects.push(
+            json!({"uid": "holder", "at": [0, 13], "proto": "marker", "layer": "item",
+            "inventory": held}),
+        );
+        fs::write(&path, serde_json::to_vec_pretty(&chunk).unwrap()).unwrap();
+        let world = tilewright_source::load(dir.path()).unwrap();
+
+        let uids: Vec<String> = (0..9).map(|index| format!("t_{index}")).collect();
+        let lines = warnings(
+            &world,
+            &removals(&uids.iter().map(String::as_str).collect::<Vec<_>>()),
+        );
+        assert_eq!(
+            lines.iter().filter(|line| line.starts_with("Uid")).count(),
+            MAXIMUM_DESCRIBED
+        );
+        assert!(!lines.iter().any(|line| line.contains("t_8")));
+        assert_eq!(
+            lines.last().unwrap(),
+            "Further deletions are not described here."
+        );
+        assert!(
+            lines[0].starts_with("Warning: portal p_0, portal p_1, portal p_2, 1 more target "),
+            "{lines:?}"
+        );
+
+        let lines = warnings(&world, &removals(&[&long]));
+        let shown: String = long.chars().take(MAXIMUM_NAME_CHARS - 1).collect();
+        assert_eq!(
+            lines,
+            [format!(
+                "Uid {shown}… is removed with the object; do not reuse it for other objects."
+            )]
+        );
+
+        let lines = warnings(&world, &removals(&["holder"]));
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("holds 4 inventory objects"));
+        assert!(
+            lines[1].starts_with("Uids holder, held_a, held_b, 2 more are removed"),
+            "{lines:?}"
+        );
+    }
 }

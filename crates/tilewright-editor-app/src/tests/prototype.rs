@@ -1723,3 +1723,55 @@ fn objects_without_a_prototype_grant_show_delete_disabled_and_refuse_the_key() {
     assert!(app.recovery.records().is_empty());
     assert_eq!(fs::read(chunk).unwrap(), original);
 }
+
+/// A neutral fixture whose `marker_2` carries `pad` bytes of custom data,
+/// with that marker deleted and pending.
+fn padded_deletion(pad: usize) -> (tempfile::TempDir, Application, usize) {
+    let (temporary, mut app) = delete_application(|world| {
+        let path = world.join("planes/main/layers/0/0_0.jsonc");
+        let mut chunk: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        chunk["objects"][1]["custom"] =
+            serde_json::json!({"example.org": {"note": "a".repeat(pad)}});
+        fs::write(path, serde_json::to_vec_pretty(&chunk).unwrap()).unwrap();
+    });
+    app.select_visible_object(super::Capability::Delete)
+        .unwrap();
+    app.delete_selected().unwrap();
+    let plan = app.session.history().pending().unwrap();
+    let start = super::MAXIMUM_REVIEW_BYTES * 4;
+    let mut remaining = start;
+    for file in plan.changed() {
+        assert!(super::append_change_review(
+            &mut Vec::new(),
+            file.before.as_deref().unwrap_or("<absent>"),
+            file.after.as_deref().unwrap_or("<absent>"),
+            &mut remaining,
+        ));
+    }
+    (temporary, app, start - remaining)
+}
+
+#[test]
+fn deletion_warnings_never_push_a_diff_just_under_the_budget_past_it() {
+    let pad = 60_000;
+    let (_temporary, _app, used) = padded_deletion(pad);
+    let slack = 4;
+    let (temporary, mut app, used) =
+        padded_deletion(pad + super::MAXIMUM_REVIEW_BYTES - used - slack);
+    assert!(used <= super::MAXIMUM_REVIEW_BYTES, "{used}");
+    let warning = app.session.pending_warnings()[0].clone();
+    // Sharing the diff budget would have made this review incomplete.
+    assert!(warning.len() > super::MAXIMUM_REVIEW_BYTES - used);
+    let review = app.source_review();
+    assert!(review.complete);
+    assert_eq!(review.lines[0], warning);
+    app.refresh_ui();
+    assert!(app.ui.widgets.iter().any(|widget| widget.control
+        == Some(crate::workspace_ui::Control::Accept)
+        && widget.enabled));
+    app.action(Action::Accept).unwrap();
+    assert!(app.session.world().object("marker_2").is_none());
+    assert_eq!(app.recovery.records().len(), 1);
+    drop(temporary);
+}

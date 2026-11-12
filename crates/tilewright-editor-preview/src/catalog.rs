@@ -13,8 +13,10 @@ pub struct EditingCapabilities {
     pub terrain: BTreeMap<String, BTreeSet<String>>,
     pub fields: BTreeSet<(String, String)>,
     /// Optional `editing.objects`: one grant per prototype. Each lets the
-    /// author delete, move and edit the listed fields of every object of
-    /// that prototype; `layer` is the render layer a placed object uses.
+    /// author delete, move and edit the named fields of objects of that
+    /// prototype, but only top-level objects in the active view (see
+    /// [`PreviewCatalog::in_active_view`]); `layer` is the render layer a
+    /// placed object will use.
     pub objects: BTreeMap<String, ObjectGrant>,
 }
 
@@ -23,45 +25,6 @@ pub struct EditingCapabilities {
 pub struct ObjectGrant {
     pub layer: String,
     pub fields: BTreeSet<String>,
-}
-
-impl EditingCapabilities {
-    /// Movement is granted per uid (`movable_uids`) or per prototype.
-    pub fn can_move(&self, uid: &str, proto: &str) -> bool {
-        self.movable_uids.contains(uid) || self.objects.contains_key(proto)
-    }
-    /// A field edit is granted per uid (`fields`) or per prototype.
-    pub fn can_edit_field(&self, uid: &str, proto: &str, field: &str) -> bool {
-        self.fields
-            .iter()
-            .any(|(object, name)| object == uid && name == field)
-            || self
-                .objects
-                .get(proto)
-                .is_some_and(|grant| grant.fields.contains(field))
-    }
-    /// Deletion is granted only per prototype.
-    pub fn can_delete(&self, proto: &str) -> bool {
-        self.objects.contains_key(proto)
-    }
-    /// Every field granted for this object, per uid then per prototype,
-    /// without duplicates.
-    pub fn editable_fields<'a>(&'a self, uid: &str, proto: &str) -> Vec<&'a str> {
-        let mut names: Vec<&str> = self
-            .fields
-            .iter()
-            .filter(|(object, _)| object == uid)
-            .map(|(_, field)| field.as_str())
-            .collect();
-        if let Some(grant) = self.objects.get(proto) {
-            for field in &grant.fields {
-                if !names.contains(&field.as_str()) {
-                    names.push(field);
-                }
-            }
-        }
-        names
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +63,78 @@ impl PreviewCatalog {
     }
     pub const fn editing(&self) -> &EditingCapabilities {
         &self.editing
+    }
+    /// Whether `uid` names a top-level object in this view's plane and
+    /// spatial layer whose tile lies inside the view bounds. Per-prototype
+    /// grants reach only such objects; per-uid grants keep their own reach.
+    pub fn in_active_view(&self, world: &World, uid: &str) -> bool {
+        let (Some(location), Some(object)) = (world.object_location(uid), world.object(uid)) else {
+            return false;
+        };
+        let Some([x, y]) = object.at else {
+            return false;
+        };
+        let Some(plane) = world.planes().get(&location.plane) else {
+            return false;
+        };
+        let size = i64::from(plane.chunk_size);
+        let global =
+            |chunk: i64, local: u16| chunk.checked_mul(size)?.checked_add(i64::from(local));
+        let [min_x, min_y, width, height] = self.bounds;
+        location.path.len() == 1
+            && location.plane == self.plane
+            && location.chunk.0 == self.layer
+            && global(location.chunk.1, x)
+                .and_then(|x| x.checked_sub(min_x))
+                .is_some_and(|x| x >= 0 && x < width)
+            && global(location.chunk.2, y)
+                .and_then(|y| y.checked_sub(min_y))
+                .is_some_and(|y| y >= 0 && y < height)
+    }
+    /// The `editing.objects` grant for `uid`'s prototype, when the object
+    /// is in the active view.
+    fn prototype_grant(&self, world: &World, uid: &str) -> Option<&ObjectGrant> {
+        let grant = self.editing.objects.get(&world.object(uid)?.proto)?;
+        self.in_active_view(world, uid).then_some(grant)
+    }
+    /// Movement is granted per uid (`movable_uids`) or, in the active view,
+    /// per prototype.
+    pub fn can_move(&self, world: &World, uid: &str) -> bool {
+        self.editing.movable_uids.contains(uid) || self.prototype_grant(world, uid).is_some()
+    }
+    /// A field edit is granted per uid (`fields`) or, in the active view,
+    /// per prototype.
+    pub fn can_edit_field(&self, world: &World, uid: &str, field: &str) -> bool {
+        self.editing
+            .fields
+            .iter()
+            .any(|(object, name)| object == uid && name == field)
+            || self
+                .prototype_grant(world, uid)
+                .is_some_and(|grant| grant.fields.contains(field))
+    }
+    /// Deletion is granted only per prototype, in the active view.
+    pub fn can_delete(&self, world: &World, uid: &str) -> bool {
+        self.prototype_grant(world, uid).is_some()
+    }
+    /// Every field name granted for `uid`, per uid then per prototype,
+    /// without duplicates.
+    pub fn editable_fields(&self, world: &World, uid: &str) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .editing
+            .fields
+            .iter()
+            .filter(|(object, _)| object == uid)
+            .map(|(_, field)| field.as_str())
+            .collect();
+        if let Some(grant) = self.prototype_grant(world, uid) {
+            for field in &grant.fields {
+                if !names.contains(&field.as_str()) {
+                    names.push(field);
+                }
+            }
+        }
+        names
     }
     #[allow(clippy::cast_precision_loss)]
     pub fn default_view(

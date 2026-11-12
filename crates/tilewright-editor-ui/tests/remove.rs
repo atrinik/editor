@@ -326,8 +326,18 @@ fn review_warns_about_inventory_portals_and_anchors_but_never_blocks_accept() {
     let (dir, mut session) = fixture_with(|root| {
         edit_json(root, CHUNK, |chunk| {
             let objects = chunk["objects"].as_array_mut().unwrap();
-            objects[1]["inventory"] =
-                json!([{"proto": "marker", "inventory": [{"proto": "marker"}]}]);
+            objects[1]["inventory"] = json!([{"uid": "marker_2_item", "proto": "marker",
+                "inventory": [{"proto": "marker"}]}]);
+            // Targets (1, 4) in another plane: not this object's tile.
+            objects.push(
+                json!({"uid": "gate_3", "at": [7, 5], "proto": "marker", "layer": "item",
+                "portal": {"plane": "other", "layer": 0, "at": [1, 4]}}),
+            );
+            // Targets its own tile, so deleting it warns about nothing.
+            objects.push(
+                json!({"uid": "loop_1", "at": [7, 4], "proto": "marker", "layer": "item",
+                "portal": {"layer": 0, "at": [7, 4]}}),
+            );
             objects.push(
                 json!({"uid": "gate_1", "at": [5, 5], "proto": "marker", "layer": "item",
                 "portal": {"layer": 0, "at": [1, 4]}}),
@@ -341,8 +351,18 @@ fn review_warns_about_inventory_portals_and_anchors_but_never_blocks_accept() {
             root.join("planes/main/anchors.jsonc"),
             json!({"format": "tilewright.anchors/1", "anchors": [
                 {"id": "landing", "layer": 0, "at": [1, 4]},
-                {"id": "elsewhere", "layer": 0, "at": [0, 0]}]})
+                {"id": "elsewhere", "layer": 0, "at": [0, 0]},
+                {"id": "upstairs", "layer": 1, "at": [1, 4]}]})
             .to_string(),
+        )
+        .unwrap();
+        edit_json(root, "world.jsonc", |world| {
+            world["planes"] = json!(["main", "other"]);
+        });
+        fs::create_dir_all(root.join("planes/other")).unwrap();
+        fs::write(
+            root.join("planes/other/plane.jsonc"),
+            r#"{"format":"tilewright.plane/1","id":"other","kind":"shared","chunk_size":32}"#,
         )
         .unwrap();
     });
@@ -359,16 +379,29 @@ fn review_warns_about_inventory_portals_and_anchors_but_never_blocks_accept() {
     for part in ["anchor landing", "portal gate_1", "portal gate_2", "(1, 4)"] {
         assert!(warnings[1].contains(part), "{part}: {warnings:?}");
     }
-    assert!(!warnings[1].contains("elsewhere"));
-    assert!(warnings[2].contains("marker_2") && warnings[2].contains("do not reuse"));
+    // Exactly three dependents: no anchor on another layer, no portal into
+    // another plane.
+    for part in ["elsewhere", "upstairs", "gate_3", "more"] {
+        assert!(!warnings[1].contains(part), "{part}: {warnings:?}");
+    }
+    assert!(warnings[1].contains("will still target that tile"));
+    // The object's uid and the uids in its inventory are removed.
+    assert!(
+        warnings[2].starts_with("Uids marker_2, marker_2_item are removed")
+            && warnings[2].contains("do not reuse"),
+        "{warnings:?}"
+    );
     session.dispatch(Action::Cancel, &mut records).unwrap();
     assert!(session.pending_warnings().is_empty());
 
     // A deleted portal never warns about its own target tile.
     session
-        .dispatch(remove(&session, "gate_1"), &mut records)
+        .dispatch(remove(&session, "loop_1"), &mut records)
         .unwrap();
-    assert_eq!(session.pending_warnings().len(), 1);
+    assert_eq!(
+        session.pending_warnings(),
+        ["Uid loop_1 is removed with the object; do not reuse it for other objects."]
+    );
     session.dispatch(Action::Cancel, &mut records).unwrap();
 
     // Publication is checked on Linux only; other platforms refuse it.
@@ -389,4 +422,127 @@ fn review_warns_about_inventory_portals_and_anchors_but_never_blocks_accept() {
             .unwrap()
             .contains("gate_2")
     );
+}
+
+/// An object on spatial layer 1 inside the view's x/y bounds, and an
+/// inventory entry with a uid inside `marker_2`.
+fn out_of_scope_objects(root: &Path) {
+    let upper = json!({"format": "tilewright.chunk/1", "plane": "main", "layer": 1, "chunk": [0, 0],
+        "objects": [{"uid": "upper_1", "at": [2, 2], "proto": "marker", "layer": "item",
+            "fields": {"label": "Upper"}}]});
+    fs::create_dir_all(root.join("planes/main/layers/1")).unwrap();
+    fs::write(
+        root.join("planes/main/layers/1/0_0.jsonc"),
+        serde_json::to_vec_pretty(&upper).unwrap(),
+    )
+    .unwrap();
+    edit_json(root, CHUNK, |chunk| {
+        chunk["objects"][1]["inventory"] =
+            json!([{"uid": "marker_2_item", "proto": "marker", "fields": {"label": "Inside"}}]);
+    });
+}
+
+#[test]
+fn prototype_grants_reach_only_top_level_objects_in_the_active_view() {
+    let mut records = Records::default();
+    let (_dir, mut session) = fixture_with(out_of_scope_objects);
+    // Another spatial layer (inside the x/y bounds), an inventory entry, and
+    // a top-level object outside the view bounds.
+    for uid in ["upper_1", "marker_2_item", "marker_negative"] {
+        let error = session
+            .dispatch(label(&session, uid, "label", json!("No")), &mut records)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("field capability"),
+            "{uid}: {error}"
+        );
+        let error = session
+            .dispatch(remove(&session, uid), &mut records)
+            .unwrap_err();
+        assert!(error.to_string().contains("active view"), "{uid}: {error}");
+        assert!(session.history().pending().is_none());
+    }
+    for (uid, x, y) in [("upper_1", 2, 2), ("marker_negative", 4, 2)] {
+        let error = session
+            .dispatch(movement(&session, uid, x, y), &mut records)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("movement capability"),
+            "{uid}: {error}"
+        );
+        assert!(session.history().pending().is_none());
+    }
+
+    // Explicit per-uid grants keep the reach they had before the key.
+    let (_dir, mut session) = fixture_with(|root| {
+        out_of_scope_objects(root);
+        edit_json(root, "preview.jsonc", |catalog| {
+            catalog["editing"]["movable_uids"] = json!(["marker_1", "marker_negative"]);
+            let fields = catalog["editing"]["fields"].as_array_mut().unwrap();
+            for uid in ["upper_1", "marker_2_item", "marker_negative"] {
+                fields.push(json!({"uid": uid, "field": "label"}));
+            }
+        });
+    });
+    for uid in ["upper_1", "marker_2_item", "marker_negative"] {
+        prepares(
+            &mut session,
+            |s| label(s, uid, "label", json!("Yes")),
+            &mut records,
+        );
+        // Deletion is never granted per uid.
+        assert!(
+            session
+                .dispatch(remove(&session, uid), &mut records)
+                .is_err()
+        );
+    }
+    prepares(
+        &mut session,
+        |s| movement(s, "marker_negative", 4, 2),
+        &mut records,
+    );
+    assert!(records.0.is_empty());
+}
+
+#[test]
+fn inspector_capabilities_use_the_same_active_view_scope() {
+    use tilewright_editor_ui::{
+        SelectionKey,
+        inspector::{SelectionSummary, inspect},
+    };
+    let summary = |session: &Session, uid: &str| {
+        let key = SelectionKey::Object { uid: uid.into() };
+        let view = inspect(
+            session.world(),
+            session.catalog(),
+            Some(&key),
+            session.generation(),
+            session.history().document().revision(),
+        );
+        match view.selection {
+            Some(SelectionSummary::Object {
+                movable, deletable, ..
+            }) => {
+                let label = view
+                    .rows
+                    .iter()
+                    .find(|row| row.name == "label")
+                    .unwrap()
+                    .editable;
+                (movable, deletable, label)
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    let (_dir, session) = fixture();
+    assert_eq!(summary(&session, "marker_2"), (true, true, true));
+    // Same plane and layer, but outside the view bounds.
+    assert_eq!(summary(&session, "marker_negative"), (false, false, false));
+    let (_dir, session) = fixture_with(|root| {
+        edit_json(root, "preview.jsonc", |catalog| {
+            catalog["editing"]["movable_uids"] = json!(["marker_1", "marker_negative"]);
+        });
+    });
+    assert_eq!(summary(&session, "marker_negative"), (true, false, false));
 }

@@ -1140,18 +1140,7 @@ fn same_tile_move_preserves_coordinate_whitespace_without_publication_or_recover
 
 #[test]
 fn read_only_or_unknown_uids_cannot_prepare_coordinate_edits() {
-    // Per-uid capabilities only: without `editing.objects` the negative
-    // marker has no movement grant.
-    let (_dir, mut session) = fixture_with(|root| {
-        let path = root.join("preview.jsonc");
-        let mut catalog: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        catalog["editing"]
-            .as_object_mut()
-            .unwrap()
-            .remove("objects");
-        fs::write(path, serde_json::to_vec_pretty(&catalog).unwrap()).unwrap();
-    });
+    let (_dir, mut session) = fixture();
     let mut recovery = Records::default();
     for uid in ["marker_negative", "unknown_uid"] {
         let error = session

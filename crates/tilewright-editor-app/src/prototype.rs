@@ -37,6 +37,9 @@ type UiRows = Vec<(String, Option<Control>, bool, bool)>;
 const MAXIMUM_REVIEW_BYTES: usize = 64 << 10;
 const REVIEW_CONTEXT_BYTES: usize = 24;
 const REVIEW_ROW_BYTES: usize = 256;
+/// Separate allowance for deletion warnings, which are already bounded.
+const REVIEW_WARNING_BYTES: usize = 16 << 10;
+const REVIEW_WARNINGS_OMITTED: &str = "Further warnings are omitted from this review.";
 const REVIEW_LIMIT_MESSAGE: &str = "Change exceeds the visible review limit. Cancel this edit.";
 
 /// Which granted edit a scripted selection needs.
@@ -354,17 +357,10 @@ impl Application {
         let Some(SelectionKey::Object { uid }) = self.session.selection().cloned() else {
             return Err("select an object with a field capability first".into());
         };
-        let proto = self
-            .session
-            .world()
-            .object(&uid)
-            .map(|object| object.proto.clone())
-            .ok_or("selection no longer exists")?;
         let field = self
             .session
             .catalog()
-            .editing()
-            .editable_fields(&uid, &proto)
+            .editable_fields(self.session.world(), &uid)
             .first()
             .map(|field| (*field).to_owned())
             .ok_or("selected object has no field capability")?;
@@ -1095,15 +1091,16 @@ impl Application {
             complete: true,
         };
         let mut remaining = MAXIMUM_REVIEW_BYTES;
-        // Deletion warnings come first and share the review budget. They
-        // inform the author; they never refuse or block Accept.
+        // Deletion warnings come first, with their own allowance outside the
+        // diff budget: they inform the author and never block Accept.
+        let mut allowance = REVIEW_WARNING_BYTES;
         for warning in self.session.pending_warnings() {
             let warning = terminal_field(warning);
-            if warning.len() > remaining {
-                review.complete = false;
+            if warning.len() > allowance {
+                review.lines.push(REVIEW_WARNINGS_OMITTED.into());
                 break;
             }
-            remaining -= warning.len();
+            allowance -= warning.len();
             review.lines.push(warning);
         }
         for (index, file) in plan.changed().enumerate() {
@@ -1283,12 +1280,11 @@ impl Application {
             let SelectionKey::Object { uid } = key else {
                 return None;
             };
-            let proto = self.session.world().object(uid)?.proto.as_str();
-            let capabilities = self.session.catalog().editing();
+            let (world, catalog) = (self.session.world(), self.session.catalog());
             let granted = match capability {
-                Capability::Move => capabilities.can_move(uid, proto),
-                Capability::Field => !capabilities.editable_fields(uid, proto).is_empty(),
-                Capability::Delete => capabilities.can_delete(proto),
+                Capability::Move => catalog.can_move(world, uid),
+                Capability::Field => !catalog.editable_fields(world, uid).is_empty(),
+                Capability::Delete => catalog.can_delete(world, uid),
             };
             if !granted {
                 return None;

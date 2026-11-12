@@ -522,10 +522,7 @@ impl Session {
                 expected,
             } => {
                 let world = self.history.document().world();
-                let proto = world
-                    .object(&uid)
-                    .map_or("", |object| object.proto.as_str());
-                if !self.catalog.editing().can_move(&uid, proto) || !self.in_bounds(x, y) {
+                if !self.catalog.can_move(world, &uid) || !self.in_bounds(x, y) {
                     return Err(refuse("movement capability or bounds refused"));
                 }
                 let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
@@ -586,10 +583,7 @@ impl Session {
             } => {
                 bounded_value(&value)?;
                 let world = self.history.document().world();
-                let proto = world
-                    .object(&uid)
-                    .map_or("", |object| object.proto.as_str());
-                if !self.catalog.editing().can_edit_field(&uid, proto, &field) {
+                if !self.catalog.can_edit_field(world, &uid, &field) {
                     return Err(refuse("field capability or value budget refused"));
                 }
                 if world.profile().object_fields.field(&field).is_none() {
@@ -654,36 +648,13 @@ impl Session {
             Action::Remove { uid, expected } => {
                 let world = self.history.document().world();
                 let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
-                if !self.catalog.editing().can_delete(&object.proto) {
+                if !self.catalog.editing().objects.contains_key(&object.proto) {
                     return Err(refuse(
                         "deletion capability refused: the catalog does not grant this object's prototype",
                     ));
                 }
-                let location = world
-                    .object_location(&uid)
-                    .ok_or_else(|| refuse("unknown UID location"))?;
-                let (plane, layer, _) = self.catalog.view();
-                let at = object
-                    .at
-                    .ok_or_else(|| refuse("placed object has no coordinates"))?;
-                let size = world
-                    .planes()
-                    .get(&location.plane)
-                    .map(|plane| i64::from(plane.chunk_size))
-                    .ok_or_else(|| refuse("missing authoritative object plane"))?;
-                let global = |chunk: i64, local: u16| {
-                    chunk
-                        .checked_mul(size)
-                        .and_then(|value| value.checked_add(i64::from(local)))
-                };
-                let inside = global(location.chunk.1, at[0])
-                    .zip(global(location.chunk.2, at[1]))
-                    .is_some_and(|(x, y)| self.in_bounds(x, y));
-                if location.path.len() != 1
-                    || location.plane != plane
-                    || location.chunk.0 != layer
-                    || !inside
-                {
+                // The same active-view scope as every per-prototype grant.
+                if !self.catalog.can_delete(world, &uid) {
                     return Err(refuse(
                         "only placed objects in the active view can be deleted",
                     ));
