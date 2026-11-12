@@ -20,9 +20,9 @@ Chunk `[-1,0]` contains ground at x=-2/-1 and the marker `marker_negative` at
 `(-1,1)`; chunk `[0,0]` continues the ground at x=0/1.
 The catalog grants movement and the `label` field to `marker_1` by uid, and
 grants the `marker` prototype through `editing.objects` (render layer `item`,
-field `label`): every marker, `marker_negative` included, can be deleted,
-moved and relabelled. Deletion needs the object inside the view bounds. A
-catalog without `editing.objects` keeps `marker_negative` read-only.
+field name `label`): every marker inside the view bounds can be deleted, moved
+and relabelled. Prototype grants reach only the active view, so
+`marker_negative` stays read-only with the default bounds.
 
 From the repository root:
 
