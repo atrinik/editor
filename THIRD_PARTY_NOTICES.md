@@ -6,7 +6,7 @@ SBOM.
 
 - `tilewright-source`, `tilewright-edit` and `tilewright-jsonc` 0.2.0
   (tilewright-world): MIT.
-- `tilewright-scene` and `tilewright-render-*` 0.6.3 (tilewright-renderer): MIT
+- `tilewright-scene` and `tilewright-render-*` 0.7.0 (tilewright-renderer): MIT
   implementation; `tilewright-render-ui` also bundles OFL-1.1 font data.
 - `sdl3` Rust bindings: MIT.
 - SDL native library: Zlib License.
@@ -146,7 +146,7 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 
 ## Shared renderer UI font — OFL 1.1
 
-`tilewright-render-ui` 0.6.3 combines MIT implementation with bundled Roboto Mono
+`tilewright-render-ui` 0.7.0 combines MIT implementation with bundled Roboto Mono
 font source and derived atlas, metrics and glyph data under **SIL Open Font
 License 1.1 (`OFL-1.1`)**. The exact released registry archive is pinned in
 `Cargo.lock`; its checksum and source/notice hashes are recorded in

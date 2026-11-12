@@ -1,8 +1,8 @@
 # Tilewright editor
 
 Tilewright editor is an MIT-licensed Rust world editor for isometric and
-top-down tile games, with built-in agent tooling. Humans and agents edit the
-same world through one command engine. The bounded offline prototype provides
+top-down tile games, designed so that agents can drive it later. Humans and
+agents are meant to edit the same world through one command engine. The bounded offline prototype provides
 a native toolbar, scalar inspector, coordinate tools, a terrain drag brush,
 object deletion, reviewed changes and undo/redo. Deterministic reference capture accompanies native
 window testing; an editor MCP server and a full widget system remain future work.
@@ -45,7 +45,7 @@ service, or server lifecycle.
 
 The editor opens world source trees with tilewright-world's `tilewright-source`
 and carries out edits as its `tilewright-edit` transactions; it builds scenes
-with tilewright-renderer 0.6.3, including its shared UI/text compiler.
+with tilewright-renderer 0.7.0, including its shared UI/text compiler.
 The production manifests target exact crates.io
 versions, recorded with their repositories in `policy/released-dependencies.json`.
 The registry lockfile records their actual archive checksums; producer path/Git

@@ -98,7 +98,7 @@ pub fn configure_ime_ui() -> Result<(), String> {
     Ok(())
 }
 
-/// SDL has no safe Rust wrapper for this operation in sdl3 0.20. Keep the
+/// SDL has no safe Rust wrapper for this operation in sdl3 0.22. Keep the
 /// required FFI confined here; the borrowed live Window owns its raw pointer.
 #[allow(unsafe_code)]
 pub fn clear_composition(window: &sdl3::video::Window) -> Result<(), String> {
