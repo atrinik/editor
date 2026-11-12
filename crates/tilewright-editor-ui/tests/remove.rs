@@ -207,7 +207,7 @@ fn one_deletion_is_one_reviewed_object_remove_with_byte_exact_undo_and_redo() {
     assert_eq!(pending.changed().count(), 1);
     assert!(session.world().object("marker_2").is_none());
     assert_eq!(fs::read(&path).unwrap(), original);
-    let warnings = session.pending_warnings();
+    let warnings = session.pending_warnings().to_vec();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("marker_2") && warnings[0].contains("do not reuse"));
 
@@ -342,7 +342,7 @@ fn review_warns_about_inventory_portals_and_anchors_but_never_blocks_accept() {
     session
         .dispatch(remove(&session, "marker_2"), &mut records)
         .unwrap();
-    let warnings = session.pending_warnings();
+    let warnings = session.pending_warnings().to_vec();
     assert_eq!(warnings.len(), 3, "{warnings:?}");
     assert!(
         warnings[0].contains("holds 2 inventory objects"),

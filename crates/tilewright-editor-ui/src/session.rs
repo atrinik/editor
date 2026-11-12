@@ -154,6 +154,9 @@ pub struct Session {
     selection: Option<SelectionKey>,
     generation: u64,
     status: SessionStatus,
+    /// Review warnings for the pending transaction, refreshed after every
+    /// dispatch; only dispatch changes the pending transaction.
+    warnings: Vec<String>,
 }
 impl Session {
     pub fn new(history: History, catalog: PreviewCatalog, resources: ReadyResources) -> Self {
@@ -171,6 +174,7 @@ impl Session {
                 cleaned: None,
                 recovery_descriptor: None,
             },
+            warnings: Vec::new(),
         }
     }
     pub fn history(&self) -> &History {
@@ -221,10 +225,8 @@ impl Session {
     }
     /// Review warnings for every object the pending transaction removes,
     /// judged against the committed World. They never block Accept.
-    pub fn pending_warnings(&self) -> Vec<String> {
-        self.history.pending().map_or_else(Vec::new, |pending| {
-            crate::removal::warnings(self.history.document().world(), pending.sealed())
-        })
+    pub fn pending_warnings(&self) -> &[String] {
+        &self.warnings
     }
     fn verify_catalog(&self) -> Result<(), SessionError> {
         loader::revalidate(
@@ -447,6 +449,9 @@ impl Session {
         recovery: &mut impl RecoveryStore,
     ) -> Result<(), SessionError> {
         let result = self.dispatch_inner(action, recovery);
+        self.warnings = self.history.pending().map_or_else(Vec::new, |pending| {
+            crate::removal::warnings(self.history.document().world(), pending.sealed())
+        });
         if let Err(error) = &result {
             self.status.message = error.to_string();
             if self.status.phase != SessionPhase::Blocked {

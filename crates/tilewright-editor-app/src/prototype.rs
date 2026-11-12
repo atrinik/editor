@@ -1098,7 +1098,7 @@ impl Application {
         // Deletion warnings come first and share the review budget. They
         // inform the author; they never refuse or block Accept.
         for warning in self.session.pending_warnings() {
-            let warning = terminal_field(&warning);
+            let warning = terminal_field(warning);
             if warning.len() > remaining {
                 review.complete = false;
                 break;
