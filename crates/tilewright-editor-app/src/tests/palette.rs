@@ -89,6 +89,16 @@ fn slash_typing_enter_and_escape_order_through_real_sdl_events() {
     acknowledge_ui(&mut app);
     press(&mut app, &mut input, Keycode::Slash).unwrap();
     assert!(app.tools.filter_focused());
+    // N and O belong to the focused filter, not to Zone mode or the overlay.
+    for key in [Keycode::N, Keycode::O] {
+        crate::prototype::native_key(&mut app, key).unwrap();
+    }
+    assert!(app.tools.filter_focused());
+    assert_eq!(
+        app.tools.mode(),
+        tilewright_editor_ui::tools::ToolMode::Place
+    );
+    assert!(!app.tools.zones_visible());
     acknowledge_ui(&mut app);
     quiet_batch(&app, &mut input);
     press(&mut app, &mut input, Keycode::Escape).unwrap();

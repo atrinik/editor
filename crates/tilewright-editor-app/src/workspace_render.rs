@@ -8,7 +8,7 @@
 //! prepared exact cell quads, placed in the World's own draw order. The
 //! World scene and
 //! its exact picking masks remain untouched.
-use crate::workspace_ui::{Rect, WorkspaceUi};
+use crate::workspace_ui::{Rect, Widget, WorkspaceUi};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -228,50 +228,174 @@ pub const STROKE_PREVIEW_TINT: [f32; 4] = [1.0, 1.0, 1.0, 0.45];
 /// into several quads. Nothing is projected here.
 ///
 /// The copies are World-layer quads placed in the prepared World scene's
-/// own draw order: each takes the painter order and depth of that cell's
-/// terrain draw in the World scene, and composition gives it a semantic
-/// identity above every World quad, so it draws directly after that
-/// terrain and before anything the World draws later (nearer tiles, higher
-/// ground layers, objects), which cover it as they cover the terrain. A
-/// cell the World draws no terrain for on this grid follows the World
-/// terrain draw of the nearest earlier cell in the cell scene's order, or
-/// draws before the whole World when there is none. The copies are a
-/// subset of a scene that already met the scene limits; semantic
-/// identities are assigned when composed.
+/// own draw order. `PreparedPreview::cell_slots`, computed on first use per
+/// prepared scene by compiling the World's terrain, the cell reference
+/// objects and the World's placed objects together with the shared
+/// renderer, gives each cell the `(depth, painter order)` of the last World
+/// quad drawn before it; composition gives the copy a semantic identity
+/// above every World quad, so it draws directly after that quad and before
+/// anything the World draws later: objects on the tile (including objects
+/// on the grid's own ground render layer), nearer tiles and higher ground
+/// layers cover it as they cover the terrain. Cells without terrain get
+/// their own position in the order, not an earlier cell's. A cell drawn
+/// before every World quad draws first. When the slots are unavailable
+/// (the combined scene could not be compiled) there are no copies at all;
+/// callers say so. The copies are a subset of a scene that already met the
+/// scene limits; semantic identities are assigned when composed. Copies of
+/// two overlays in one slot draw in the order the overlays are passed to
+/// [`compose_with_overlay`].
 pub fn stroke_overlay(prepared: &PreparedPreview, cells: &BTreeSet<SelectionKey>) -> Vec<Quad> {
-    // Where the World draws each terrain cell: its last quad's order.
-    let mut world: BTreeMap<&SelectionKey, (i16, u32)> = BTreeMap::new();
-    for quad in prepared.scene.quads() {
-        if let Some(key @ SelectionKey::Cell { .. }) = prepared.picks.get(&quad.semantic_id) {
-            world.insert(key, (quad.depth, quad.painter_order));
+    world_ordered_copies(prepared, |key| {
+        cells.contains(key).then_some(STROKE_PREVIEW_TINT)
+    })
+}
+
+/// Unpickable copies of the prepared cell quads of every cell `tint` gives
+/// a colour, in that colour, placed in the World scene's draw order as
+/// [`stroke_overlay`] describes.
+fn world_ordered_copies(
+    prepared: &PreparedPreview,
+    tint: impl Fn(&SelectionKey) -> Option<[f32; 4]>,
+) -> Vec<Quad> {
+    let Some(slots) = prepared.cell_slots() else {
+        return Vec::new();
+    };
+    prepared
+        .cell_scene
+        .quads()
+        .iter()
+        .filter_map(|quad| {
+            let color = tint(prepared.cell_picks.get(&quad.semantic_id)?)?;
+            let (depth, painter_order) = slots
+                .get(&quad.semantic_id)
+                .copied()
+                .flatten()
+                .unwrap_or((quad.depth.saturating_sub(1), 0));
+            Some(Quad {
+                color,
+                grayscale: 0.0,
+                glow: None,
+                pickable: false,
+                layer: Layer::World,
+                depth,
+                painter_order,
+                ..*quad
+            })
+        })
+        .collect()
+}
+
+/// The zone overlay: unpickable copies of the prepared cell quads of every
+/// tile that has a tint in `tints` (keyed by plane tile), in that tint,
+/// placed in the World scene's draw order exactly like the stroke preview
+/// ([`stroke_overlay`]): each draws directly after its tile's terrain and
+/// before anything the World draws later, so a tint never covers an object
+/// or a nearer tile, and the part of a tile an object hides shows no tint.
+/// Composed before the stroke preview, a preview mark of the same cell
+/// draws over the tint. Tiles without a tint get no quad.
+pub fn zone_overlay(prepared: &PreparedPreview, tints: &BTreeMap<[i64; 2], [f32; 4]>) -> Vec<Quad> {
+    world_ordered_copies(prepared, |key| match key {
+        SelectionKey::Cell { x, y, .. } => tints.get(&[*x, *y]).copied(),
+        SelectionKey::Object { .. } => None,
+    })
+}
+
+/// Logical rectangle of a row's colour swatch: the thumbnail box.
+pub fn swatch_rect(row: Rect) -> Option<Rect> {
+    let square = row.height.checked_sub(2 * THUMBNAIL_INSET)?;
+    (square > 0 && row.width >= thumbnail_indent(row.height)).then_some(Rect {
+        x: row.x + THUMBNAIL_INSET,
+        y: row.y + THUMBNAIL_INSET,
+        width: square,
+        height: square,
+    })
+}
+
+/// Whether `text` fits a row of `width` by `height` logical pixels whole,
+/// by the same measure [`fit_text`] cuts with.
+pub fn fits(system: &mut TextSystem, text: &str, width: u32, height: u32) -> bool {
+    fit_text(system, text, width, height) == text
+}
+
+/// Text naming the identifier `id` that keeps it distinguishable in a row
+/// of `width` by `height`: the first `(prefix, suffix)` of `variants` whose
+/// whole text fits; else the last variant's prefix and as much of `id` as
+/// fits, elided in the middle so its head and its tail both stay.
+/// Hierarchical ids share prefixes, so cutting only the end would hide what
+/// tells two of them apart.
+pub fn fit_id(
+    system: &mut TextSystem,
+    id: &str,
+    variants: &[(String, String)],
+    width: u32,
+    height: u32,
+) -> String {
+    for (prefix, suffix) in variants {
+        let text = format!("{prefix}{id}{suffix}");
+        if fits(system, &text, width, height) {
+            return text;
         }
     }
-    // Scene quads are stored in draw order.
-    let mut slot = None;
-    let mut overlay = Vec::new();
-    for quad in prepared.cell_scene.quads() {
-        let Some(key) = prepared.cell_picks.get(&quad.semantic_id) else {
-            continue;
-        };
-        if let Some(found) = world.get(key) {
-            slot = Some(*found);
-        }
-        if !cells.contains(key) {
-            continue;
-        }
-        let (depth, painter_order) = slot.unwrap_or((quad.depth.saturating_sub(1), 0));
-        overlay.push(Quad {
-            color: STROKE_PREVIEW_TINT,
-            grayscale: 0.0,
-            glow: None,
-            pickable: false,
-            layer: Layer::World,
-            depth,
-            painter_order,
-            ..*quad
-        });
+    let prefix = variants.last().map_or("", |(prefix, _)| prefix.as_str());
+    middle_elided(system, prefix, id, width, height)
+}
+
+/// `prefix` and the longest middle elision of `id` that fits, keeping as
+/// many characters of the tail as of the head, or one more.
+fn middle_elided(
+    system: &mut TextSystem,
+    prefix: &str,
+    id: &str,
+    width: u32,
+    height: u32,
+) -> String {
+    let chars: Vec<char> = id.chars().collect();
+    let elide = |kept: usize| {
+        let head = kept / 2;
+        let tail = kept - head;
+        format!(
+            "{prefix}{}...{}",
+            chars[..head].iter().collect::<String>(),
+            chars[chars.len() - tail..].iter().collect::<String>()
+        )
+    };
+    // Largest kept count that fits, by bisection over 0..len.
+    let (mut low, mut high) = (0, chars.len());
+    if !fits(system, &elide(0), width, height) {
+        return fit_text(system, &format!("{prefix}{id}"), width, height);
     }
-    overlay
+    while low + 1 < high {
+        let middle = usize::midpoint(low, high);
+        if fits(system, &elide(middle), width, height) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    elide(low)
+}
+
+/// `Path: ` and a zone chain, outermost first, joined by ` > `, fitted to
+/// the row: the outer zones give way to `...` first; the last (the tile's
+/// own) zone is kept whole, or elided in its middle when even it alone does
+/// not fit.
+pub fn fit_path(system: &mut TextSystem, path: &[String], width: u32, height: u32) -> String {
+    let whole = format!("Path: {}", path.join(" > "));
+    if fits(system, &whole, width, height) || path.is_empty() {
+        return whole;
+    }
+    for start in 1..path.len() {
+        let text = format!("Path: ... > {}", path[start..].join(" > "));
+        if fits(system, &text, width, height) {
+            return text;
+        }
+    }
+    let prefix = if path.len() > 1 {
+        "Path: ... > "
+    } else {
+        "Path: "
+    };
+    middle_elided(system, prefix, &path[path.len() - 1], width, height)
 }
 
 pub fn text_size(height: u32) -> f32 {
@@ -436,6 +560,44 @@ fn composition_rects(layout: &UnicodeLayout, range: std::ops::Range<usize>) -> V
     )
 }
 
+/// The background of a control or active row.
+fn row_background<'a>(
+    widget: &Widget,
+    identity: &mut u32,
+    order: u32,
+) -> Result<Option<UiPrimitive<'a>>> {
+    if widget.control.is_none() && !widget.active {
+        return Ok(None);
+    }
+    let color = if widget.active {
+        [0.12, 0.32, 0.47, 1.0]
+    } else if widget.enabled {
+        [0.14, 0.18, 0.24, 1.0]
+    } else {
+        [0.09, 0.11, 0.14, 1.0]
+    };
+    let bounds = rect(widget.layout);
+    Ok(Some(UiPrimitive::Solid {
+        bounds,
+        clip: bounds,
+        paint: paint(identity, order, color)?,
+        pickable: false,
+    }))
+}
+
+/// A legend row's colour swatch, above the row's background.
+fn swatch<'a>(widget: &Widget, identity: &mut u32, order: u32) -> Result<Option<UiPrimitive<'a>>> {
+    let (Some(color), Some(square)) = (widget.swatch, swatch_rect(widget.layout)) else {
+        return Ok(None);
+    };
+    Ok(Some(UiPrimitive::Solid {
+        bounds: rect(square),
+        clip: rect(widget.layout),
+        paint: paint(identity, order, color)?,
+        pickable: false,
+    }))
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn display_list<'a>(
     ui: &'a WorkspaceUi,
@@ -469,28 +631,15 @@ fn display_list<'a>(
             .and_then(|index| index.checked_mul(2))
             .and_then(|index| index.checked_add(1))
             .ok_or(CompositionError::PainterOrderExhausted)?;
-        if widget.control.is_some() || widget.active {
-            let color = if widget.active {
-                [0.12, 0.32, 0.47, 1.0]
-            } else if widget.enabled {
-                [0.14, 0.18, 0.24, 1.0]
-            } else {
-                [0.09, 0.11, 0.14, 1.0]
-            };
-            primitives.push(UiPrimitive::Solid {
-                bounds,
-                clip: bounds,
-                paint: paint(&mut identity, order, color)?,
-                pickable: false,
-            });
-        }
+        primitives.extend(row_background(widget, &mut identity, order)?);
         let color = if widget.enabled {
             [0.91, 0.94, 0.98, 1.0]
         } else {
             [0.50, 0.56, 0.63, 1.0]
         };
+        primitives.extend(swatch(widget, &mut identity, order)?);
         let mut origin = [bounds.x + 4.0, bounds.y + 1.0];
-        if widget.thumbnail.is_some() {
+        if widget.thumbnail.is_some() || widget.swatch.is_some() {
             // Text sits beside the thumbnail, centred on a 26 px text row.
             origin[0] += thumbnail_indent(widget.layout.height) as f32;
             origin[1] += (widget.layout.height.saturating_sub(26) / 2) as f32;

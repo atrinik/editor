@@ -15,6 +15,15 @@ with `grass` or `sand`. A second marker, `marker_2` at `(1,4)` labelled
 `Spare marker`, is the one the scripted demonstration deletes. The floor's grass/sand seam derives directional edge
 prototypes through the released World's transition resolver.
 
+The plane has three zones in `planes/main/zones.jsonc`: `meadow` (named
+`Quiet meadow`), `meadow.pond` (a child of `meadow` without a name, so it shows
+`Quiet meadow`) and `path` (named `Stone path`). `meadow` is the plane's default
+zone. The visible chunk's `zone` grid puts `meadow.pond` on `(1,1)`-`(2,2)` and
+`path` on the row `y = 5`; every other tile, and the whole chunk `[-1,0]`, which
+has no zone grid, is in `meadow`. The catalog grants `editing.zones`
+`{paint: true, manage: false}`; the scripted demonstration paints `path` down
+column 5.
+
 For negative/cross-chunk picking, use the same world with bounds `[-2,0,4,3]`.
 Chunk `[-1,0]` contains ground at x=-2/-1 and the marker `marker_negative` at
 `(-1,1)`; chunk `[0,0]` continues the ground at x=0/1.

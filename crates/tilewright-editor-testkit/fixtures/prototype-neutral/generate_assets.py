@@ -113,7 +113,8 @@ def outputs():
                                          dict(proto='stone', layer='item', fields=['label'],
                                               defaults=dict(label='New stone',
                                                             settings=dict(active=False, visits=0)))]
-                                + [dict(proto=n, layer='item', fields=['label']) for n in ('bush', 'crate', 'lamp')]))
+                                + [dict(proto=n, layer='item', fields=['label']) for n in ('bush', 'crate', 'lamp')],
+                                zones=dict(paint=True, manage=False)))
     result[ROOT / 'preview.jsonc'] = (json.dumps(catalog, indent=2) + '\n').encode()
     result[REPO / 'provenance/assets.json'] = (json.dumps(dict(schema_version=1, assets=assets), indent=2) + '\n').encode()
     return result

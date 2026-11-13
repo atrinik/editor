@@ -3,8 +3,9 @@
 
 //! Terrain drag brush geometry and gesture accumulation. A stroke is local
 //! input only: it collects the cells one press-move-release gesture covers and
-//! leaves this module as a single [`Action::PaintStroke`]. Session prepares it
-//! as one reviewed World `terrain.set` transaction; nothing is written here.
+//! leaves this module as a single [`Action::PaintStroke`] (terrain) or
+//! [`Action::PaintZones`] (zones). Session prepares it as one reviewed World
+//! `terrain.set` transaction; nothing is written here.
 use crate::{Action, tools::ToolError};
 use std::collections::BTreeSet;
 
@@ -121,13 +122,25 @@ pub fn segment(from: [i64; 2], to: [i64; 2]) -> Vec<[i64; 2]> {
     }
 }
 
-/// One drag gesture on one terrain grid, from press to release.
+/// What a stroke paints into each covered cell.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StrokeTarget {
+    /// This prototype, in the ground grid the stroke samples.
+    Terrain(String),
+    /// This zone in the `zone` grid, or `None` to empty the cells so they
+    /// take the plane's default zone again.
+    Zone(Option<String>),
+}
+
+/// One drag gesture from press to release. Samples are cells of one ground
+/// grid's exact cell mask (`grid`); what the release writes is `target`,
+/// into that grid for terrain or into the `zone` grid for zones.
 #[derive(Clone, Debug)]
 pub struct Stroke {
     plane: String,
     layer: i32,
     grid: String,
-    proto: String,
+    target: StrokeTarget,
     brush: Brush,
     /// The committed World revision the author inspected at press.
     expected: [u8; 32],
@@ -145,7 +158,7 @@ impl Stroke {
         plane: String,
         layer: i32,
         grid: String,
-        proto: String,
+        target: StrokeTarget,
         brush: Brush,
         expected: [u8; 32],
         generation: u64,
@@ -155,7 +168,7 @@ impl Stroke {
             plane,
             layer,
             grid,
-            proto,
+            target,
             brush,
             expected,
             generation,
@@ -205,11 +218,12 @@ impl Stroke {
     pub fn layer(&self) -> i32 {
         self.layer
     }
+    /// The ground grid whose cell mask supplies the samples.
     pub fn grid(&self) -> &str {
         &self.grid
     }
-    pub fn prototype(&self) -> &str {
-        &self.proto
+    pub fn target(&self) -> &StrokeTarget {
+        &self.target
     }
     pub fn brush(&self) -> Brush {
         self.brush
@@ -239,27 +253,37 @@ impl Stroke {
         if self.cells.is_empty() {
             return Err(ToolError("Brush stroke covered no editable cell"));
         }
-        Ok(Action::PaintStroke {
-            plane: self.plane,
-            layer: self.layer,
-            grid: self.grid,
-            cells: self.cells.into_iter().collect(),
-            proto: self.proto,
-            expected: self.expected,
+        let cells = self.cells.into_iter().collect();
+        Ok(match self.target {
+            StrokeTarget::Terrain(proto) => Action::PaintStroke {
+                plane: self.plane,
+                layer: self.layer,
+                grid: self.grid,
+                cells,
+                proto,
+                expected: self.expected,
+            },
+            StrokeTarget::Zone(zone) => Action::PaintZones {
+                plane: self.plane,
+                layer: self.layer,
+                cells,
+                zone,
+                expected: self.expected,
+            },
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Brush, BrushShape, MAXIMUM_STROKE_CELLS, Stroke};
+    use super::{Brush, BrushShape, MAXIMUM_STROKE_CELLS, Stroke, StrokeTarget};
 
     fn wide_stroke(radius: u16) -> Stroke {
         Stroke::begin(
             "main".into(),
             0,
             "floor".into(),
-            "sand".into(),
+            StrokeTarget::Terrain("sand".into()),
             Brush {
                 shape: BrushShape::Square,
                 radius,

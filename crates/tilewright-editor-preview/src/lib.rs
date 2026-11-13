@@ -40,7 +40,7 @@ pub fn render_scene<R: Renderer>(
 mod catalog;
 pub mod loader;
 mod prepare;
-pub use catalog::{EditingCapabilities, ObjectGrant, PreviewCatalog};
+pub use catalog::{EditingCapabilities, ObjectGrant, PreviewCatalog, ZoneGrant};
 pub use loader::ReadyResources;
 pub use prepare::prepare;
 use sha2::{Digest, Sha256};
@@ -124,6 +124,9 @@ pub(crate) fn hash(bytes: &[u8]) -> [u8; 32] {
 pub struct PreparedPreview {
     pub scene: SceneBundle,
     pub cell_scene: SceneBundle,
+    /// See [`PreparedPreview::cell_slots`]: filled on first use.
+    cell_slots: std::sync::OnceLock<Option<CellSlots>>,
+    slot_inputs: prepare::SlotInputs,
     pub resources: Arc<dyn ResourceProvider>,
     pub picks: BTreeMap<SemanticId, SelectionKey>,
     pub cell_picks: BTreeMap<SemanticId, SelectionKey>,
@@ -132,7 +135,30 @@ pub struct PreparedPreview {
     pub frame_revision: u64,
     pub diagnostics: Vec<PreviewDiagnostic>,
 }
+/// For each cell-scene identity, where that cell falls in the World scene's
+/// draw order: the `(depth, painter order)` of the last World quad drawn
+/// before it, or `None` before the whole World.
+pub type CellSlots = BTreeMap<SemanticId, Option<(i16, u32)>>;
+
 impl PreparedPreview {
+    /// Where each cell falls in the World scene's draw order (see
+    /// [`CellSlots`]), from the shared renderer's own ordering of the World
+    /// and the cell reference objects compiled together. Computed on first
+    /// use and kept with this prepared scene, so a session that never shows
+    /// an overlay never pays for it. `None` when that combined scene cannot
+    /// be compiled within twice the scene limits.
+    pub fn cell_slots(&self) -> Option<&CellSlots> {
+        self.cell_slots
+            .get_or_init(|| prepare::cell_slots(&self.scene, &self.slot_inputs))
+            .as_ref()
+    }
+    /// Make this prepared scene's cell slots unavailable, exactly as a
+    /// failed ordering compile does, unless they were already computed.
+    /// Returns whether they are now unavailable. For tests of the fallback.
+    #[doc(hidden)]
+    pub fn withhold_cell_slots(&self) -> bool {
+        self.cell_slots.get_or_init(|| None).is_none()
+    }
     /// Exact reference masks on demand; the caller revalidates rooted catalog/resources
     /// before accepting input. Coordinates are physical pixels in this compiled viewport.
     pub fn pick(

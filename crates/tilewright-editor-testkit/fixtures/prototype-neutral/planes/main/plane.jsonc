@@ -3,5 +3,6 @@
   "id": "main",
   "title": "Authored geometric meadow",
   "kind": "shared",
-  "chunk_size": 32
+  "chunk_size": 32,
+  "default_zone": "meadow"
 }
