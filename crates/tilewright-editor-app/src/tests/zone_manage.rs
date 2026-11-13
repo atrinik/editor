@@ -17,7 +17,7 @@ const ZONES: &str = "world/planes/main/zones.jsonc";
 
 /// Press the sidebar row whose control is `control`, scrolling the sidebar
 /// until it is laid out, and fail when it is not enabled.
-fn press(app: &mut Application, control: &Control) {
+pub(super) fn press(app: &mut Application, control: &Control) {
     acknowledge_ui(app);
     let widget = (0..64)
         .find_map(|scroll| {
@@ -42,7 +42,7 @@ fn press(app: &mut Application, control: &Control) {
     app.sidebar_scroll = 0;
 }
 /// Whether a row with `control` is laid out (at any scroll) and enabled.
-fn row_enabled(app: &mut Application, control: &Control) -> Option<bool> {
+pub(super) fn row_enabled(app: &mut Application, control: &Control) -> Option<bool> {
     let found = (0..64).find_map(|scroll| {
         app.sidebar_scroll = scroll;
         app.refresh_ui();
@@ -56,7 +56,7 @@ fn row_enabled(app: &mut Application, control: &Control) -> Option<bool> {
     found
 }
 /// Every sidebar text at every scroll.
-fn all_texts(app: &mut Application) -> Vec<String> {
+pub(super) fn all_texts(app: &mut Application) -> Vec<String> {
     let mut texts = Vec::new();
     for scroll in 0..64 {
         app.sidebar_scroll = scroll;
@@ -66,7 +66,7 @@ fn all_texts(app: &mut Application) -> Vec<String> {
     texts
 }
 /// One committed SDL text event for the current draft.
-fn type_text(app: &mut Application, text: &str) {
+pub(super) fn type_text(app: &mut Application, text: &str) {
     let mut input = crate::native_input::NativeInput::new(7);
     input.begin_batch(true, app.tools.input_revision().map(|r| r.draft));
     crate::prototype::native_text_event(
@@ -81,7 +81,7 @@ fn type_text(app: &mut Application, text: &str) {
     .unwrap()
     .unwrap();
 }
-fn enter(app: &mut Application) {
+pub(super) fn enter(app: &mut Application) {
     acknowledge_ui(app);
     route(app, &key(Keycode::Return)).unwrap();
 }
@@ -92,7 +92,7 @@ fn choose(app: &mut Application, zone: &str) {
         Some(&ZoneChoice::Zone(zone.into()))
     );
 }
-fn review_has(app: &mut Application, line: &str) -> bool {
+pub(super) fn review_has(app: &mut Application, line: &str) -> bool {
     app.review_lines(900).iter().any(|text| text.contains(line))
 }
 
@@ -116,7 +116,7 @@ fn a_display_name_edit_through_sdl_events_is_one_reviewed_change() {
         "Parent: none (change)",
         "Shown on 36 tiles in view",
         "36 of them as the plane default",
-        "Held explicitly by no tile",
+        "Held by no tile in the plane",
         "Child zone: meadow.pond",
         "It is the plane's default zone",
         "Delete: not while in use",
@@ -346,7 +346,7 @@ fn a_new_zone_is_typed_reviewed_painted_and_deleted_once_unused() {
         Some("path.bridge")
     );
     // Used: the Delete row is disabled and the session refuses it too.
-    assert!(all_texts(&mut app).contains(&"Held explicitly by 1 tile".to_owned()));
+    assert!(all_texts(&mut app).contains(&"Held by 1 tile in the plane".to_owned()));
     assert_eq!(row_enabled(&mut app, &Control::ZoneDelete), Some(false));
     assert!(all_texts(&mut app).contains(&"In use: 1 tile in 1 chunk".to_owned()));
     let error = app.control(Control::ZoneDelete).unwrap_err();

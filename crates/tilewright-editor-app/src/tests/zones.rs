@@ -147,24 +147,30 @@ fn the_overlay_shows_in_zone_mode_and_after_o_and_never_otherwise() {
     app.control(Control::Place).unwrap();
     assert!(overlay_quads(&mut app).is_empty());
     app.control(Control::Select).unwrap();
-    // O shows it outside Zone mode, and the sidebar row says so.
+    // O shows it outside Zone mode, with the sample's three badges (one
+    // anchor, two portal gates), and the sidebar row says so.
     route(&mut app, &key(Keycode::O)).unwrap();
-    assert_eq!(overlay_quads(&mut app).len(), 48, "every tile of 8 x 6");
-    assert!(sidebar_texts(&mut app).contains(&"Hide zones  O".to_owned()));
+    assert_eq!(
+        crate::prototype::zone_overlay(&app).len(),
+        48,
+        "every tile of 8 x 6"
+    );
+    assert_eq!(overlay_quads(&mut app).len(), 48 + 3);
+    assert!(sidebar_texts(&mut app).contains(&"Hide zones and badges  O".to_owned()));
     // N enters Zone mode: shown whatever the toggle says, and O there only
     // explains itself.
     route(&mut app, &key(Keycode::N)).unwrap();
     assert_eq!(app.tools.mode(), ToolMode::Zone);
-    assert_eq!(overlay_quads(&mut app).len(), 48);
+    assert_eq!(overlay_quads(&mut app).len(), 48 + 3);
     let error = route(&mut app, &key(Keycode::O)).unwrap_err();
     assert!(error.contains("always"), "{error}");
-    assert_eq!(overlay_quads(&mut app).len(), 48);
+    assert_eq!(overlay_quads(&mut app).len(), 48 + 3);
     // The toggle is kept across modes; O again hides it.
     route(&mut app, &key(Keycode::T)).unwrap();
-    assert_eq!(overlay_quads(&mut app).len(), 48);
+    assert_eq!(overlay_quads(&mut app).len(), 48 + 3);
     route(&mut app, &key(Keycode::O)).unwrap();
     assert!(overlay_quads(&mut app).is_empty());
-    assert!(sidebar_texts(&mut app).contains(&"Show zones  O".to_owned()));
+    assert!(sidebar_texts(&mut app).contains(&"Show zones and badges  O".to_owned()));
     // The toolbar's Zone button enters Zone mode too.
     acknowledge_ui(&mut app);
     let at = row_pixel(&mut app, &Control::Zone);
@@ -330,6 +336,25 @@ fn the_legend_and_inspector_name_each_zone_and_tile() {
     route(&mut app, &button(false, at)).unwrap();
     assert!(sidebar_texts(&mut app).contains(&"Zone: meadow (plane default)".to_owned()));
     assert!(app.status_label().contains("Choose a zone"));
+}
+
+#[test]
+fn a_legend_of_more_zones_than_it_lists_states_the_real_total() {
+    let (_temporary, mut app) = zone_application(|world| {
+        let path = world.join("planes/main/zones.jsonc");
+        let mut zones: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let list = zones["zones"].as_array_mut().unwrap();
+        for n in 0..300 {
+            list.push(serde_json::json!({"id": format!("z{n:03}")}));
+        }
+        fs::write(path, serde_json::to_vec_pretty(&zones).unwrap()).unwrap();
+    });
+    route(&mut app, &key(Keycode::N)).unwrap();
+    let texts = sidebar_texts(&mut app);
+    for line in ["Zones: 3 of 303 in view (tiles)", "First 256 zones shown"] {
+        assert!(texts.contains(&line.to_owned()), "{line}");
+    }
 }
 
 #[test]

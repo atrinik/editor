@@ -39,6 +39,17 @@ pub enum Control {
     ZoneCreate(Option<String>),
     /// Delete the chosen zone, when it is unused.
     ZoneDelete,
+    /// Anchor mode: anchor and portal badges, the anchor list and anchor
+    /// editing.
+    Anchor,
+    /// A row of the anchor list: choose this anchor.
+    AnchorChoose(String),
+    /// Type the id of a new anchor on the selected tile.
+    AnchorCreate,
+    /// Move the chosen anchor to the selected tile.
+    AnchorMove,
+    /// Delete the chosen anchor, when no portal names it.
+    AnchorDelete,
     Clear,
     Delete,
     Undo,

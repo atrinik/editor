@@ -224,6 +224,22 @@ pub fn describe_holder(holder: &PortalHolder<'_>) -> String {
     format!("{name} on {place}{nested}")
 }
 
+/// One referencing object in a short form for a sidebar row: its uid (or
+/// that it has none), plane, layer and tile, and whether it is carried in
+/// an inventory.
+pub fn describe_holder_short(holder: &PortalHolder<'_>) -> String {
+    let name = holder.uid.map_or_else(|| "(no uid)".to_owned(), short);
+    let tile = holder
+        .tile
+        .map_or_else(String::new, |[x, y]| format!(", ({x}, {y})"));
+    let nested = if holder.depth > 0 { ", carried" } else { "" };
+    format!(
+        "{name}: {}, layer {}{tile}{nested}",
+        short(holder.plane),
+        holder.layer
+    )
+}
+
 /// `N portals: a; b; c; and M more`, naming at most [`MAXIMUM_NAMED`].
 pub fn describe_holders(holders: &[PortalHolder<'_>]) -> String {
     let mut named: Vec<String> = holders

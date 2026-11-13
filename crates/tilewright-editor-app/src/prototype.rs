@@ -21,8 +21,8 @@ use tilewright_editor_recovery::{DurableRecovery, RecoveryLimits};
 use tilewright_editor_ui::brush::StrokeTarget;
 use tilewright_editor_ui::inspector::{self, SelectionSummary};
 use tilewright_editor_ui::tools::{self, ToolMode, ToolState, ZoneChoice};
-use tilewright_editor_ui::zones;
 use tilewright_editor_ui::{Action, Session, SessionPhase};
+use tilewright_editor_ui::{anchors, zones};
 use tilewright_render_api::{
     BackendPreference, FrameOutput, RenderRequest, Renderer, TargetDescriptor, TargetKind,
 };
@@ -31,7 +31,7 @@ use tilewright_render_wgpu::WgpuRenderer;
 use tilewright_scene::SemanticId;
 use tilewright_source::SourceRoot;
 
-const HELP: &str = "Select / Move / Terrain / Place (P) / Zone (N) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | O shows zones | Zone list: name, parent, new, delete | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+const HELP: &str = "Select / Move / Terrain / Place (P) / Zone (N) / Anchor (K) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | O shows zones and badges | Zone list: name, parent, new, delete | Anchors: new, move, delete | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
 /// Status when an overlay is wanted but the cells' places in the World's
 /// draw order could not be computed for this view.
 const OVERLAY_UNAVAILABLE: &str = "Zone overlay and stroke preview unavailable for this view.";
@@ -59,6 +59,18 @@ const ZONE_ROW_HEIGHT: u32 = 22;
 const ZONE_IDS_FIXED: &str = "Zone ids are fixed once created";
 /// Most zone properties listed, read-only, in the zone inspector.
 const MAXIMUM_PROPERTY_ROWS: usize = 8;
+/// Shown with the anchor editing rows: ids cannot be changed in this
+/// version, and how to get the effect of a rename instead.
+const ANCHOR_IDS_FIXED: &str = "Anchor ids are fixed in this version";
+const ANCHOR_RENAME_HINT: [&str; 2] =
+    ["To rename: create a new anchor", "and retarget its portals"];
+/// The badge legend rows of Anchor mode; each carries its badge's colour.
+const ANCHOR_LEGEND: &str = "Light badge: anchor";
+const PORTAL_LEGEND: &str = "Dark badge: portal object";
+/// Most anchors listed for one selected tile.
+const MAXIMUM_TILE_ANCHORS: usize = 8;
+/// Most anchors in Anchor mode's list, like the zone list.
+const MAXIMUM_LISTED_ANCHORS: usize = tilewright_editor_ui::inspector::MAX_CHOICES;
 const NO_PALETTE_MATCH: &str = "No prototype matches the filter.";
 const FILTER_PLACEHOLDER: &str = "Filter types: click or press /";
 const FILTER_HINT: &str = "Enter keeps the filter / Esc clears it";
@@ -85,6 +97,12 @@ const DEMO_ZONE_NAME: &str = "Open meadow";
 const DEMO_NEW_ZONE: &str = "meadow.grove";
 const DEMO_NEW_ZONE_NAME: &str = "Grove";
 const DEMO_NEW_ZONE_TILE: [i64; 2] = [2, 4];
+/// The scripted anchor editing: the new anchor's id, the tile it is created
+/// on and the tile it moves to, and the sample's anchor a portal names.
+const DEMO_NEW_ANCHOR: &str = "camp";
+const DEMO_ANCHOR_TILE: [i64; 2] = [2, 3];
+const DEMO_ANCHOR_MOVE: [i64; 2] = [3, 4];
+const DEMO_NAMED_ANCHOR: &str = "arrival";
 
 /// The zones of the in-view tiles for one World revision and frame.
 struct ZoneView {
@@ -293,6 +311,8 @@ impl Application {
         // creation undone) is no longer chosen.
         self.tools
             .revalidate_zones(self.session.world(), self.session.catalog());
+        self.tools
+            .revalidate_anchors(self.session.world(), self.session.catalog());
         self.prepare_scene()
     }
 
@@ -395,7 +415,10 @@ impl Application {
                 self.view.frame_revision,
                 x,
                 y,
-                matches!(self.tools.mode(), ToolMode::Terrain | ToolMode::Zone),
+                matches!(
+                    self.tools.mode(),
+                    ToolMode::Terrain | ToolMode::Zone | ToolMode::Anchor
+                ),
             )
             .map_err(|error| error.to_string())?
             .ok_or("no selectable semantic hit at this pixel")?;
@@ -737,6 +760,14 @@ impl Application {
             (320, 64, "Zone", Control::Zone, true, mode == ToolMode::Zone),
             (
                 390,
+                76,
+                "Anchor",
+                Control::Anchor,
+                true,
+                mode == ToolMode::Anchor,
+            ),
+            (
+                472,
                 64,
                 "Clear",
                 Control::Clear,
@@ -744,7 +775,7 @@ impl Application {
                 false,
             ),
             (
-                460,
+                542,
                 64,
                 "Undo",
                 Control::Undo,
@@ -752,7 +783,7 @@ impl Application {
                 false,
             ),
             (
-                530,
+                612,
                 64,
                 "Redo",
                 Control::Redo,
@@ -760,7 +791,7 @@ impl Application {
                 false,
             ),
             (
-                600,
+                682,
                 72,
                 "Delete",
                 Control::Delete,
@@ -784,9 +815,9 @@ impl Application {
         if self.unsupported_runs > 0 {
             ui.widget(
                 Rect {
-                    x: 680,
+                    x: 762,
                     y: 8,
-                    width: ui.logical_size().0.saturating_sub(690),
+                    width: ui.logical_size().0.saturating_sub(772),
                     height: 32,
                 },
                 format!(
@@ -826,6 +857,7 @@ impl Application {
             }) => {
                 self.object_rows(
                     &mut rows,
+                    &mut fits,
                     &inspected,
                     &SelectionSummary::Object {
                         uid,
@@ -855,6 +887,7 @@ impl Application {
                     false,
                 ));
                 self.cell_zone_rows(&mut rows, &mut fits, plane, layer, [x, y]);
+                self.cell_anchor_rows(&mut rows, &mut fits, plane, layer, [x, y]);
             }
             None => rows.push((
                 inspected
@@ -889,6 +922,9 @@ impl Application {
         if mode == ToolMode::Zone {
             self.zone_rows(&mut rows, &mut fits, ready);
         }
+        if mode == ToolMode::Anchor {
+            self.anchor_rows(&mut rows, &mut fits, ready);
+        }
         (rows, fits)
     }
 
@@ -899,11 +935,14 @@ impl Application {
             return;
         }
         let shown = self.tools.zones_visible();
+        // Outside Anchor mode the badges show with the zones.
+        let badges = self.tools.mode() != ToolMode::Anchor;
         rows.push((
-            if shown {
-                "Hide zones  O"
-            } else {
-                "Show zones  O"
+            match (shown, badges) {
+                (true, true) => "Hide zones and badges  O",
+                (false, true) => "Show zones and badges  O",
+                (true, false) => "Hide zones  O",
+                (false, false) => "Show zones  O",
             }
             .into(),
             Some(Control::ZoneOverlay),
@@ -968,10 +1007,269 @@ impl Application {
         ));
     }
 
-    /// Whether an overlay (zone tints or a stroke preview) is wanted now but
-    /// cannot be drawn because the cell slots are unavailable.
+    /// The anchors on the selected tile, sorted by id, each with how many
+    /// portals in the world name it. Only the view's own plane and layer
+    /// can be selected, so these are that plane's anchors on that layer.
+    fn cell_anchor_rows(
+        &self,
+        rows: &mut UiRows,
+        fits: &mut Vec<(usize, IdText)>,
+        plane: &str,
+        layer: i32,
+        at: [i64; 2],
+    ) {
+        let world = self.session.world();
+        let Some(source) = world.planes().get(plane) else {
+            return;
+        };
+        let here: Vec<&str> = source
+            .anchors
+            .iter()
+            .filter(|(_, anchor)| anchor.layer == layer && anchor.at == at)
+            .map(|(id, _)| id.as_str())
+            .collect();
+        if here.is_empty() {
+            rows.push(("Anchors here: none".into(), None, true, false));
+            return;
+        }
+        let counts = anchors::reference_counts(world, plane);
+        for id in here.iter().take(MAXIMUM_TILE_ANCHORS) {
+            let named = counts.get(id).copied().unwrap_or(0);
+            let suffix = format!(", {}", anchors::portal_count(named));
+            id_row(
+                rows,
+                fits,
+                id,
+                vec![
+                    ("Anchor here: ".into(), suffix),
+                    ("Anchor: ".into(), format!(" ({named})")),
+                    ("Anchor: ".into(), String::new()),
+                ],
+                None,
+                true,
+                false,
+            );
+        }
+        if here.len() > MAXIMUM_TILE_ANCHORS {
+            rows.push((
+                format!(
+                    "{} more anchors on this tile",
+                    here.len() - MAXIMUM_TILE_ANCHORS
+                ),
+                None,
+                true,
+                false,
+            ));
+        }
+    }
+
+    /// Anchor mode: what the badges mean, the anchor editing rows when the
+    /// catalog grants them, then every anchor of the view's plane, sorted
+    /// by id, with its layer, position, whether it is in view and how many
+    /// portals name it. At most 256 anchors are listed.
+    fn anchor_rows(&self, rows: &mut UiRows, fits: &mut Vec<(usize, IdText)>, ready: bool) {
+        let world = self.session.world();
+        let catalog = self.session.catalog();
+        let (plane, layer, _) = catalog.view();
+        let edit = catalog.editing().anchors.edit;
+        rows.push((ANCHOR_LEGEND.into(), None, true, false));
+        rows.push((PORTAL_LEGEND.into(), None, true, false));
+        let Some(source) = world.planes().get(plane) else {
+            return;
+        };
+        let counts = anchors::reference_counts(world, plane);
+        let selected = match self.session.selection() {
+            Some(SelectionKey::Cell {
+                plane: p,
+                layer: l,
+                x,
+                y,
+                ..
+            }) if catalog.tile_in_active_view(p, *l, *x, *y) => Some([*x, *y]),
+            _ => None,
+        };
+        if edit {
+            rows.push(match selected {
+                Some([x, y]) => (
+                    format!("New anchor at ({x}, {y})"),
+                    Some(Control::AnchorCreate),
+                    ready,
+                    self.tools.anchor_draft().is_some(),
+                ),
+                None => (
+                    "New anchor: select a tile first".into(),
+                    Some(Control::AnchorCreate),
+                    false,
+                    false,
+                ),
+            });
+        } else {
+            rows.push(("Anchor editing not granted".into(), None, false, false));
+        }
+        let chosen = self
+            .tools
+            .anchor_choice()
+            .and_then(|id| source.anchors.get_key_value(id));
+        if let Some((id, anchor)) = chosen {
+            self.chosen_anchor_rows(rows, fits, (id, *anchor), selected, ready);
+        } else if !source.anchors.is_empty() {
+            rows.push(("Choose an anchor below".into(), None, true, false));
+        }
+        if edit {
+            rows.push((ANCHOR_IDS_FIXED.into(), None, true, false));
+            for line in ANCHOR_RENAME_HINT {
+                rows.push((line.into(), None, true, false));
+            }
+        }
+        let total = source.anchors.len();
+        rows.push((
+            if total > MAXIMUM_LISTED_ANCHORS {
+                format!("Anchors: {total} in the plane, first {MAXIMUM_LISTED_ANCHORS} shown")
+            } else {
+                format!("Anchors: {total} in the plane")
+            },
+            None,
+            true,
+            false,
+        ));
+        for (id, anchor) in source.anchors.iter().take(MAXIMUM_LISTED_ANCHORS) {
+            let [x, y] = anchor.at;
+            let in_view = anchor.layer == layer && catalog.tile_in_active_view(plane, layer, x, y);
+            let named = counts.get(id.as_str()).copied().unwrap_or(0);
+            let place = if in_view { "in view" } else { "not in view" };
+            let portals = anchors::portal_count(named);
+            let long = format!(" = layer {} ({x}, {y}), {place}, {portals}", anchor.layer);
+            fits.push((
+                rows.len(),
+                IdText::Id {
+                    id: id.clone(),
+                    variants: vec![
+                        (String::new(), long.clone()),
+                        (String::new(), format!(" ({x}, {y}), {place}, {portals}")),
+                        (String::new(), format!(" ({x}, {y}), {portals}")),
+                        (String::new(), format!(", {portals}")),
+                        (String::new(), String::new()),
+                    ],
+                },
+            ));
+            rows.push((
+                format!("{id}{long}"),
+                Some(Control::AnchorChoose(id.clone())),
+                ready,
+                self.tools.anchor_choice() == Some(id.as_str()),
+            ));
+        }
+    }
+
+    /// The chosen anchor: its fixed id, place and the portals that name it,
+    /// then, with the grant, its move and delete rows; a disabled row says
+    /// why.
+    fn chosen_anchor_rows(
+        &self,
+        rows: &mut UiRows,
+        fits: &mut Vec<(usize, IdText)>,
+        (id, anchor): (&str, tilewright_source::Anchor),
+        selected: Option<[i64; 2]>,
+        ready: bool,
+    ) {
+        let world = self.session.world();
+        let catalog = self.session.catalog();
+        let (plane, _, _) = catalog.view();
+        let [x, y] = anchor.at;
+        let in_view = catalog.tile_in_active_view(plane, anchor.layer, x, y);
+        id_row(
+            rows,
+            fits,
+            id,
+            vec![
+                ("Anchor ".into(), " (id is fixed)".into()),
+                ("Anchor ".into(), String::new()),
+            ],
+            None,
+            true,
+            false,
+        );
+        rows.push((
+            format!(
+                "Layer {} at ({x}, {y}), {}",
+                anchor.layer,
+                if in_view { "in view" } else { "not in view" }
+            ),
+            None,
+            true,
+            false,
+        ));
+        let holders = anchors::references(world, plane, id);
+        if holders.is_empty() {
+            rows.push(("Named by no portal".into(), None, true, false));
+        } else {
+            rows.push((
+                format!("Named by {}:", anchors::portal_count(holders.len())),
+                None,
+                true,
+                false,
+            ));
+            for holder in holders.iter().take(anchors::MAXIMUM_NAMED) {
+                rows.push((anchors::describe_holder_short(holder), None, true, false));
+            }
+            if holders.len() > anchors::MAXIMUM_NAMED {
+                rows.push((
+                    format!("and {} more", holders.len() - anchors::MAXIMUM_NAMED),
+                    None,
+                    true,
+                    false,
+                ));
+            }
+        }
+        if !catalog.editing().anchors.edit {
+            return;
+        }
+        rows.push(match (in_view, selected) {
+            (false, _) => (
+                "Move: only an anchor in view".into(),
+                Some(Control::AnchorMove),
+                false,
+                false,
+            ),
+            (true, Some(tile)) if tile != anchor.at => (
+                format!("Move here: ({}, {})", tile[0], tile[1]),
+                Some(Control::AnchorMove),
+                ready,
+                false,
+            ),
+            (true, _) => (
+                "Move: select its new tile".into(),
+                Some(Control::AnchorMove),
+                false,
+                false,
+            ),
+        });
+        rows.push(if holders.is_empty() {
+            (
+                "Delete anchor (unreferenced)".into(),
+                Some(Control::AnchorDelete),
+                ready,
+                false,
+            )
+        } else {
+            (
+                format!(
+                    "Delete: {} {} it",
+                    anchors::portal_count(holders.len()),
+                    if holders.len() == 1 { "names" } else { "name" }
+                ),
+                Some(Control::AnchorDelete),
+                false,
+                false,
+            )
+        });
+    }
+
+    /// Whether an overlay (zone tints, badges or a stroke preview) is
+    /// wanted now but cannot be drawn because the cell slots are
+    /// unavailable.
     fn overlay_unavailable(&self) -> bool {
-        (self.tools.zones_visible() || self.tools.stroke().is_some())
+        (self.tools.zones_visible() || self.tools.badges_visible() || self.tools.stroke().is_some())
             && self.prepared.cell_slots().is_none()
     }
 
@@ -1042,16 +1340,21 @@ impl Application {
         let (plane, _, _) = catalog.view();
         let plane = world.planes().get(plane);
         let palette = tools::zone_palette(world, catalog);
+        let total = plane.map_or(0, |plane| plane.zones.len());
         rows.push((
-            format!(
-                "Zones: {} of {} in view (tiles)",
-                counts.len(),
-                palette.len()
-            ),
+            format!("Zones: {} of {total} in view (tiles)", counts.len()),
             None,
             true,
             false,
         ));
+        if total > palette.len() {
+            rows.push((
+                format!("First {} zones shown", palette.len()),
+                None,
+                true,
+                false,
+            ));
+        }
         for zone in palette {
             let name = plane
                 .and_then(|plane| zones::display_name(plane, zone))
@@ -1322,18 +1625,20 @@ impl Application {
                 false,
             ));
         }
+        // Every chunk of every layer of the plane, not just the view.
         rows.push((
-            match (usage.tiles, usage.layers) {
-                (0, _) => "Held explicitly by no tile".to_owned(),
-                (count, 1) => format!("Held explicitly by {}", tiles(count)),
-                (count, layers) => {
-                    format!("Held explicitly by {}, {layers} layers", tiles(count))
-                }
+            if usage.tiles == 0 {
+                "Held by no tile in the plane".to_owned()
+            } else {
+                format!("Held by {} in the plane", tiles(usage.tiles))
             },
             None,
             true,
             false,
         ));
+        if usage.layers > 1 {
+            rows.push((format!("on {} layers", usage.layers), None, true, false));
+        }
         if usage.listed > 0 {
             rows.push((
                 if usage.listed == 1 {
@@ -1457,9 +1762,67 @@ impl Application {
         ));
     }
 
+    /// The selected object's portal target, read-only: a location, or an
+    /// anchor and where it is. Portal editing is not in this version.
+    fn portal_rows(
+        &self,
+        rows: &mut UiRows,
+        fits: &mut Vec<(usize, IdText)>,
+        uid: &str,
+        plane: &str,
+    ) {
+        let world = self.session.world();
+        let Some(portal) = world.object(uid).and_then(|object| object.portal.as_ref()) else {
+            return;
+        };
+        rows.push(("Portal target (read-only):".into(), None, true, false));
+        match anchors::resolve(plane, portal) {
+            anchors::Target::Location { plane, layer, at } => rows.push((
+                format!(
+                    "{}, layer {layer}, ({}, {})",
+                    anchors::short(plane),
+                    at[0],
+                    at[1]
+                ),
+                None,
+                true,
+                false,
+            )),
+            anchors::Target::Anchor { plane, anchor } => {
+                id_row(
+                    rows,
+                    fits,
+                    anchor,
+                    vec![("Anchor ".into(), String::new())],
+                    None,
+                    true,
+                    false,
+                );
+                let place = world
+                    .planes()
+                    .get(plane)
+                    .and_then(|source| source.anchors.get(anchor))
+                    .map_or_else(
+                        || "Not defined in its plane".to_owned(),
+                        |found| {
+                            format!(
+                                "at {}, layer {}, ({}, {})",
+                                anchors::short(plane),
+                                found.layer,
+                                found.at[0],
+                                found.at[1]
+                            )
+                        },
+                    );
+                rows.push((place, None, true, false));
+            }
+        }
+    }
+
     fn object_rows(
         &self,
         rows: &mut UiRows,
+        fits: &mut Vec<(usize, IdText)>,
         inspected: &inspector::Inspector<'_>,
         summary: &SelectionSummary<'_>,
     ) {
@@ -1490,6 +1853,7 @@ impl Application {
             |[x, y]| format!("Position  X {x}  Y {y}"),
         );
         rows.push((position, None, true, false));
+        self.portal_rows(rows, fits, uid, plane);
         rows.push((
             if *deletable {
                 "Delete object  Del".into()
@@ -1673,6 +2037,9 @@ impl Application {
         if !supported {
             return "Unsupported text; cannot review".into();
         }
+        if let Some([x, y]) = self.tools.anchor_draft() {
+            return format!("New anchor id at ({x}, {y}); Enter reviews");
+        }
         let (zone, variants) = match self.tools.zone_draft_target() {
             None => return "Ctrl+A selects / Enter reviews".into(),
             Some((tools::ZoneDraft::Create, None)) => {
@@ -1724,7 +2091,14 @@ impl Application {
             }?;
             tints.get(zone).map(|tint| zones::swatch_color(*tint))
         };
-        let swatches: Vec<_> = rows.iter().map(|row| swatch(&row.1)).collect();
+        let swatches: Vec<_> = rows
+            .iter()
+            .map(|row| match row.0.as_str() {
+                ANCHOR_LEGEND => Some(crate::workspace_render::ANCHOR_BADGE),
+                PORTAL_LEGEND => Some(crate::workspace_render::PORTAL_BADGE),
+                _ => swatch(&row.1),
+            })
+            .collect();
         let rows: Vec<_> = rows
             .into_iter()
             .map(|(text, control, enabled, active)| {
@@ -2030,6 +2404,19 @@ impl Application {
                     }
                 };
             }
+            SessionPhase::Ready if self.tools.mode() == ToolMode::Anchor => {
+                if !self.session.catalog().editing().anchors.edit {
+                    return "Showing anchors. This catalog does not grant anchor editing.".into();
+                }
+                return match self.tools.anchor_choice() {
+                    None => "Showing anchors. Select a tile for a new anchor, or choose one below."
+                        .into(),
+                    Some(anchor) => format!(
+                        "Anchor {} chosen. Select a tile to move it there, or delete it.",
+                        anchors::short(anchor)
+                    ),
+                };
+            }
             SessionPhase::Ready => "Ready. Select an object or choose Terrain.",
             SessionPhase::Pending => "Review changes, then Accept or Cancel.",
             SessionPhase::Retaining => "Saving recovery information...",
@@ -2128,11 +2515,16 @@ impl Application {
         self.presented_generation = None;
         self.notice = None;
         match control {
-            Control::Select | Control::Move | Control::Terrain | Control::Zone => {
+            Control::Select
+            | Control::Move
+            | Control::Terrain
+            | Control::Zone
+            | Control::Anchor => {
                 self.tools.set_mode(match control {
                     Control::Move => ToolMode::Move,
                     Control::Terrain => ToolMode::Terrain,
                     Control::Zone => ToolMode::Zone,
+                    Control::Anchor => ToolMode::Anchor,
                     _ => ToolMode::Select,
                 });
                 self.sidebar_scroll = 0;
@@ -2147,6 +2539,11 @@ impl Application {
             | Control::ZoneCreate(_)
             | Control::ZoneDelete => self.zone_control(control),
             Control::ApplyDraft if self.tools.zone_draft().is_some() => self.apply_zone_draft(),
+            Control::AnchorChoose(_)
+            | Control::AnchorCreate
+            | Control::AnchorMove
+            | Control::AnchorDelete => self.anchor_control(control),
+            Control::ApplyDraft if self.tools.anchor_draft().is_some() => self.apply_anchor_draft(),
             Control::PaletteFilter => self.tools.focus_filter().map_err(|error| error.to_string()),
             // Enter in the focused filter keeps its text and releases focus;
             // the filter is never reviewed.
@@ -2289,6 +2686,62 @@ impl Application {
             _ => Ok(()),
         }
         .map_err(|error| error.to_string())
+    }
+
+    /// The anchor list and editing rows. Edits leave as Session actions;
+    /// the Session checks the grant, the view, the revision and every
+    /// refusal again.
+    fn anchor_control(&mut self, control: Control) -> Result<()> {
+        let unavailable = self.blocked.is_some() || !self.session.can_prepare();
+        let expected = self.session.history().document().revision();
+        let (world, catalog) = (self.session.world(), self.session.catalog());
+        let action = match control {
+            Control::AnchorChoose(anchor) => {
+                return self
+                    .tools
+                    .choose_anchor(world, catalog, &anchor)
+                    .map_err(|error| error.to_string());
+            }
+            Control::AnchorCreate => {
+                return self
+                    .tools
+                    .begin_anchor_create(catalog, self.session.selection(), expected, unavailable)
+                    .map_err(|error| error.to_string());
+            }
+            Control::AnchorMove => self.tools.move_anchor_action(
+                world,
+                catalog,
+                self.session.selection(),
+                expected,
+                unavailable,
+            ),
+            Control::AnchorDelete => {
+                self.tools
+                    .delete_anchor_action(world, catalog, expected, unavailable)
+            }
+            _ => return Ok(()),
+        }
+        .map_err(|error| error.to_string())?;
+        self.action(action)
+    }
+
+    /// Review the open new-anchor draft: its glyphs must all be in the
+    /// font, as for field drafts, then it becomes one Session action.
+    fn apply_anchor_draft(&mut self) -> Result<()> {
+        let snapshot = self.tools.draft_snapshot().ok_or("no draft")?;
+        let layout = self
+            .text
+            .layout(&snapshot.display_text, 18.0, None)
+            .map_err(|error| error.to_string())?;
+        if !layout.missing_glyphs().is_empty() {
+            return Err("missing font glyphs: review blocked; draft preserved".into());
+        }
+        let unavailable = self.blocked.is_some() || !self.session.can_prepare();
+        let action = self
+            .tools
+            .anchor_action(self.session.world(), self.session.catalog(), unavailable)
+            .map_err(|error| error.to_string())?;
+        self.action(action)
     }
 
     /// Review the open zone draft: its glyphs must all be in the font, as
@@ -2615,6 +3068,68 @@ impl Application {
         self.capture("zone-deleted")
     }
 
+    /// Select tile `at` of the view through the exact cell mask, as a click
+    /// in Anchor mode does.
+    fn select_tile(&mut self, [x, y]: [i64; 2]) -> Result<()> {
+        let frame = self.frame(true)?;
+        let hit = self
+            .prepared
+            .cell_picks
+            .iter()
+            .find_map(|(id, key)| match key {
+                SelectionKey::Cell { x: cx, y: cy, .. } if (*cx, *cy) == (x, y) => {
+                    pixel_for(&frame, *id)
+                }
+                _ => None,
+            })
+            .ok_or("demonstration anchor tile is not in the cell mask")?;
+        self.click(hit.0, hit.1)
+    }
+
+    /// Anchor mode: capture the badges and the list, create an anchor on a
+    /// selected tile, move it to another, show that the anchor a portal
+    /// names cannot be deleted (the window's disabled row and its reasons
+    /// are captured), then delete the new one. Every edit is reviewed and
+    /// accepted through the ordinary controls.
+    fn anchor_demo(&mut self) -> Result<()> {
+        self.control(Control::Anchor)?;
+        self.action(Action::ClearSelection)?;
+        self.capture("anchors")?;
+        self.select_tile(DEMO_ANCHOR_TILE)?;
+        self.control(Control::AnchorCreate)?;
+        self.tools
+            .input(DEMO_NEW_ANCHOR)
+            .map_err(|error| error.to_string())?;
+        self.control(Control::ApplyDraft)?;
+        self.capture("anchor-create")?;
+        self.action(Action::Accept)?;
+        self.capture("anchor-created")?;
+        self.control(Control::AnchorChoose(DEMO_NEW_ANCHOR.into()))?;
+        self.select_tile(DEMO_ANCHOR_MOVE)?;
+        self.control(Control::AnchorMove)?;
+        self.capture("anchor-move")?;
+        self.action(Action::Accept)?;
+        // A portal names this one: the Delete row is disabled, with the
+        // portals listed above it, so a press on it does nothing. The
+        // capture shows that state; the Session's own refusal is tested.
+        self.control(Control::AnchorChoose(DEMO_NAMED_ANCHOR.into()))?;
+        self.refresh_ui();
+        if self
+            .ui
+            .widgets
+            .iter()
+            .any(|widget| widget.control == Some(Control::AnchorDelete) && widget.enabled)
+        {
+            return Err("the Delete row of an anchor a portal names is enabled".into());
+        }
+        self.capture("anchor-delete-refused")?;
+        self.control(Control::AnchorChoose(DEMO_NEW_ANCHOR.into()))?;
+        self.control(Control::AnchorDelete)?;
+        self.capture("anchor-delete")?;
+        self.action(Action::Accept)?;
+        self.capture("anchor-deleted")
+    }
+
     fn demo_step(&mut self, step: usize) -> Result<bool> {
         match step {
             0 => {
@@ -2691,14 +3206,15 @@ impl Application {
             {
                 self.zone_manage_demo()?;
             }
-            12 => return Ok(true),
+            12 if self.session.catalog().editing().anchors.edit => self.anchor_demo()?,
+            13 => return Ok(true),
             _ => {}
         }
         Ok(false)
     }
 
     fn demo_all(&mut self) -> Result<()> {
-        for step in 0..13 {
+        for step in 0..14 {
             if self.demo_step(step)? {
                 break;
             }
@@ -3118,6 +3634,7 @@ fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
         || ((7..=9).contains(&step) && editing.objects.is_empty())
         || (step == 10 && !editing.zones.paint)
         || (step == 11 && !(editing.zones.paint && editing.zones.manage))
+        || (step == 12 && !editing.anchors.edit)
     {
         None
     } else {
@@ -3134,6 +3651,7 @@ fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
             "palette",
             "zones",
             "zone-manage",
+            "anchors",
         ]
         .get(step)
         .copied()
@@ -3748,6 +4266,7 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
         Keycode::T => app.control(Control::Terrain),
         Keycode::P => app.control(Control::Place),
         Keycode::N => app.control(Control::Zone),
+        Keycode::K => app.control(Control::Anchor),
         Keycode::O => app.control(Control::ZoneOverlay),
         Keycode::Slash | Keycode::KpDivide if app.tools.mode() == ToolMode::Place => {
             app.control(Control::PaletteFilter)
@@ -3948,6 +4467,22 @@ fn zone_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
     crate::workspace_render::zone_overlay(&app.prepared, &cells)
 }
 
+/// The anchor and portal badges of the in-view tiles, over the cached
+/// prepared cell scene: shown in Anchor mode, and wherever the zone overlay
+/// shows. Anchors on other layers or out of view are listed, not drawn.
+fn badge_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
+    if !app.tools.badges_visible() || app.prepared.frame_revision != app.view.frame_revision {
+        return Vec::new();
+    }
+    let (world, catalog) = (app.session.world(), app.session.catalog());
+    let anchored = anchors::view_anchors(world, catalog)
+        .into_iter()
+        .map(|(_, at)| at)
+        .collect();
+    let portals = anchors::view_portal_tiles(world, catalog);
+    crate::workspace_render::badge_overlay(&app.prepared, &anchored, &portals)
+}
+
 /// Compose the cached prepared World with `overlay` and the interface. If
 /// the overlay would take the frame past the scene limits, compose without
 /// it and report that it was left out; the release still reviews every
@@ -3981,11 +4516,13 @@ fn compose_with_preview(
 }
 
 fn workspace_presentation(app: &mut Application) -> Result<crate::workspace_render::Presentation> {
-    // Zone tints first, so the stroke preview draws over them: copies of two
+    // Zone tints first, then badges, so the badges and the stroke preview
+    // draw over the tints: copies of two
     // overlays in the same (depth, painter order) slot are ordered only by
     // the order they are passed here, the first getting the lower semantic
     // identities and drawing first.
     let mut overlay = zone_overlay(app);
+    overlay.extend(badge_overlay(app));
     overlay.extend(stroke_overlay(app));
     let (mut presentation, mut omitted) = compose_with_preview(
         &mut app.text,

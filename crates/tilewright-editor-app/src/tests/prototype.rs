@@ -106,7 +106,7 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         assert!(!app.demo_step(step).unwrap());
     }
     let selected_before_zones = app.session.selection().cloned();
-    for step in 10..13 {
+    for step in 10..14 {
         if app.demo_step(step).unwrap() {
             break;
         }
@@ -167,7 +167,18 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         None,
         "the painted tile was undone before the delete"
     );
-    assert_eq!(app.session.history().depths(), (10, 0));
+    // The anchor step creates `camp`, moves it and deletes it; `arrival`,
+    // which a portal names, stays where it was: three more changes.
+    let plane = &app.session.world().planes()["main"];
+    assert!(!plane.anchors.contains_key(super::DEMO_NEW_ANCHOR));
+    assert_eq!(
+        plane.anchors[super::DEMO_NAMED_ANCHOR],
+        tilewright_source::Anchor {
+            layer: 0,
+            at: [7, 3]
+        }
+    );
+    assert_eq!(app.session.history().depths(), (13, 0));
     for phase in [
         "before",
         "pending",
@@ -195,6 +206,13 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         "zone-delete-refused",
         "zone-delete",
         "zone-deleted",
+        "anchors",
+        "anchor-create",
+        "anchor-created",
+        "anchor-move",
+        "anchor-delete-refused",
+        "anchor-delete",
+        "anchor-deleted",
     ] {
         assert!(
             temporary
@@ -2043,3 +2061,6 @@ mod zones;
 
 #[path = "zone_manage.rs"]
 mod zone_manage;
+
+#[path = "anchors.rs"]
+mod anchors;
