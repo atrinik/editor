@@ -147,3 +147,4 @@ mod removal;
 pub mod text_input;
 pub mod tools;
 pub mod uid;
+pub mod zones;

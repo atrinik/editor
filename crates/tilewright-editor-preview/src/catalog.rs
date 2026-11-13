@@ -18,6 +18,19 @@ pub struct EditingCapabilities {
     /// [`PreviewCatalog::in_active_view`]); `layer` is the render layer a
     /// placed object will use.
     pub objects: BTreeMap<String, ObjectGrant>,
+    /// Optional `editing.zones`. Absent, nothing about zones is granted.
+    pub zones: ZoneGrant,
+}
+
+/// `editing.zones`: capability flags, never a list of zone ids, so the
+/// catalog keeps loading when zones are added, renamed or deleted.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ZoneGrant {
+    /// Paint the zone of tiles in the active view (the zone brush).
+    pub paint: bool,
+    /// Manage zone definitions. Parsed and kept; this editor version grants
+    /// nothing with it yet.
+    pub manage: bool,
 }
 
 /// One `editing.objects` entry, keyed by its prototype.
@@ -440,7 +453,11 @@ fn editing_specs(
     world: &World,
     prototypes: &BTreeMap<String, (String, Anchor)>,
 ) -> Result<EditingCapabilities, PreviewError> {
-    closed_optional(e, &["movable_uids", "terrain", "fields"], &["objects"])?;
+    closed_optional(
+        e,
+        &["movable_uids", "terrain", "fields"],
+        &["objects", "zones"],
+    )?;
     let mut editing = EditingCapabilities::default();
     for uid in array(member(e, "movable_uids")?)? {
         let uid = identifier(uid)?;
@@ -482,6 +499,18 @@ fn editing_specs(
     }
     if let Some(objects) = e.get("objects") {
         editing.objects = object_grants(document, objects, world, prototypes)?;
+    }
+    if let Some(zones) = e.get("zones") {
+        closed(zones, &["paint", "manage"])?;
+        let flag = |key| {
+            member(zones, key)?
+                .as_bool()
+                .ok_or_else(|| failure("zone capability flags must be true or false"))
+        };
+        editing.zones = ZoneGrant {
+            paint: flag("paint")?,
+            manage: flag("manage")?,
+        };
     }
     Ok(editing)
 }
