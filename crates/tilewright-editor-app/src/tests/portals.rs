@@ -58,7 +58,9 @@ fn retarget_to_an_anchor_from_the_list_through_sdl_events_is_one_reviewed_change
     let texts = all_texts(&mut app);
     // The hint names the object, shortened to fit the sidebar.
     assert!(
-        texts.iter().any(|text| text.starts_with("Portal of gate_east")),
+        texts
+            .iter()
+            .any(|text| text.starts_with("Portal of gate_east")),
         "{texts:?}"
     );
     for line in [

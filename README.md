@@ -7,7 +7,7 @@ a native toolbar, scalar inspector, coordinate tools, a terrain drag brush
 with a live preview of the cells a stroke will change,
 object placement from a searchable palette of granted prototypes with thumbnails, object deletion,
 a zone overlay with a legend and a zone brush, zone management (display name, parent, new zones, deleting unused ones),
-anchor and portal badges with an anchor list, anchor editing (create, move, delete anchors no portal names), reviewed changes and undo/redo. Deterministic reference capture accompanies native
+anchor and portal badges with an anchor list, anchor editing (create, move, delete anchors no portal names), portal editing one object at a time (an anchor from a list, a tile picked in the view, a typed location, or none), reviewed changes and undo/redo. Deterministic reference capture accompanies native
 window testing; an editor MCP server and a full widget system remain future work.
 
 Tilewright is maintained by Seraphina Studios alongside
