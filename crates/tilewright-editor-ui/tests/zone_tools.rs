@@ -145,14 +145,13 @@ fn a_chosen_zone_the_shown_world_no_longer_defines_is_no_longer_chosen() {
             .unwrap()
             .retain(|zone| zone["id"] != "meadow.pond");
         fs::write(path, serde_json::to_vec_pretty(&zones).unwrap()).unwrap();
+        // No tile holds it any more: drop the chunk's zone grid. Parsed and
+        // rewritten, so the checkout's line endings do not matter.
         let chunk = root.join("planes/main/layers/0/0_0.jsonc");
-        let text = fs::read_to_string(&chunk).unwrap();
-        fs::write(
-            &chunk,
-            text.replace(".pp.....", "........")
-                .replace("\"p\": \"meadow.pond\",\n", ""),
-        )
-        .unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&chunk).unwrap()).unwrap();
+        value["terrain"].as_object_mut().unwrap().remove("zone");
+        fs::write(&chunk, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
     });
     drop(dir);
     tools.revalidate_zones(without.world(), without.catalog());
