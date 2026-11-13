@@ -1982,3 +1982,6 @@ mod palette;
 
 #[path = "stroke_preview.rs"]
 mod stroke_preview;
+
+#[path = "stored_breaks.rs"]
+mod stored_breaks;

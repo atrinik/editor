@@ -80,6 +80,19 @@ Fields are single-line: typed, pasted or composed text containing a control
 character, U+2028 LINE SEPARATOR or U+2029 PARAGRAPH SEPARATOR is rejected as a
 whole and leaves the draft unchanged. A stored value that already contains them
 opens unchanged and keeps them unless the user deletes or replaces them.
+The inspector row and the field draft show each such stored character as one
+marker on the same line: `⏎` for a line break (LF, CR, VT, FF, NEL, U+2028
+and a CR LF pair, which editing treats as one character), `¶` for U+2029,
+`→` for a tab and `⬚` for any other control character. A row below the field
+counts them ("Contains 2 line breaks"). The marker is display only: the draft,
+the clipboard, the comparison with the stored value, the reviewed `SetField`
+value and the source review keep the real characters. The caret moves over a
+marker as over one character, and Backspace or Delete beside it removes
+exactly that stored character (both characters of a CR LF pair). A draft that
+still contains one can be reviewed as it is. When a prepended or combining
+character next to the stored break would otherwise join the marker, a
+zero-width space is drawn between them; it is part of the marker and never
+stored.
 Text focus consumes world shortcuts. The shared renderer shapes text using the
 explicit Unicode font pack; missing-glyph diagnostics preserve the complete
 original value and prevent a lossy visual replacement. Exact native input,

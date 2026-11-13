@@ -955,11 +955,20 @@ impl Application {
             let value = row.current.map_or_else(
                 || "<absent>".into(),
                 |value| match value {
-                    tilewright_source::FieldValue::String(text) => text.clone(),
+                    // Stored line breaks and controls show as markers on one line.
+                    tilewright_source::FieldValue::String(text) => {
+                        tilewright_editor_ui::text_input::mark_stored_breaks(text).0
+                    }
                     tilewright_source::FieldValue::Json(_) => "Grouped values".into(),
                     _ => inspector::scalar_text(value),
                 },
             );
+            let stored_breaks = match row.current {
+                Some(tilewright_source::FieldValue::String(text)) => {
+                    tilewright_editor_ui::text_input::stored_break_hint(text)
+                }
+                _ => None,
+            };
             let supported = true;
             rows.push((
                 format!("{} = {}", row.name, value),
@@ -973,6 +982,9 @@ impl Application {
                 "Read-only: unsupported text".into()
             };
             rows.push((detail, None, row.editable, false));
+            if let Some(hint) = stored_breaks {
+                rows.push((hint, None, row.editable, false));
+            }
             let choices = tools::field_choices(inspected, row.name);
             if !choices.is_empty() {
                 rows.push((
