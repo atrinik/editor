@@ -19,13 +19,15 @@ For negative/cross-chunk picking, use the same world with bounds `[-2,0,4,3]`.
 Chunk `[-1,0]` contains ground at x=-2/-1 and the marker `marker_negative` at
 `(-1,1)`; chunk `[0,0]` continues the ground at x=0/1.
 The catalog grants movement and the `label` field to `marker_1` by uid, and
-grants the `marker` and `stone` prototypes through `editing.objects` (render
-layer `item`, field name `label`): every marker or stone inside the view bounds
-can be deleted, moved and relabelled, and both can be placed, so the Place
-palette offers a real choice. The `stone` entry has `defaults`: a placed stone
+grants the `marker`, `stone`, `bush`, `crate` and `lamp` prototypes through
+`editing.objects` (render layer `item`, field name `label`): every such object
+inside the view bounds can be deleted, moved and relabelled, and all five can
+be placed, so the Place palette offers a real choice and its search has
+something to narrow. The `stone` entry has `defaults`: a placed stone
 gets the label `New stone` and `settings` `{active: false, visits: 0}`; a placed
 marker gets no fields. The scripted demonstration places a stone on the empty
-tile `(6,1)`. Prototype grants reach only the active view, so
+tile `(6,1)`, then filters the palette with `A` (crate, lamp and marker
+match) and places a crate on the empty tile `(2,1)`. Prototype grants reach only the active view, so
 `marker_negative` stays read-only with the default bounds.
 
 From the repository root:
@@ -40,4 +42,6 @@ metadata and repository asset provenance without writing. Use `--write` only
 when deliberately regenerating this fixture. ATX1 files are magic `ATX1`, two
 little-endian u32 dimensions and exactly width*height*4 row-major RGBA8 bytes.
 Ground is 32x32; the transparent amber sign is 24x40 with a distinct standing
-silhouette, and the grey stone is a 24x24 standing ellipse with a lighter top. Rendering and projection are supplied by the shared renderer.
+silhouette, the grey stone is a 24x24 standing ellipse with a lighter top, the green bush
+is 28x24 (three overlapping discs), the brown crate is a 24x24 framed box with
+a diagonal brace, and the lamp is a 16x40 dark post with a pale yellow light. Rendering and projection are supplied by the shared renderer.

@@ -116,16 +116,17 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
     let placed = next_uid();
     let stone = app.session.world().object(&placed).unwrap();
     assert_eq!((stone.proto.as_str(), stone.at), ("stone", Some([6, 1])));
-    // The search step types "LA", which keeps only `lamp`, chooses it and
-    // places it on (2,1) with the next uid; that object ends selected.
+    // The search step types "A", which keeps crate, lamp and marker,
+    // chooses the first match and places it on (2,1) with the next uid;
+    // that object ends selected.
     let searched = next_uid();
-    let lamp = app.session.world().object(&searched).unwrap();
-    assert_eq!((lamp.proto.as_str(), lamp.at), ("lamp", Some([2, 1])));
+    let found = app.session.world().object(&searched).unwrap();
+    assert_eq!((found.proto.as_str(), found.at), ("crate", Some([2, 1])));
     assert_eq!(
         app.session.selection(),
         Some(&tilewright_editor_preview::SelectionKey::Object { uid: searched })
     );
-    assert_eq!(app.tools.palette_filter(), "LA");
+    assert_eq!(app.tools.palette_filter(), "A");
     assert!(!app.tools.filter_focused());
     assert_eq!(app.session.history().depths(), (6, 0));
     for phase in [

@@ -42,6 +42,11 @@ const REVIEW_WARNING_BYTES: usize = 16 << 10;
 const REVIEW_WARNINGS_OMITTED: &str = "Further warnings are omitted from this review.";
 const REVIEW_LIMIT_MESSAGE: &str = "Change exceeds the visible review limit. Cancel this edit.";
 const NOTHING_TO_PLACE: &str = "Place is unavailable: the catalog grants no prototype to place.";
+/// Sidebar row heights and the gap between rows, in logical pixels. Place
+/// palette rows are taller so their thumbnails stay legible.
+const TEXT_ROW_HEIGHT: u32 = 26;
+const PALETTE_ROW_HEIGHT: u32 = 40;
+const ROW_GAP: u32 = 2;
 const NO_PALETTE_MATCH: &str = "No prototype matches the filter.";
 const FILTER_PLACEHOLDER: &str = "Filter types: click or press /";
 const FILTER_HINT: &str = "Enter keeps the filter / Esc clears it";
@@ -51,7 +56,7 @@ const DEMO_UID_SEED: u64 = 0x5eed_0b1e_c7ed_0001;
 const DEMO_PLACE_TILE: (i64, i64) = (6, 1);
 /// The palette filter the scripted demonstration types, and the empty tile
 /// it places the one matching prototype on.
-const DEMO_FILTER: &str = "LA";
+const DEMO_FILTER: &str = "A";
 const DEMO_SEARCH_TILE: (i64, i64) = (2, 1);
 
 /// Which granted edit a scripted selection needs.
@@ -1051,31 +1056,62 @@ impl Application {
         self.sidebar_rows(ui, rows, y);
     }
 
-    /// The scrolled sidebar rows from logical `y` down, each 26 px tall on
-    /// a 28 px pitch; only rows that fit whole are laid out. Place palette
-    /// rows carry their prototype's thumbnail.
+    /// The scrolled sidebar rows from logical `y` down. Text rows are
+    /// 26 px and Place palette rows, which carry their prototype's
+    /// thumbnail, are 40 px, each with a 2 px gap; only rows that fit whole,
+    /// gap included, are laid out. The scroll offset counts rows and stops where the last
+    /// row is visible.
     fn sidebar_rows(&mut self, ui: &mut WorkspaceUi, rows: UiRows, mut y: u32) {
         let x = ui.sidebar_x();
         let width = ui.sidebar_width();
-        let visible = usize::try_from(ui.logical_height().saturating_sub(y) / 28).unwrap_or(0);
-        self.sidebar_scroll = self.sidebar_scroll.min(rows.len().saturating_sub(visible));
-        for (text, control, enabled, active) in
-            rows.into_iter().skip(self.sidebar_scroll).take(visible)
-        {
-            let thumbnail = match &control {
-                Some(Control::PlacePalette(proto)) => self
-                    .session
-                    .resources()
-                    .prototype_texture(self.session.catalog(), proto),
-                _ => None,
-            };
+        let bottom = ui.logical_height();
+        let rows: Vec<_> = rows
+            .into_iter()
+            .map(|(text, control, enabled, active)| {
+                let thumbnail = match &control {
+                    Some(Control::PlacePalette(proto)) => self
+                        .session
+                        .resources()
+                        .prototype_texture(self.session.catalog(), proto),
+                    _ => None,
+                };
+                (text, control, enabled, active, thumbnail)
+            })
+            .collect();
+        let height = |row: &(String, Option<Control>, bool, bool, Option<_>)| {
+            if row.4.is_some() {
+                PALETTE_ROW_HEIGHT
+            } else {
+                TEXT_ROW_HEIGHT
+            }
+        };
+        // The furthest scroll that still fills the panel from the last row up.
+        let available = bottom.saturating_sub(y);
+        let mut used = 0_u32;
+        let mut furthest = rows.len();
+        while furthest > 0 {
+            let pitch = height(&rows[furthest - 1]) + ROW_GAP;
+            if used + pitch > available {
+                break;
+            }
+            used += pitch;
+            furthest -= 1;
+        }
+        self.sidebar_scroll = self.sidebar_scroll.min(furthest);
+        for row in rows.into_iter().skip(self.sidebar_scroll) {
+            let row_height = height(&row);
+            // Like the furthest scroll, a row needs its gap below it too.
+            if y + row_height + ROW_GAP > bottom {
+                break;
+            }
+            let (text, control, enabled, active, thumbnail) = row;
             let before = ui.widgets.len();
             ui.widget(
                 Rect {
                     x,
                     y,
                     width,
-                    height: 26,
+                    height: row_height,
                 },
                 text,
                 control,
@@ -1087,7 +1123,7 @@ impl Application {
             {
                 widget.thumbnail = thumbnail;
             }
-            y += 28;
+            y += row_height + ROW_GAP;
         }
     }
 

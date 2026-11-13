@@ -422,7 +422,9 @@ fn display_list<'a>(
         };
         let mut origin = [bounds.x + 4.0, bounds.y + 1.0];
         if widget.thumbnail.is_some() {
+            // Text sits beside the thumbnail, centred on a 26 px text row.
             origin[0] += thumbnail_indent(widget.layout.height) as f32;
+            origin[1] += (widget.layout.height.saturating_sub(26) / 2) as f32;
         }
         if let Some(snapshot) = &widget.editable {
             let layout = system
