@@ -535,9 +535,8 @@ fn object_grants(
     Ok(grants)
 }
 
-/// Object members a placement writes itself; `defaults` never names them.
-const RESERVED_DEFAULTS: [&str; 4] = ["at", "uid", "proto", "layer"];
-/// Encoded size limit of one entry's `defaults`, like a field edit's value.
+/// Size limit of one entry's `defaults`: the canonical JSON bytes of its
+/// values, names not counted, like a field edit's value.
 const MAXIMUM_DEFAULTS_BYTES: usize = 65536;
 
 /// `defaults`: `{field: value}` for profile object fields. Each value is
@@ -556,11 +555,6 @@ fn object_defaults(
     let mut bytes = 0usize;
     for member in members {
         let name = &member.key;
-        if RESERVED_DEFAULTS.contains(&name.as_str()) {
-            return Err(failure(format!(
-                "object defaults may not set {name}: placement writes it"
-            )));
-        }
         let spec = world
             .profile()
             .object_fields

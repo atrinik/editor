@@ -572,6 +572,22 @@ fn the_place_tool_builds_one_action_from_a_picked_tile_and_a_granted_choice() {
             .place_action(catalog, &object, revision, false)
             .is_err()
     );
+    // A choice that is no longer in the palette (here: another catalog
+    // without the `stone` entry) yields no action.
+    let (_dir, without_stone) = fixture_with(|root| {
+        edit_json(root, "preview.jsonc", |catalog| {
+            catalog["editing"]["objects"]
+                .as_array_mut()
+                .unwrap()
+                .remove(1);
+        });
+    });
+    assert_eq!(object_palette(without_stone.catalog()), ["marker"]);
+    assert!(
+        tools
+            .place_action(without_stone.catalog(), &cell, revision, false)
+            .is_err()
+    );
     let Action::Place {
         plane,
         layer,
@@ -587,4 +603,38 @@ fn the_place_tool_builds_one_action_from_a_picked_tile_and_a_granted_choice() {
         (plane.as_str(), layer, x, y, proto.as_str(), expected),
         ("main", 0, 6, 1, "stone", revision)
     );
+}
+
+#[test]
+fn a_profile_field_named_like_an_object_member_is_a_valid_default() {
+    // Defaults go under the object's `fields`, so a profile field named
+    // `layer` never clashes with the object's own render layer.
+    let (_dir, mut session) = fixture_with(|root| {
+        edit_json(root, "profile/schema/object.jsonc", |schema| {
+            schema["fields"]["layer"] = json!({"type": "string", "max_length": 16});
+        });
+        edit_json(root, "preview.jsonc", |catalog| {
+            catalog["editing"]["objects"][0]["defaults"] = json!({"layer": "top shelf"});
+        });
+    });
+    assert_eq!(
+        session.catalog().editing().objects["marker"].defaults,
+        [("layer".to_owned(), r#""top shelf""#.to_owned())]
+    );
+    let mut records = Records::default();
+    session
+        .dispatch(place(&session, 6, 1, "marker"), &mut records)
+        .unwrap();
+    let sealed: Value =
+        serde_json::from_str(session.history().pending().unwrap().sealed()).unwrap();
+    let object = &sealed["operations"][0]["object"];
+    assert_eq!(object["layer"], json!("item"));
+    assert_eq!(object["fields"], json!({"layer": "top shelf"}));
+    let uid = seeded(1).remove(0);
+    let placed = session.world().object(&uid).unwrap();
+    assert_eq!(placed.layer.as_deref(), Some("item"));
+    assert!(placed.fields.contains(&(
+        "layer".into(),
+        tilewright_source::FieldValue::String("top shelf".into())
+    )));
 }

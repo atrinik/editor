@@ -603,7 +603,8 @@ fn with_object_fields(dir: &Path, required_kind: bool) -> World {
             "label": {"type": "string", "max_length": 8},
             "count": {"type": "integer", "min": 0, "max": 9},
             "kind": {"type": "string", "values": ["plain", "fancy"], "required": required_kind},
-            "settings": {"type": "object", "fields": {"active": {"type": "boolean", "required": true}}}
+            "settings": {"type": "object", "fields": {"active": {"type": "boolean", "required": true}}},
+            "note": {"type": "json"}
         }})
         .to_string(),
     );
@@ -667,6 +668,8 @@ fn object_defaults_parse_strictly_and_their_absence_changes_nothing() {
         json!({"count": 1.5}),
         json!({"kind": "other"}),
         json!({"settings": "on"}),
+        // Object member names are refused only as unknown fields: this
+        // profile declares none of them.
         json!({"at": [0, 0]}),
         json!({"uid": "o.fixed"}),
         json!({"proto": "grass"}),
@@ -759,4 +762,30 @@ fn prototype_grants_stop_at_the_view_plane_and_its_upper_bounds() {
             "{plane} {layer} {x} {y}"
         );
     }
+}
+
+#[test]
+fn object_defaults_values_share_one_64_kib_budget_per_entry() {
+    let (dir, root, _, original) = fixture(false, false);
+    let world = with_object_fields(dir.path(), false);
+    let limits = PreviewLimits::default();
+    // The budget counts the canonical bytes of the values, not the names.
+    let load = |note: usize, label: &str| {
+        let mut catalog = original.clone();
+        catalog["editing"]["objects"] = json!([{"proto": "marker", "layer": "item",
+            "defaults": {"label": label, "note": "n".repeat(note)}}]);
+        put(dir.path(), "preview.jsonc", &catalog.to_string());
+        loader::load(&root, &world, limits)
+    };
+    // `"ab"` is 4 bytes; the note string is its length plus 2 quotes.
+    let fits = 65536 - 4 - 2;
+    let (catalog, _) = load(fits, "ab").unwrap();
+    let total: usize = catalog.editing().objects["marker"]
+        .defaults
+        .iter()
+        .map(|(_, value)| value.len())
+        .sum();
+    assert_eq!(total, 65536);
+    assert!(load(fits + 1, "ab").is_err());
+    assert!(load(fits, "abc").is_err());
 }
