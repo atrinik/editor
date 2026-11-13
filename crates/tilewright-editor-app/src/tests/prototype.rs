@@ -106,7 +106,7 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         assert!(!app.demo_step(step).unwrap());
     }
     let selected_before_zones = app.session.selection().cloned();
-    for step in 10..12 {
+    for step in 10..13 {
         if app.demo_step(step).unwrap() {
             break;
         }
@@ -156,7 +156,18 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
     );
     assert_eq!(app.tools.palette_filter(), "", "leaving Place clears it");
     assert!(!app.tools.filter_focused());
-    assert_eq!(app.session.history().depths(), (7, 0));
+    // The zone management step renames `meadow`, creates `meadow.grove`
+    // under it, paints one tile with it, is refused deleting it, undoes the
+    // paint and deletes it: four more reviewed changes and one undo.
+    let plane = &app.session.world().planes()["main"];
+    assert_eq!(plane.zones["meadow"].name.as_deref(), Some("Open meadow"));
+    assert!(!plane.zones.contains_key("meadow.grove"));
+    assert_eq!(
+        tilewright_editor_ui::zones::cell_zone(plane, 0, 2, 4),
+        None,
+        "the painted tile was undone before the delete"
+    );
+    assert_eq!(app.session.history().depths(), (10, 0));
     for phase in [
         "before",
         "pending",
@@ -178,6 +189,12 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         "zone-stroke-preview",
         "zone-stroke",
         "zone-painted",
+        "zone-rename",
+        "zone-create",
+        "zone-created",
+        "zone-delete-refused",
+        "zone-delete",
+        "zone-deleted",
     ] {
         assert!(
             temporary
@@ -2023,3 +2040,6 @@ mod stroke_preview;
 mod stored_breaks;
 #[path = "zones.rs"]
 mod zones;
+
+#[path = "zone_manage.rs"]
+mod zone_manage;

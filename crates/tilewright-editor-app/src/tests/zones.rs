@@ -19,7 +19,7 @@ use tilewright_render_api::{FrameOutput, RenderRequest, Renderer};
 use tilewright_render_testkit::{ReferenceRenderer, offscreen_target};
 use tilewright_scene::{Layer, Quad, SceneBundle, SceneLimits};
 
-fn button(down: bool, at: [f32; 2]) -> Event {
+pub(super) fn button(down: bool, at: [f32; 2]) -> Event {
     let [x, y] = at;
     if down {
         Event::MouseButtonDown {
@@ -55,10 +55,10 @@ fn drag(at: [f32; 2]) -> Event {
         yrel: 0.0,
     }
 }
-fn key(keycode: Keycode) -> Event {
+pub(super) fn key(keycode: Keycode) -> Event {
     super::input_key(7, keycode, false)
 }
-fn route(app: &mut Application, event: &Event) -> Result<(), String> {
+pub(super) fn route(app: &mut Application, event: &Event) -> Result<(), String> {
     let mut input = crate::native_input::NativeInput::new(7);
     crate::prototype::native_text_event(app, event, &mut input)
         .or_else(|| {
@@ -74,7 +74,7 @@ fn route(app: &mut Application, event: &Event) -> Result<(), String> {
         .unwrap_or(Ok(()))
 }
 /// A 1280x800 workspace in Select mode with the frame acknowledged.
-fn zone_application(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, Application) {
+pub(super) fn zone_application(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, Application) {
     let (temporary, mut app) = application_with_source(prepare);
     app.ui = WorkspaceUi::new(BRUSH_WINDOW, BRUSH_WINDOW);
     app.view.camera.width = BRUSH_WINDOW.0;
@@ -98,7 +98,7 @@ fn row_pixel(app: &mut Application, control: &Control) -> [f32; 2] {
         (widget.bounds.y + widget.bounds.height / 2) as f32,
     ]
 }
-fn sidebar_texts(app: &mut Application) -> Vec<String> {
+pub(super) fn sidebar_texts(app: &mut Application) -> Vec<String> {
     app.refresh_ui();
     let x = app.ui.sidebar_x();
     app.ui

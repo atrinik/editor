@@ -28,8 +28,9 @@ pub struct EditingCapabilities {
 pub struct ZoneGrant {
     /// Paint the zone of tiles in the active view (the zone brush).
     pub paint: bool,
-    /// Manage zone definitions. Parsed and kept; this editor version grants
-    /// nothing with it yet.
+    /// Manage the zone definitions of the active view's plane: edit a
+    /// zone's display name and parent, create a zone, and delete an unused
+    /// one. Zone ids are fixed once created.
     pub manage: bool,
 }
 

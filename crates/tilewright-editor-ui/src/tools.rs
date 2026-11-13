@@ -119,6 +119,34 @@ enum DraftKind {
     /// The Place palette filter. Local view state only: it is bound to no
     /// selection or World revision and never becomes an action.
     Filter,
+    /// The display name of `zone`, reviewed as [`Action::RenameZone`]
+    /// against source revision `expected`.
+    ZoneName {
+        plane: String,
+        zone: String,
+        expected: [u8; 32],
+    },
+    /// A new zone under `parent`: its id, then optionally a space and its
+    /// display name, reviewed as [`Action::CreateZone`].
+    ZoneCreate {
+        plane: String,
+        parent: Option<String>,
+        expected: [u8; 32],
+    },
+}
+
+/// Most bytes a zone name draft holds: 256 characters of up to four bytes.
+const MAX_ZONE_NAME_BYTES: usize = 4 * MAX_ZONE_NAME_CHARACTERS;
+/// Most bytes a new-zone draft holds: an id, a space and a name.
+const MAX_ZONE_CREATE_BYTES: usize = 128 + 1 + MAX_ZONE_NAME_BYTES;
+/// Most characters of a zone display name (FORMAT.md section 8).
+pub const MAX_ZONE_NAME_CHARACTERS: usize = 256;
+
+/// Which zone draft is open, for the hint shown with it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ZoneDraft {
+    Name,
+    Create,
 }
 #[derive(Clone, Debug)]
 struct Draft {
@@ -144,6 +172,34 @@ pub struct ToolState {
     zone: Option<ZoneChoice>,
     /// Whether the zone overlay shows outside Zone mode.
     show_zones: bool,
+    /// The chosen zone's parent choices while they are listed, computed
+    /// when the list opens and again when the definitions change.
+    parent_choices: Option<ParentChoices>,
+}
+
+/// The zones that may become the chosen zone's parent: the first
+/// [`MAX_CHOICES`] in id order, and how many there are in all.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ParentChoices {
+    pub zones: Vec<String>,
+    pub total: usize,
+}
+impl ParentChoices {
+    fn of(world: &World, catalog: &PreviewCatalog, zone: &str) -> Self {
+        let (plane, _, _) = catalog.view();
+        let all = world
+            .planes()
+            .get(plane)
+            .map_or_else(Vec::new, |plane| crate::zones::parent_choices(plane, zone));
+        Self {
+            total: all.len(),
+            zones: all
+                .into_iter()
+                .take(MAX_CHOICES)
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,6 +219,7 @@ impl ToolState {
     /// palette filter, so Place always opens with the whole palette.
     pub fn set_mode(&mut self, mode: ToolMode) {
         self.cancel();
+        self.parent_choices = None;
         if mode != ToolMode::Place {
             self.filter.clear();
         }
@@ -191,8 +248,242 @@ impl ToolState {
         {
             return Err(ToolError("The zone is not defined in this plane"));
         }
+        if self.zone.as_ref() != Some(&choice) {
+            // A zone draft and the parent list belong to the zone they were
+            // opened for; another choice ends them.
+            self.parent_choices = None;
+            self.retire_zone_draft();
+        }
         self.zone = Some(choice);
         Ok(())
+    }
+    /// Keep the zone state true to the shown World after it changed: a
+    /// chosen zone that is no longer defined is no longer chosen (and its
+    /// draft and parent list end), and an open parent list is computed
+    /// again from the current definitions.
+    pub fn revalidate_zones(&mut self, world: &World, catalog: &PreviewCatalog) {
+        if let Some(ZoneChoice::Zone(zone)) = &self.zone
+            && !zone_palette(world, catalog).contains(&zone.as_str())
+        {
+            self.zone = None;
+            self.parent_choices = None;
+            self.retire_zone_draft();
+        }
+        if self.parent_choices.is_some()
+            && let Some(ZoneChoice::Zone(zone)) = &self.zone
+        {
+            self.parent_choices = Some(ParentChoices::of(world, catalog, zone));
+        }
+    }
+    /// End an open zone-name or new-zone draft; other drafts stay.
+    fn retire_zone_draft(&mut self) {
+        if self.zone_draft().is_some() {
+            self.draft = None;
+        }
+    }
+    /// Whether the chosen zone's parent choices are listed.
+    pub fn parent_choices_open(&self) -> bool {
+        self.parent_choices.is_some()
+    }
+    /// The listed parent choices, when the list is open.
+    pub fn parent_choices(&self) -> Option<&ParentChoices> {
+        self.parent_choices.as_ref()
+    }
+    /// List or hide the chosen zone's parent choices. Needs zone management
+    /// and a chosen zone; choosing another zone hides them again.
+    pub fn toggle_parent_choices(
+        &mut self,
+        world: &World,
+        catalog: &PreviewCatalog,
+    ) -> Result<bool, ToolError> {
+        let zone = self.managed_zone(world, catalog)?;
+        self.parent_choices = if self.parent_choices.is_some() {
+            None
+        } else {
+            Some(ParentChoices::of(world, catalog, &zone))
+        };
+        Ok(self.parent_choices.is_some())
+    }
+    /// The chosen zone, when it is a zone of the active view's plane and
+    /// zone management is granted.
+    fn managed_zone(&self, world: &World, catalog: &PreviewCatalog) -> Result<String, ToolError> {
+        if !catalog.editing().zones.manage {
+            return Err(ToolError(
+                "The catalog does not allow managing zones (editing.zones.manage)",
+            ));
+        }
+        match &self.zone {
+            Some(ZoneChoice::Zone(zone))
+                if zone_palette(world, catalog).contains(&zone.as_str()) =>
+            {
+                Ok(zone.clone())
+            }
+            Some(ZoneChoice::Zone(_)) => Err(ToolError("The chosen zone is no longer defined")),
+            _ => Err(ToolError("Choose a zone in the zone list first")),
+        }
+    }
+    /// Begin editing the chosen zone's display name, starting from its
+    /// current name (empty when it has none). Review sends an empty draft as
+    /// no name.
+    pub fn begin_zone_name(
+        &mut self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        expected: [u8; 32],
+        pending: bool,
+    ) -> Result<(), ToolError> {
+        available(pending)?;
+        let zone = self.managed_zone(world, catalog)?;
+        let (plane, _, _) = catalog.view();
+        let name = world
+            .planes()
+            .get(plane)
+            .and_then(|plane| plane.zones.get(&zone))
+            .and_then(|zone| zone.name.clone())
+            .unwrap_or_default();
+        let input = self.new_limited_input(name, MAX_ZONE_NAME_BYTES)?;
+        self.retire_draft();
+        self.draft = Some(Draft {
+            stamp: None,
+            kind: DraftKind::ZoneName {
+                plane: plane.into(),
+                zone,
+                expected,
+            },
+            input,
+        });
+        Ok(())
+    }
+    /// Begin typing a new zone under `parent` (`None`: at the top level).
+    /// `parent` must be a zone of the plane.
+    pub fn begin_zone_create(
+        &mut self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        parent: Option<String>,
+        expected: [u8; 32],
+        pending: bool,
+    ) -> Result<(), ToolError> {
+        available(pending)?;
+        if !catalog.editing().zones.manage {
+            return Err(ToolError(
+                "The catalog does not allow managing zones (editing.zones.manage)",
+            ));
+        }
+        if let Some(parent) = &parent
+            && !zone_palette(world, catalog).contains(&parent.as_str())
+        {
+            return Err(ToolError("The parent zone is not defined in this plane"));
+        }
+        let (plane, _, _) = catalog.view();
+        let input = self.new_limited_input(String::new(), MAX_ZONE_CREATE_BYTES)?;
+        self.retire_draft();
+        self.draft = Some(Draft {
+            stamp: None,
+            kind: DraftKind::ZoneCreate {
+                plane: plane.into(),
+                parent,
+                expected,
+            },
+            input,
+        });
+        Ok(())
+    }
+    /// The zone an open zone draft is for: the zone a name draft renames,
+    /// or the parent a new zone goes under (`None`: the top level).
+    pub fn zone_draft_target(&self) -> Option<(ZoneDraft, Option<&str>)> {
+        match self.draft.as_ref().map(|draft| &draft.kind) {
+            Some(DraftKind::ZoneName { zone, .. }) => Some((ZoneDraft::Name, Some(zone))),
+            Some(DraftKind::ZoneCreate { parent, .. }) => {
+                Some((ZoneDraft::Create, parent.as_deref()))
+            }
+            _ => None,
+        }
+    }
+    /// Which zone draft is open, if one is.
+    pub fn zone_draft(&self) -> Option<ZoneDraft> {
+        match self.draft.as_ref().map(|draft| &draft.kind) {
+            Some(DraftKind::ZoneName { .. }) => Some(ZoneDraft::Name),
+            Some(DraftKind::ZoneCreate { .. }) => Some(ZoneDraft::Create),
+            _ => None,
+        }
+    }
+    /// The reviewed action of the open zone draft. A name draft gives
+    /// [`Action::RenameZone`] (empty: no name); a new-zone draft is the id,
+    /// then optionally one space and the display name, and gives
+    /// [`Action::CreateZone`]. Identifier shape, a used id and the name's
+    /// length are checked here so the draft stays open to fix them; the
+    /// session checks them again.
+    pub fn zone_action(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        let draft = self.draft.as_ref().ok_or(ToolError("No input draft"))?;
+        if draft.input.is_composing() {
+            return Err(ToolError("Finish or cancel composition before review"));
+        }
+        let text = draft.input.text();
+        let checked_name = |name: &str| {
+            if name.chars().count() > MAX_ZONE_NAME_CHARACTERS {
+                Err(ToolError(
+                    "A zone's display name has at most 256 characters",
+                ))
+            } else {
+                Ok((!name.is_empty()).then(|| name.to_owned()))
+            }
+        };
+        match &draft.kind {
+            DraftKind::ZoneName {
+                plane,
+                zone,
+                expected,
+            } => Ok(Action::RenameZone {
+                plane: plane.clone(),
+                zone: zone.clone(),
+                name: checked_name(text)?,
+                expected: *expected,
+            }),
+            DraftKind::ZoneCreate {
+                plane,
+                parent,
+                expected,
+            } => {
+                // The name part is trimmed, and only whitespace is no
+                // name. (A name draft keeps its text exactly, like every
+                // field draft.)
+                let (id, name) = text.split_once(' ').unwrap_or((text, ""));
+                let name = name.trim();
+                if id.is_empty() {
+                    return Err(ToolError("Type the new zone's id first"));
+                }
+                if !tilewright_source::is_identifier(id) {
+                    return Err(ToolError(
+                        "A zone id is 1 to 128 lowercase letters, digits, '_', '.' or '-', starting with a letter or digit",
+                    ));
+                }
+                if world
+                    .planes()
+                    .get(plane)
+                    .is_some_and(|plane| plane.zones.contains_key(id))
+                {
+                    return Err(ToolError("This plane already has a zone with this id"));
+                }
+                if catalog.view().0 != plane {
+                    return Err(ToolError("The view moved to another plane"));
+                }
+                Ok(Action::CreateZone {
+                    plane: plane.clone(),
+                    zone: id.to_owned(),
+                    name: checked_name(name)?,
+                    parent: parent.clone(),
+                    expected: *expected,
+                })
+            }
+            _ => Err(ToolError("No zone draft is open")),
+        }
     }
     /// Whether the zone overlay is drawn: always in Zone mode, and in the
     /// other modes only after [`Self::toggle_zones`] turned it on.
@@ -485,6 +776,16 @@ impl ToolState {
             .ok_or(ToolError("No input draft"))
     }
 
+    fn new_limited_input(&mut self, text: String, limit: usize) -> Result<TextInput, ToolError> {
+        let identity = self
+            .next_draft
+            .checked_add(1)
+            .ok_or(ToolError("Draft identity exhausted"))?;
+        let input = TextInput::with_limit(text, identity, limit)?;
+        self.next_draft = identity;
+        Ok(input)
+    }
+
     fn new_input(&mut self, text: String) -> Result<TextInput, ToolError> {
         let identity = self
             .next_draft
@@ -502,7 +803,11 @@ impl ToolState {
         available(pending)?;
         let draft = self.draft.as_ref().ok_or(ToolError("No input draft"))?;
         let Some(stamp) = draft.stamp.as_ref() else {
-            return Err(ToolError("The palette filter is never reviewed"));
+            return Err(ToolError(if self.zone_draft().is_some() {
+                "Zone drafts are reviewed as zone actions"
+            } else {
+                "The palette filter is never reviewed"
+            }));
         };
         if inspector.stamp.as_ref() != Some(stamp) {
             return Err(ToolError(
@@ -531,6 +836,9 @@ impl ToolState {
                 })
             }
             DraftKind::Filter => Err(ToolError("The palette filter is never reviewed")),
+            DraftKind::ZoneName { .. } | DraftKind::ZoneCreate { .. } => {
+                Err(ToolError("Zone drafts are reviewed as zone actions"))
+            }
             DraftKind::Move => {
                 if !matches!(
                     inspector.selection,

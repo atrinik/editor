@@ -314,6 +314,289 @@ pub(crate) fn notes(committed: &World, sealed: &str) -> Vec<String> {
     lines
 }
 
+/// How zone `id` is used in its plane: everything that keeps World from
+/// deleting it. It reads the whole loaded plane, every chunk of every
+/// layer, not just the view.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ZoneUse<'w> {
+    /// Tiles whose `zone` cell holds the zone.
+    pub tiles: usize,
+    /// Chunks with at least one such tile.
+    pub chunks: usize,
+    /// How many layers those chunks are on.
+    pub layers: usize,
+    /// Chunks whose zone palette lists the zone although no tile of theirs
+    /// holds it. Only a hand edit leaves such an entry; a zone stroke that
+    /// empties the last tile holding a zone drops its entry, so painting one
+    /// tile with the zone and then back removes it.
+    pub listed: usize,
+    /// Zones whose parent is this zone, sorted by id.
+    pub children: Vec<&'w str>,
+    /// Whether it is the plane's `default_zone`.
+    pub default: bool,
+}
+
+/// Most child zones named in a refusal; the rest are counted.
+const MAXIMUM_NAMED_CHILDREN: usize = 3;
+
+fn plural(count: usize, one: &str, many: &str) -> String {
+    if count == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{count} {many}")
+    }
+}
+
+impl ZoneUse<'_> {
+    /// Whether World would let the zone be deleted: no chunk lists it, no
+    /// zone has it as parent and it is not the plane's default.
+    pub fn unused(&self) -> bool {
+        self.tiles == 0 && self.listed == 0 && self.children.is_empty() && !self.default
+    }
+    /// Why the zone cannot be deleted, one line per reason, in the order
+    /// tiles, palette-only chunks, child zones, default zone. Empty when it
+    /// is unused.
+    pub fn reasons(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if self.tiles > 0 {
+            reasons.push(format!(
+                "{} {} it, in {} on {}",
+                plural(self.tiles, "tile", "tiles"),
+                if self.tiles == 1 { "holds" } else { "hold" },
+                plural(self.chunks, "chunk", "chunks"),
+                plural(self.layers, "layer", "layers")
+            ));
+        }
+        if self.listed > 0 {
+            reasons.push(format!(
+                "the zone palette of {} still {} it with no tile (to drop the entry, paint one of its tiles with the zone, then back)",
+                plural(self.listed, "chunk", "chunks"),
+                if self.listed == 1 { "lists" } else { "list" }
+            ));
+        }
+        if !self.children.is_empty() {
+            let mut named: Vec<String> = self
+                .children
+                .iter()
+                .take(MAXIMUM_NAMED_CHILDREN)
+                .map(|child| short(child))
+                .collect();
+            let more = self.children.len().saturating_sub(MAXIMUM_NAMED_CHILDREN);
+            if more > 0 {
+                named.push(format!("{more} more"));
+            }
+            reasons.push(format!(
+                "{} ({})",
+                plural(self.children.len(), "child zone", "child zones"),
+                named.join(", ")
+            ));
+        }
+        if self.default {
+            reasons.push("it is the plane's default zone".into());
+        }
+        reasons
+    }
+    /// The same reasons, short enough for one sidebar row each.
+    pub fn short_reasons(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if self.tiles > 0 {
+            reasons.push(format!(
+                "{} in {}",
+                plural(self.tiles, "tile", "tiles"),
+                plural(self.chunks, "chunk", "chunks")
+            ));
+        }
+        if self.listed > 0 {
+            reasons.push(format!(
+                "listed by {}",
+                plural(self.listed, "chunk palette", "chunk palettes")
+            ));
+        }
+        if !self.children.is_empty() {
+            reasons.push(plural(self.children.len(), "child zone", "child zones"));
+        }
+        if self.default {
+            reasons.push("the plane default".into());
+        }
+        reasons
+    }
+}
+
+/// How zone `id` is used anywhere in `plane` (see [`ZoneUse`]). Only chunks
+/// whose zone palette lists the zone have their cells counted.
+pub fn zone_use<'w>(plane: &'w Plane, id: &str) -> ZoneUse<'w> {
+    let mut usage = ZoneUse {
+        default: plane.default_zone.as_deref() == Some(id),
+        children: plane
+            .zones
+            .values()
+            .filter(|zone| zone.parent.as_deref() == Some(id))
+            .map(|zone| zone.id.as_str())
+            .collect(),
+        ..ZoneUse::default()
+    };
+    let mut layers = BTreeSet::new();
+    for (&(layer, _, _), chunk) in &plane.chunks {
+        let Some(index) = chunk.zones.palette.iter().position(|zone| zone == id) else {
+            continue;
+        };
+        let tiles = chunk
+            .zones
+            .cells
+            .iter()
+            .filter(|&&cell| usize::from(cell) == index + 1)
+            .count();
+        if tiles == 0 {
+            usage.listed += 1;
+        } else {
+            usage.tiles += tiles;
+            usage.chunks += 1;
+            layers.insert(layer);
+        }
+    }
+    usage.layers = layers.len();
+    usage
+}
+
+/// Whether `ancestor` is `zone` itself or one of its ancestors. Unlike
+/// [`zone_path`] the walk has no depth bound, so a long chain is followed to
+/// its end; it stops at an unknown parent or a repeated zone.
+pub fn is_within(plane: &Plane, zone: &str, ancestor: &str) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut current = Some(zone);
+    while let Some(id) = current {
+        if id == ancestor {
+            return true;
+        }
+        if !seen.insert(id) {
+            return false;
+        }
+        current = plane.zones.get(id).and_then(|zone| zone.parent.as_deref());
+    }
+    false
+}
+
+/// The zones that may become `id`'s parent without making a cycle: every
+/// zone of the plane but `id` itself and its descendants, sorted by id.
+pub fn parent_choices<'w>(plane: &'w Plane, id: &str) -> Vec<&'w str> {
+    plane
+        .zones
+        .keys()
+        .map(String::as_str)
+        .filter(|zone| !is_within(plane, zone, id))
+        .collect()
+}
+
+/// A zone's `properties`, member by member in source order, each value as
+/// compact JSON. Read from the zone's canonical JSON, the only place the
+/// loaded World keeps them.
+pub fn properties(zone: &tilewright_source::Zone) -> Vec<(String, String)> {
+    let limits = tilewright_jsonc::Limits::default();
+    let Ok(document) = tilewright_jsonc::Document::parse(zone.canonical.clone(), &limits) else {
+        return Vec::new();
+    };
+    let Some(members) = document
+        .root()
+        .get("properties")
+        .and_then(tilewright_jsonc::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    members
+        .iter()
+        .map(|member| (member.key.clone(), document.canonical(&member.value)))
+        .collect()
+}
+
+/// Neutral review notes for every zone definition the pending World
+/// creates, deletes, renames or moves under another parent, against the
+/// committed World, in plane and zone id order. They describe undo and redo
+/// as well as edits, since they compare definitions, not operations.
+pub(crate) fn definition_notes(committed: &World, pending: &World) -> Vec<String> {
+    let mut lines = Vec::new();
+    let planes: BTreeSet<&String> = committed
+        .planes()
+        .keys()
+        .chain(pending.planes().keys())
+        .collect();
+    let empty = BTreeMap::new();
+    for plane in planes {
+        let after_plane = pending.planes().get(plane);
+        let before = committed.planes().get(plane).map_or(&empty, |p| &p.zones);
+        let after = after_plane.map_or(&empty, |p| &p.zones);
+        let ids: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+        for id in ids {
+            let shown = short(id);
+            let quoted = |name: &str| format!("'{}'", short(name));
+            let mut changes = Vec::new();
+            match (before.get(id), after.get(id)) {
+                (None, Some(zone)) => changes.push(format!(
+                    "Creates zone {shown}{}{}.",
+                    zone.parent.as_deref().map_or_else(
+                        || " at the top level".into(),
+                        |p| format!(" under {}", short(p))
+                    ),
+                    zone.name
+                        .as_deref()
+                        .map_or_else(String::new, |name| format!(", named {}", quoted(name)))
+                )),
+                (Some(_), None) => changes.push(format!("Deletes unused zone {shown}.")),
+                (Some(old), Some(new)) => {
+                    match (old.name.as_deref(), new.name.as_deref()) {
+                        (Some(a), Some(b)) if a != b => changes.push(format!(
+                            "Renames zone {shown} from {} to {}.",
+                            quoted(a),
+                            quoted(b)
+                        )),
+                        (None, Some(b)) => {
+                            changes.push(format!("Names zone {shown} {}.", quoted(b)));
+                        }
+                        (Some(a), None) => {
+                            // The name now comes from the first named
+                            // zone above it, which is named here.
+                            let inherited = after_plane
+                                .and_then(|plane| {
+                                    zone_path(plane, id).into_iter().find_map(|zone| {
+                                        Some((zone, plane.zones.get(zone)?.name.as_deref()?))
+                                    })
+                                })
+                                .map_or_else(
+                                    || "no display name".into(),
+                                    |(from, name)| {
+                                        format!("{} from zone {}", quoted(name), short(from))
+                                    },
+                                );
+                            changes.push(format!(
+                                "Removes the display name {} of zone {shown}; it shows {inherited}.",
+                                quoted(a)
+                            ));
+                        }
+                        _ => {}
+                    }
+                    match (old.parent.as_deref(), new.parent.as_deref()) {
+                        (old, Some(parent)) if old != Some(parent) => {
+                            changes.push(format!("Moves zone {shown} under {}.", short(parent)));
+                        }
+                        (Some(_), None) => {
+                            changes.push(format!("Makes zone {shown} a top-level zone."));
+                        }
+                        _ => {}
+                    }
+                }
+                (None, None) => {}
+            }
+            for change in changes {
+                if lines.len() == MAXIMUM_DESCRIBED {
+                    lines.push("Further zone definition changes are not described here.".into());
+                    return lines;
+                }
+                lines.push(change);
+            }
+        }
+    }
+    lines
+}
+
 /// Displayed identifiers and names are cut to 64 characters.
 fn short(text: &str) -> String {
     let mut chars = text.chars();
