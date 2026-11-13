@@ -339,10 +339,17 @@ With `editing.zones.manage` a zone row of the Zone mode list also chooses
 the zone to manage (without `paint` it only does that, and the status line
 says so), and the sidebar shows it below the list: its id, marked as fixed;
 its display name, or "none" and the name it inherits; its parent; how many
-tiles of the view show it; how many tiles hold it in the whole plane, every
-chunk of every layer, not only the view (an empty cell shows the plane's
-default zone without holding it); its child zones; whether it is the plane's
-default zone; and its `properties`, read-only, as compact JSON. Each is an
+tiles of the view show it, and how many of those only as the plane default
+(an empty cell shows the default zone without holding it); how many tiles
+hold it explicitly in the whole plane, every chunk of every layer, not only
+the view; chunks whose zone palette lists it with no tile; its child zones;
+whether it is the plane's default zone; and its `properties`, read-only, as
+compact JSON. A zone draft and the parent list belong to the zone they were
+opened for: choosing another zone, leaving Zone mode, or the zone ceasing to
+exist in the shown World (deleted, or its creation undone) ends them, and the
+choice itself is dropped when the zone no longer exists. The draft's hint
+names the zone it edits ("Name of meadow; empty = none") or the parent a new
+zone goes under. Each is an
 edit of the plane's `zones.jsonc` reviewed as one World transaction, with
 one recovery record when accepted and byte-exact Undo and Redo:
 
@@ -356,13 +363,16 @@ one recovery record when accepted and byte-exact Undo and Redo:
   as the format says.
 - **Parent.** "Parent: ... (change)" lists the plane's zones except the zone
   itself and its descendants, so a cycle cannot be chosen, plus "No parent
-  (top level)". A choice writes one `set` or `remove` of the `parent` member,
+  (top level)". Like the zone list it shows the first 256 in id order and
+  then says how many there are; it is computed when it opens and again when
+  zone definitions change. A choice writes one `set` or `remove` of the `parent` member,
   guarded the same way. The Session refuses a parent that is unknown, the
   zone itself or one of its descendants on its own, whatever list was
   shown; World's validation stands behind it.
 - **New zone.** "New zone under X" or "New top-level zone" opens a draft:
   type the id, then optionally a space and the display name (ids cannot hold
-  spaces). The id must be a World identifier (`^[a-z0-9][a-z0-9_.-]{0,127}$`)
+  spaces). The name part is trimmed, and only whitespace means no name; a
+  display-name draft keeps its text exactly, as field drafts do. The id must be a World identifier (`^[a-z0-9][a-z0-9_.-]{0,127}$`)
   the plane does not use; the draft stays open until it is. Review writes an
   absent `test` of `["zones", {"id": new}]` and an `insert` at the end of the
   `zones` array, or `document.create` of `zones.jsonc` when the plane has
@@ -371,17 +381,22 @@ one recovery record when accepted and byte-exact Undo and Redo:
 - **Delete.** Only an unused zone can be deleted: no tile of any chunk on
   any layer holds it and no chunk's zone palette lists it, no zone has it as
   parent, and it is not the plane's `default_zone`. Otherwise the row is
-  disabled with those facts shown above it, and the Session refuses with
-  each reason and its count ("zone is in use and cannot be deleted: 6 tiles
-  hold it, in 3 chunks on 2 layers; 1 child zone (meadow.pond); it is the
-  plane's default zone"). Deleting writes one `remove` of the entry,
+  disabled with those facts shown above it and one "In use: ..." line per
+  reason under it, and the Session refuses with each reason and its count
+  ("zone is in use and cannot be deleted: 6 tiles hold it, in 3 chunks on 2
+  layers; 1 child zone (meadow.pond); it is the plane's default zone"). A
+  chunk palette that lists the zone with no tile (only a hand edit leaves
+  one) is its own reason; to drop the entry, paint one tile of that chunk
+  with the zone and then back: a stroke drops a zone's entry when its last
+  tile in the chunk is emptied, while strokes of other zones keep it. Deleting writes one `remove` of the entry,
   expecting its exact canonical JSON. Deleting the last zone leaves an empty
   `zones` array; the document stays.
 
 The review lists one neutral note per definition change, worked out by
 comparing the zone definitions before and after, so Undo and Redo are
 described too: "Renames zone meadow from 'Quiet meadow' to 'Open meadow'.",
-"Names zone X 'N'.", "Removes the display name 'N' of zone X; it shows ...",
+"Names zone X 'N'.", "Removes the display name 'N' of zone X; it shows 'M'
+from zone Y." (the zone up its chain the shown name now comes from),
 "Moves zone X under Y.", "Makes zone X a top-level zone.", "Creates zone X
 under Y, named 'N'." and "Deletes unused zone X.". Editing `properties` or
 `custom`, setting the plane's default zone, and merging or splitting zones
@@ -502,8 +517,10 @@ column 5 is captured mid-gesture with its live preview
 accepted (`zone-painted`). When it also grants zone management, it then
 renames `meadow` to "Open meadow" (`zone-rename`, pending), creates
 `meadow.grove` named "Grove" under it (`zone-create`, pending), paints the
-tile (2,4) with it (`zone-created`), tries to delete it while that tile holds
-it (`zone-delete-refused`, the refusal), undoes the paint and deletes it
+tile (2,4) with it (`zone-created`), shows that it cannot be deleted while
+that tile holds it (`zone-delete-refused`: the Delete row disabled with its
+reason, as the window shows it; a press on a disabled row does nothing),
+undoes the paint and deletes it
 (`zone-delete`, pending; `zone-deleted`). It is a deterministic scripted demonstration,
 not a claim of human input. `--reference` produces composed workspace CPU
 reference evidence and

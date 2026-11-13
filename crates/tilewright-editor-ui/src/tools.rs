@@ -172,8 +172,34 @@ pub struct ToolState {
     zone: Option<ZoneChoice>,
     /// Whether the zone overlay shows outside Zone mode.
     show_zones: bool,
-    /// Whether the chosen zone's parent choices are listed.
-    parent_choices: bool,
+    /// The chosen zone's parent choices while they are listed, computed
+    /// when the list opens and again when the definitions change.
+    parent_choices: Option<ParentChoices>,
+}
+
+/// The zones that may become the chosen zone's parent: the first
+/// [`MAX_CHOICES`] in id order, and how many there are in all.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ParentChoices {
+    pub zones: Vec<String>,
+    pub total: usize,
+}
+impl ParentChoices {
+    fn of(world: &World, catalog: &PreviewCatalog, zone: &str) -> Self {
+        let (plane, _, _) = catalog.view();
+        let all = world
+            .planes()
+            .get(plane)
+            .map_or_else(Vec::new, |plane| crate::zones::parent_choices(plane, zone));
+        Self {
+            total: all.len(),
+            zones: all
+                .into_iter()
+                .take(MAX_CHOICES)
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -193,7 +219,7 @@ impl ToolState {
     /// palette filter, so Place always opens with the whole palette.
     pub fn set_mode(&mut self, mode: ToolMode) {
         self.cancel();
-        self.parent_choices = false;
+        self.parent_choices = None;
         if mode != ToolMode::Place {
             self.filter.clear();
         }
@@ -223,28 +249,60 @@ impl ToolState {
             return Err(ToolError("The zone is not defined in this plane"));
         }
         if self.zone.as_ref() != Some(&choice) {
-            self.parent_choices = false;
+            // A zone draft and the parent list belong to the zone they were
+            // opened for; another choice ends them.
+            self.parent_choices = None;
+            self.retire_zone_draft();
         }
         self.zone = Some(choice);
         Ok(())
     }
+    /// Keep the zone state true to the shown World after it changed: a
+    /// chosen zone that is no longer defined is no longer chosen (and its
+    /// draft and parent list end), and an open parent list is computed
+    /// again from the current definitions.
+    pub fn revalidate_zones(&mut self, world: &World, catalog: &PreviewCatalog) {
+        if let Some(ZoneChoice::Zone(zone)) = &self.zone
+            && !zone_palette(world, catalog).contains(&zone.as_str())
+        {
+            self.zone = None;
+            self.parent_choices = None;
+            self.retire_zone_draft();
+        }
+        if self.parent_choices.is_some()
+            && let Some(ZoneChoice::Zone(zone)) = &self.zone
+        {
+            self.parent_choices = Some(ParentChoices::of(world, catalog, zone));
+        }
+    }
+    /// End an open zone-name or new-zone draft; other drafts stay.
+    fn retire_zone_draft(&mut self) {
+        if self.zone_draft().is_some() {
+            self.draft = None;
+        }
+    }
     /// Whether the chosen zone's parent choices are listed.
     pub fn parent_choices_open(&self) -> bool {
-        self.parent_choices
+        self.parent_choices.is_some()
+    }
+    /// The listed parent choices, when the list is open.
+    pub fn parent_choices(&self) -> Option<&ParentChoices> {
+        self.parent_choices.as_ref()
     }
     /// List or hide the chosen zone's parent choices. Needs zone management
     /// and a chosen zone; choosing another zone hides them again.
-    pub fn toggle_parent_choices(&mut self, catalog: &PreviewCatalog) -> Result<bool, ToolError> {
-        if !catalog.editing().zones.manage {
-            return Err(ToolError(
-                "The catalog does not allow managing zones (editing.zones.manage)",
-            ));
-        }
-        if !matches!(self.zone, Some(ZoneChoice::Zone(_))) {
-            return Err(ToolError("Choose a zone in the zone list first"));
-        }
-        self.parent_choices = !self.parent_choices;
-        Ok(self.parent_choices)
+    pub fn toggle_parent_choices(
+        &mut self,
+        world: &World,
+        catalog: &PreviewCatalog,
+    ) -> Result<bool, ToolError> {
+        let zone = self.managed_zone(world, catalog)?;
+        self.parent_choices = if self.parent_choices.is_some() {
+            None
+        } else {
+            Some(ParentChoices::of(world, catalog, &zone))
+        };
+        Ok(self.parent_choices.is_some())
     }
     /// The chosen zone, when it is a zone of the active view's plane and
     /// zone management is granted.
@@ -331,6 +389,17 @@ impl ToolState {
         });
         Ok(())
     }
+    /// The zone an open zone draft is for: the zone a name draft renames,
+    /// or the parent a new zone goes under (`None`: the top level).
+    pub fn zone_draft_target(&self) -> Option<(ZoneDraft, Option<&str>)> {
+        match self.draft.as_ref().map(|draft| &draft.kind) {
+            Some(DraftKind::ZoneName { zone, .. }) => Some((ZoneDraft::Name, Some(zone))),
+            Some(DraftKind::ZoneCreate { parent, .. }) => {
+                Some((ZoneDraft::Create, parent.as_deref()))
+            }
+            _ => None,
+        }
+    }
     /// Which zone draft is open, if one is.
     pub fn zone_draft(&self) -> Option<ZoneDraft> {
         match self.draft.as_ref().map(|draft| &draft.kind) {
@@ -382,7 +451,11 @@ impl ToolState {
                 parent,
                 expected,
             } => {
+                // The name part is trimmed, and only whitespace is no
+                // name. (A name draft keeps its text exactly, like every
+                // field draft.)
                 let (id, name) = text.split_once(' ').unwrap_or((text, ""));
+                let name = name.trim();
                 if id.is_empty() {
                     return Err(ToolError("Type the new zone's id first"));
                 }

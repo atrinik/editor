@@ -478,7 +478,8 @@ fn parents_change_with_guards_and_cycles_and_unknown_parents_are_refused_by_sess
         refused!(
             &mut session,
             reparent(&session, "meadow", Some(parent)),
-            "cycle",
+            // Session's own words: World's refusal would say "cycle" too.
+            "parent refused: a zone cannot be its own parent or the child of one of its descendants",
         );
     }
     refused!(
@@ -498,6 +499,24 @@ fn parents_change_with_guards_and_cycles_and_unknown_parents_are_refused_by_sess
     assert_eq!(
         zones::parent_choices(plane, "meadow.pond"),
         ["meadow", "path"]
+    );
+    // A name cleared deep in a chain names where the shown name now comes
+    // from: here the grandparent.
+    session
+        .dispatch(
+            rename(&session, "meadow.pond.reeds", Some("Reeds")),
+            &mut records,
+        )
+        .unwrap();
+    session.dispatch(Action::Accept, &mut records).unwrap();
+    session
+        .dispatch(rename(&session, "meadow.pond.reeds", None), &mut records)
+        .unwrap();
+    assert_eq!(
+        session.pending_warnings(),
+        [
+            "Removes the display name 'Reeds' of zone meadow.pond.reeds; it shows 'Quiet meadow' from zone meadow."
+        ]
     );
 }
 
@@ -740,9 +759,39 @@ fn deleting_a_used_zone_is_refused_with_each_reason_and_an_unused_one_is_removed
     });
     let error = refused!(&mut listed, delete(&listed, "meadow.pond"), "in use");
     assert!(
-        error.contains("the zone palette of 1 chunk still lists it"),
+        error.contains("the zone palette of 1 chunk still lists it with no tile")
+            && error.contains("paint one of its tiles with the zone, then back"),
         "{error}"
     );
+    let usage = zones::zone_use(&listed.world().planes()["main"], "meadow.pond");
+    assert_eq!((usage.tiles, usage.chunks, usage.listed), (0, 0, 1));
+    // A stroke elsewhere in that chunk keeps the unused entry; the remedy
+    // the refusal names does drop it: paint one tile of the chunk with the
+    // zone, then return that tile to the default zone.
+    let paint = |session: &Session, zone: Option<&str>| Action::PaintZones {
+        plane: "main".into(),
+        layer: 0,
+        cells: vec![[6, 0]],
+        zone: zone.map(Into::into),
+        expected: revision(session),
+    };
+    listed
+        .dispatch(paint(&listed, Some("path")), &mut records)
+        .unwrap();
+    listed.dispatch(Action::Accept, &mut records).unwrap();
+    assert_eq!(
+        zones::zone_use(&listed.world().planes()["main"], "meadow.pond").listed,
+        1
+    );
+    for zone in [Some("meadow.pond"), None] {
+        listed.dispatch(paint(&listed, zone), &mut records).unwrap();
+        listed.dispatch(Action::Accept, &mut records).unwrap();
+    }
+    assert!(zones::zone_use(&listed.world().planes()["main"], "meadow.pond").unused());
+    listed
+        .dispatch(delete(&listed, "meadow.pond"), &mut records)
+        .unwrap();
+    listed.dispatch(Action::Cancel, &mut records).unwrap();
 
     // An unused zone is removed with one guarded `remove`, and back.
     let (dir, mut session) = fixture();
@@ -848,4 +897,81 @@ fn tints_follow_definitions_in_pending_and_after_cancel() {
         .map(|(zone, tint)| (zone.to_owned(), tint))
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(after, before);
+}
+
+/// The fixture with `zones.jsonc` replaced by `text` and, when it defines
+/// none of the fixture's zones, without the default zone and zone grid that
+/// name them.
+#[cfg(target_os = "linux")]
+fn with_zones_text(root: &Path, text: &str, keep_references: bool) {
+    fs::write(root.join(ZONES), text).unwrap();
+    if keep_references {
+        return;
+    }
+    let plane = root.join("planes/main/plane.jsonc");
+    let source = fs::read_to_string(&plane).unwrap();
+    fs::write(
+        &plane,
+        source.replace(",\n  \"default_zone\": \"meadow\"", ""),
+    )
+    .unwrap();
+    let chunk = root.join("planes/main/layers/0/0_0.jsonc");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&chunk).unwrap()).unwrap();
+    value["terrain"].as_object_mut().unwrap().remove("zone");
+    fs::write(&chunk, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn crlf_comments_tabs_and_compact_spacing_survive_every_edit_byte_for_byte() {
+    let text = "{\r\n  // The plane's zones.\r\n  \"format\": \"tilewright.zones/1\",\r\n  /* in id order */ \"zones\": [\r\n\t{\"id\":\"meadow\",\"name\":\"Quiet meadow\"}, // open land\r\n\t{\"id\":\"meadow.pond\",\"parent\":\"meadow\"},\r\n\t{ \"id\" : \"path\" , \"name\" : \"Stone path\" },\r\n\t{\"id\":\"spare\"} /* last */\r\n  ]\r\n}\r\n";
+    let (dir, mut session) = fixture_with(|root| with_zones_text(root, text, true));
+    let root = dir.path().to_owned();
+    assert_eq!(fs::read_to_string(root.join(ZONES)).unwrap(), text);
+    for action in [
+        create(&session, "grove", Some("Grove"), Some("meadow")),
+        rename(&session, "meadow.pond", Some("Still pond")),
+        rename(&session, "path", None),
+        reparent(&session, "spare", Some("path")),
+        reparent(&session, "meadow.pond", None),
+        delete(&session, "spare"),
+    ] {
+        let changed = accept_undo_redo!(&root, &mut session, action, &[ZONES]);
+        let after = String::from_utf8(changed[0].clone().unwrap()).unwrap();
+        assert!(
+            after.contains("// open land") && after.contains("/* last */"),
+            "{after}"
+        );
+        assert!(after.contains("// The plane's zones.\r\n"), "{after}");
+        // Undo each to start the next edit from the original bytes.
+        let mut records = Records::default();
+        session.dispatch(Action::Undo, &mut records).unwrap();
+        session.dispatch(Action::Accept, &mut records).unwrap();
+        assert_eq!(fs::read_to_string(root.join(ZONES)).unwrap(), text);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_empty_zones_array_with_a_comment_takes_a_first_zone() {
+    let text = "{\n  \"format\": \"tilewright.zones/1\",\n  \"zones\": [ /* none yet */ ]\n}\n";
+    let (dir, mut session) = fixture_with(|root| with_zones_text(root, text, false));
+    let root = dir.path().to_owned();
+    let mut records = Records::default();
+    session
+        .dispatch(create(&session, "first", None, None), &mut records)
+        .unwrap();
+    assert_eq!(
+        operations(&session)[1]["pointer"],
+        serde_json::json!(["zones", 0])
+    );
+    session.dispatch(Action::Cancel, &mut records).unwrap();
+    let changed = accept_undo_redo!(
+        &root,
+        &mut session,
+        create(&session, "first", Some("First"), None),
+        &[ZONES],
+    );
+    let after = String::from_utf8(changed[0].clone().unwrap()).unwrap();
+    assert!(after.contains("\"first\""), "{after}");
 }

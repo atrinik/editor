@@ -23,8 +23,8 @@ zone. The visible chunk's `zone` grid puts `meadow.pond` on `(1,1)`-`(2,2)` and
 has no zone grid, is in `meadow`. The catalog grants `editing.zones`
 `{paint: true, manage: true}`; the scripted demonstration paints `path` down
 column 5, then renames `meadow` to `Open meadow`, creates `meadow.grove`
-(`Grove`) under it, paints `(2,4)` with it, is refused deleting it, undoes
-the paint and deletes it.
+(`Grove`) under it, paints `(2,4)` with it, shows its Delete row disabled
+while that tile holds it, undoes the paint and deletes it.
 
 For negative/cross-chunk picking, use the same world with bounds `[-2,0,4,3]`.
 Chunk `[-1,0]` contains ground at x=-2/-1 and the marker `marker_negative` at

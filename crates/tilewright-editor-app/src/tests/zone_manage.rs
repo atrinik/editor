@@ -115,7 +115,8 @@ fn a_display_name_edit_through_sdl_events_is_one_reviewed_change() {
         "Name: Quiet meadow",
         "Parent: none (change)",
         "Shown on 36 tiles in view",
-        "Holds no tile in the plane",
+        "36 of them as the plane default",
+        "Held explicitly by no tile",
         "Child zone: meadow.pond",
         "It is the plane's default zone",
         "Delete: not while in use",
@@ -139,7 +140,7 @@ fn a_display_name_edit_through_sdl_events_is_one_reviewed_change() {
     press(&mut app, &Control::ZoneName);
     assert_eq!(app.tools.zone_draft(), Some(ZoneDraft::Name));
     assert_eq!(app.tools.draft_text(), Some("Quiet meadow"));
-    assert!(sidebar_texts(&mut app).contains(&"Display name; empty = none / Enter".to_owned()));
+    assert!(sidebar_texts(&mut app).contains(&"Name of meadow; empty = none".to_owned()));
     app.tools.select_all().unwrap();
     acknowledge_ui(&mut app);
     type_text(&mut app, "Open meadow");
@@ -274,7 +275,7 @@ fn a_new_zone_is_typed_reviewed_painted_and_deleted_once_unused() {
     choose(&mut app, "path");
     press(&mut app, &Control::ZoneCreate(Some("path".into())));
     assert_eq!(app.tools.zone_draft(), Some(ZoneDraft::Create));
-    assert!(sidebar_texts(&mut app).contains(&"New id (fixed), space, name / Enter".to_owned()));
+    assert!(sidebar_texts(&mut app).contains(&"New zone under path: id, name".to_owned()));
     // An invalid or used id keeps the draft open to fix it.
     acknowledge_ui(&mut app);
     type_text(&mut app, "Path");
@@ -345,8 +346,9 @@ fn a_new_zone_is_typed_reviewed_painted_and_deleted_once_unused() {
         Some("path.bridge")
     );
     // Used: the Delete row is disabled and the session refuses it too.
-    assert!(all_texts(&mut app).contains(&"Holds 1 tile in the plane".to_owned()));
+    assert!(all_texts(&mut app).contains(&"Held explicitly by 1 tile".to_owned()));
     assert_eq!(row_enabled(&mut app, &Control::ZoneDelete), Some(false));
+    assert!(all_texts(&mut app).contains(&"In use: 1 tile in 1 chunk".to_owned()));
     let error = app.control(Control::ZoneDelete).unwrap_err();
     assert!(error.contains("1 tile holds it"), "{error}");
     assert!(app.session.history().pending().is_none());
@@ -480,4 +482,69 @@ fn a_stored_line_break_in_a_zone_name_shows_as_a_marker_and_stays_exact() {
             .unwrap()
             .contains("\"Stone\\npath way\"")
     );
+}
+
+#[test]
+fn switching_zones_ends_an_open_zone_draft_and_the_next_edit_targets_the_new_zone() {
+    let (_temporary, mut app) = zone_application(|_| {});
+    route(&mut app, &key(Keycode::N)).unwrap();
+    choose(&mut app, "meadow");
+    press(&mut app, &Control::ZoneName);
+    assert_eq!(app.tools.draft_text(), Some("Quiet meadow"));
+    // A press on another zone's row ends the meadow draft.
+    choose(&mut app, "path");
+    assert!(app.tools.draft_text().is_none());
+    press(&mut app, &Control::ZoneName);
+    assert!(sidebar_texts(&mut app).contains(&"Name of path; empty = none".to_owned()));
+    app.tools.select_all().unwrap();
+    acknowledge_ui(&mut app);
+    type_text(&mut app, "Wide path");
+    enter(&mut app);
+    assert!(review_has(
+        &mut app,
+        "Renames zone path from 'Stone path' to 'Wide path'."
+    ));
+    acknowledge_ui(&mut app);
+    route(&mut app, &key(Keycode::Escape)).unwrap();
+    // The same for a new-zone draft.
+    press(&mut app, &Control::ZoneCreate(Some("path".into())));
+    choose(&mut app, "meadow");
+    assert!(app.tools.draft_text().is_none());
+}
+
+#[test]
+fn a_deleted_or_uncreated_chosen_zone_is_no_longer_chosen() {
+    let (_temporary, mut app) = zone_application(|_| {});
+    route(&mut app, &key(Keycode::N)).unwrap();
+    press(&mut app, &Control::ZoneCreate(None));
+    acknowledge_ui(&mut app);
+    type_text(&mut app, "north");
+    enter(&mut app);
+    enter(&mut app);
+    choose(&mut app, "north");
+    assert_eq!(
+        app.tools.zone_choice(),
+        Some(&ZoneChoice::Zone("north".into()))
+    );
+    // Undoing the creation: the choice goes with the zone.
+    acknowledge_ui(&mut app);
+    route(&mut app, &key(Keycode::Z)).unwrap();
+    assert_eq!(app.tools.zone_choice(), None, "already in the pending undo");
+    enter(&mut app);
+    assert_eq!(app.tools.zone_choice(), None);
+    // A press on the map now only selects the tile: nothing is painted.
+    acknowledge_ui(&mut app);
+    let at = super::cell_pixel(&mut app, 3, 3);
+    route(&mut app, &button(true, at)).unwrap();
+    route(&mut app, &button(false, at)).unwrap();
+    assert!(app.tools.stroke().is_none());
+    assert!(app.session.history().pending().is_none());
+    // Redo it, choose it and delete it: the same.
+    acknowledge_ui(&mut app);
+    route(&mut app, &key(Keycode::Y)).unwrap();
+    enter(&mut app);
+    choose(&mut app, "north");
+    press(&mut app, &Control::ZoneDelete);
+    enter(&mut app);
+    assert_eq!(app.tools.zone_choice(), None);
 }

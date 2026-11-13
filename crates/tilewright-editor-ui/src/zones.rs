@@ -321,10 +321,15 @@ pub(crate) fn notes(committed: &World, sealed: &str) -> Vec<String> {
 pub struct ZoneUse<'w> {
     /// Tiles whose `zone` cell holds the zone.
     pub tiles: usize,
-    /// Chunks whose zone palette lists the zone, with or without tiles.
+    /// Chunks with at least one such tile.
     pub chunks: usize,
     /// How many layers those chunks are on.
     pub layers: usize,
+    /// Chunks whose zone palette lists the zone although no tile of theirs
+    /// holds it. Only a hand edit leaves such an entry; a zone stroke that
+    /// empties the last tile holding a zone drops its entry, so painting one
+    /// tile with the zone and then back removes it.
+    pub listed: usize,
     /// Zones whose parent is this zone, sorted by id.
     pub children: Vec<&'w str>,
     /// Whether it is the plane's `default_zone`.
@@ -334,22 +339,24 @@ pub struct ZoneUse<'w> {
 /// Most child zones named in a refusal; the rest are counted.
 const MAXIMUM_NAMED_CHILDREN: usize = 3;
 
+fn plural(count: usize, one: &str, many: &str) -> String {
+    if count == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{count} {many}")
+    }
+}
+
 impl ZoneUse<'_> {
     /// Whether World would let the zone be deleted: no chunk lists it, no
     /// zone has it as parent and it is not the plane's default.
     pub fn unused(&self) -> bool {
-        self.chunks == 0 && self.children.is_empty() && !self.default
+        self.tiles == 0 && self.listed == 0 && self.children.is_empty() && !self.default
     }
-    /// Why the zone cannot be deleted, one short line per reason, in the
-    /// order tiles, child zones, default zone. Empty when it is unused.
+    /// Why the zone cannot be deleted, one line per reason, in the order
+    /// tiles, palette-only chunks, child zones, default zone. Empty when it
+    /// is unused.
     pub fn reasons(&self) -> Vec<String> {
-        let plural = |count: usize, one: &str, many: &str| {
-            if count == 1 {
-                format!("1 {one}")
-            } else {
-                format!("{count} {many}")
-            }
-        };
         let mut reasons = Vec::new();
         if self.tiles > 0 {
             reasons.push(format!(
@@ -359,10 +366,12 @@ impl ZoneUse<'_> {
                 plural(self.chunks, "chunk", "chunks"),
                 plural(self.layers, "layer", "layers")
             ));
-        } else if self.chunks > 0 {
+        }
+        if self.listed > 0 {
             reasons.push(format!(
-                "the zone palette of {} still lists it",
-                plural(self.chunks, "chunk", "chunks")
+                "the zone palette of {} still {} it with no tile (to drop the entry, paint one of its tiles with the zone, then back)",
+                plural(self.listed, "chunk", "chunks"),
+                if self.listed == 1 { "lists" } else { "list" }
             ));
         }
         if !self.children.is_empty() {
@@ -387,6 +396,30 @@ impl ZoneUse<'_> {
         }
         reasons
     }
+    /// The same reasons, short enough for one sidebar row each.
+    pub fn short_reasons(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
+        if self.tiles > 0 {
+            reasons.push(format!(
+                "{} in {}",
+                plural(self.tiles, "tile", "tiles"),
+                plural(self.chunks, "chunk", "chunks")
+            ));
+        }
+        if self.listed > 0 {
+            reasons.push(format!(
+                "listed by {}",
+                plural(self.listed, "chunk palette", "chunk palettes")
+            ));
+        }
+        if !self.children.is_empty() {
+            reasons.push(plural(self.children.len(), "child zone", "child zones"));
+        }
+        if self.default {
+            reasons.push("the plane default".into());
+        }
+        reasons
+    }
 }
 
 /// How zone `id` is used anywhere in `plane` (see [`ZoneUse`]). Only chunks
@@ -407,14 +440,19 @@ pub fn zone_use<'w>(plane: &'w Plane, id: &str) -> ZoneUse<'w> {
         let Some(index) = chunk.zones.palette.iter().position(|zone| zone == id) else {
             continue;
         };
-        usage.chunks += 1;
-        layers.insert(layer);
-        usage.tiles += chunk
+        let tiles = chunk
             .zones
             .cells
             .iter()
             .filter(|&&cell| usize::from(cell) == index + 1)
             .count();
+        if tiles == 0 {
+            usage.listed += 1;
+        } else {
+            usage.tiles += tiles;
+            usage.chunks += 1;
+            layers.insert(layer);
+        }
     }
     usage.layers = layers.len();
     usage
@@ -514,11 +552,19 @@ pub(crate) fn definition_notes(committed: &World, pending: &World) -> Vec<String
                             changes.push(format!("Names zone {shown} {}.", quoted(b)));
                         }
                         (Some(a), None) => {
+                            // The name now comes from the first named
+                            // zone above it, which is named here.
                             let inherited = after_plane
-                                .and_then(|plane| display_name(plane, id))
+                                .and_then(|plane| {
+                                    zone_path(plane, id).into_iter().find_map(|zone| {
+                                        Some((zone, plane.zones.get(zone)?.name.as_deref()?))
+                                    })
+                                })
                                 .map_or_else(
                                     || "no display name".into(),
-                                    |name| format!("its parent's name {}", quoted(name)),
+                                    |(from, name)| {
+                                        format!("{} from zone {}", quoted(name), short(from))
+                                    },
                                 );
                             changes.push(format!(
                                 "Removes the display name {} of zone {shown}; it shows {inherited}.",
