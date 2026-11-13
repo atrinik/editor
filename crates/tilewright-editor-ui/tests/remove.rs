@@ -347,15 +347,14 @@ fn review_warns_about_inventory_portals_and_anchors_but_never_blocks_accept() {
                 "portal": {"anchor": "landing"}}),
             );
         });
-        fs::write(
-            root.join("planes/main/anchors.jsonc"),
-            json!({"format": "tilewright.anchors/1", "anchors": [
-                {"id": "landing", "layer": 0, "at": [1, 4]},
-                {"id": "elsewhere", "layer": 0, "at": [0, 0]},
-                {"id": "upstairs", "layer": 1, "at": [1, 4]}]})
-            .to_string(),
-        )
-        .unwrap();
+        // Added to the sample's own anchors, which its portals name.
+        edit_json(root, "planes/main/anchors.jsonc", |anchors| {
+            anchors["anchors"].as_array_mut().unwrap().extend([
+                json!({"id": "landing", "layer": 0, "at": [1, 4]}),
+                json!({"id": "elsewhere", "layer": 0, "at": [0, 0]}),
+                json!({"id": "upstairs", "layer": 1, "at": [1, 4]}),
+            ]);
+        });
         edit_json(root, "world.jsonc", |world| {
             world["planes"] = json!(["main", "other"]);
         });

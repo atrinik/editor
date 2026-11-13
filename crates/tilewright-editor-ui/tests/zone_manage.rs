@@ -759,8 +759,9 @@ fn deleting_a_used_zone_is_refused_with_each_reason_and_an_unused_one_is_removed
     });
     let error = refused!(&mut listed, delete(&listed, "meadow.pond"), "in use");
     assert!(
-        error.contains("the zone palette of 1 chunk still lists it with no tile")
-            && error.contains("paint one of its tiles with the zone, then back"),
+        error.contains(
+            "the zone palette of 1 chunk (layer 0 chunk 0_0) still lists it with no tile"
+        ) && error.contains("paint one of its tiles with the zone, then back"),
         "{error}"
     );
     let usage = zones::zone_use(&listed.world().planes()["main"], "meadow.pond");

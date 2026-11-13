@@ -242,6 +242,17 @@
       "height": 32,
       "transformation": "Deterministic authored integer pixel geometry; standalone ATX1 RGBA8.",
       "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
+    },
+    {
+      "path": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/preview-assets/gate.atx1",
+      "source": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/generate_assets.py",
+      "author": "Seraphina Studios",
+      "license": "MIT",
+      "sha256": "b9b564a84475f870cb1660e60b65ec7610894d151c7cd7e6c1099cd6b66fa004",
+      "width": 16,
+      "height": 32,
+      "transformation": "Deterministic authored integer pixel geometry; standalone ATX1 RGBA8.",
+      "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
     }
   ]
 }

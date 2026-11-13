@@ -37,6 +37,17 @@ class PackageAssetTests(unittest.TestCase):
             self.assertFalse((stage/'recovery').exists())
             self.assertTrue((stage/'asset-provenance.json').is_file())
 
+    def test_every_sample_file_but_the_generator_is_packaged(self):
+        # A fixture file left out of the policy ships a sample that does not
+        # open; tools/package-linux.sh also opens the staged sample with the
+        # packaged binary.
+        policy = json.loads((ROOT/'policy/package-assets.json').read_text())
+        listed = set(policy['files'])
+        sample = ROOT/assets.PREFIX
+        present = {path.relative_to(ROOT).as_posix() for path in sample.rglob('*') if path.is_file()}
+        unpackaged = sorted(present - listed - {(assets.PREFIX/'generate_assets.py').as_posix()})
+        self.assertEqual(unpackaged, [])
+
     def test_policy_cannot_include_a_parent_or_external_sample(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

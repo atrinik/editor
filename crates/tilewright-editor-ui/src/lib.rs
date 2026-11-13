@@ -140,6 +140,7 @@ mod session;
 pub use session::{Action, Session, SessionError, SessionPhase, SessionStatus};
 pub use tilewright_editor_preview::SelectionKey;
 
+pub mod anchors;
 pub mod brush;
 mod insertion;
 pub mod inspector;

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{fmt::Write, fs, path::Path};
 use tilewright_editor_preview::{
-    ObjectGrant, PreviewLimits, SelectionKey, ZoneGrant, loader, prepare, render_scene,
+    AnchorGrant, ObjectGrant, PreviewLimits, SelectionKey, ZoneGrant, loader, prepare, render_scene,
 };
 use tilewright_render_api::{BackendPreference, TargetDescriptor, TargetKind};
 use tilewright_render_resources::ResourceRequest;
@@ -649,6 +649,53 @@ fn the_optional_zone_grant_is_two_strict_flags_and_its_absence_changes_nothing()
     {
         let mut c = original.clone();
         c["editing"]["zones"] = zones;
+        put(dir.path(), "preview.jsonc", &c.to_string());
+        assert!(loader::load(&root, &world, limits).is_err(), "case {case}");
+    }
+}
+
+#[test]
+fn the_optional_anchor_grant_is_one_strict_flag_and_its_absence_changes_nothing() {
+    let (dir, root, world, original) = fixture(false, false);
+    let limits = PreviewLimits::default();
+    let (absent, _) = loader::load(&root, &world, limits).unwrap();
+    assert_eq!(absent.editing().anchors, AnchorGrant::default());
+    assert!(!absent.editing().anchors.edit);
+
+    for edit in [true, false] {
+        let mut granted = original.clone();
+        granted["editing"]["anchors"] = json!({"edit": edit});
+        put(dir.path(), "preview.jsonc", &granted.to_string());
+        let (catalog, _) = loader::load(&root, &world, limits).unwrap();
+        assert_eq!(catalog.editing().anchors, AnchorGrant { edit });
+        // Every other capability is exactly what the catalog without the
+        // member grants.
+        assert_eq!(catalog.editing().zones, absent.editing().zones);
+        assert_eq!(catalog.editing().terrain, absent.editing().terrain);
+        assert_eq!(
+            catalog.editing().movable_uids,
+            absent.editing().movable_uids
+        );
+        assert_eq!(catalog.editing().objects, absent.editing().objects);
+    }
+
+    // A capability flag, never a list of anchor ids; closed and strict.
+    for (case, anchors) in [
+        json!(true),
+        json!([]),
+        json!(["arrival"]),
+        json!({}),
+        json!({"edit": "yes"}),
+        json!({"edit": 1}),
+        json!({"edit": null}),
+        json!({"edit": true, "anchors": ["arrival"]}),
+        json!({"create": true}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut c = original.clone();
+        c["editing"]["anchors"] = anchors;
         put(dir.path(), "preview.jsonc", &c.to_string());
         assert!(loader::load(&root, &world, limits).is_err(), "case {case}");
     }

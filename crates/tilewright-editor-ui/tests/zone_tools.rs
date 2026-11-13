@@ -203,6 +203,61 @@ fn the_parent_list_is_capped_like_the_palette_and_follows_definition_changes() {
     assert!(!tools.parent_choices_open());
 }
 
+struct NoRecovery;
+impl tilewright_editor_commands::RecoveryStore for NoRecovery {
+    fn retain(&mut self, _: &str) -> Result<(), String> {
+        Err("this test never accepts".into())
+    }
+}
+
+#[test]
+fn an_open_parent_list_is_recomputed_when_the_definitions_change() {
+    let (_dir, mut session) = fixture_with(|_| {});
+    let mut tools = tools_for(&session, "path");
+    tools
+        .toggle_parent_choices(session.world(), session.catalog())
+        .unwrap();
+    let listed = |tools: &ToolState| tools.parent_choices().unwrap().zones.clone();
+    assert_eq!(listed(&tools), ["meadow", "meadow.pond"]);
+    // A pending new zone is in the shown World: the open list takes it,
+    // and stays open.
+    session
+        .dispatch(
+            Action::CreateZone {
+                plane: "main".into(),
+                zone: "grove".into(),
+                name: None,
+                parent: None,
+                expected: revision(&session),
+            },
+            &mut NoRecovery,
+        )
+        .unwrap();
+    tools.revalidate_zones(session.world(), session.catalog());
+    assert!(tools.parent_choices_open());
+    assert_eq!(listed(&tools), ["grove", "meadow", "meadow.pond"]);
+    assert_eq!(tools.parent_choices().unwrap().total, 3);
+    // Cancelled, it is gone from the list again.
+    session.dispatch(Action::Cancel, &mut NoRecovery).unwrap();
+    tools.revalidate_zones(session.world(), session.catalog());
+    assert_eq!(listed(&tools), ["meadow", "meadow.pond"]);
+    // A pending reparent that makes `meadow` a child of `path` takes it
+    // out of `path`'s parent choices: it would make a cycle.
+    session
+        .dispatch(
+            Action::SetZoneParent {
+                plane: "main".into(),
+                zone: "meadow".into(),
+                parent: Some("path".into()),
+                expected: revision(&session),
+            },
+            &mut NoRecovery,
+        )
+        .unwrap();
+    tools.revalidate_zones(session.world(), session.catalog());
+    assert!(listed(&tools).is_empty(), "{:?}", listed(&tools));
+}
+
 #[test]
 fn a_new_zone_name_is_trimmed_and_only_whitespace_is_no_name() {
     let (_dir, session) = fixture_with(|_| {});

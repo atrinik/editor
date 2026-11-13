@@ -26,6 +26,9 @@ try {
     python tools/prepare-font-pack.py stage --root . --font-pack $FontPack --stage $Stage | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Unicode font pack staging failed" }
     & "$Stage/bin/tilewright-editor.exe" version | Out-Null
+    # The packaged sample must open as a World with the packaged binary.
+    & "$Stage/bin/tilewright-editor.exe" open "$Stage/samples/prototype-neutral" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "the packaged sample does not open" }
     syft "$Stage/bin/tilewright-editor.exe" --source-name tilewright-editor --source-version $Version --output "cyclonedx-json=$Stage/sbom.cdx.json"
     $Sbom = Get-Content "$Stage/sbom.cdx.json" -Raw | ConvertFrom-Json
     if ($Sbom.components.Count -lt 10) { throw "binary SBOM is incomplete" }

@@ -26,6 +26,11 @@ pub enum ToolMode {
     /// Show every tile's zone; drag to paint the chosen zone when the
     /// catalog grants `editing.zones.paint`.
     Zone,
+    /// Show anchor and portal badges and the plane's anchors; a click
+    /// selects a tile. With `editing.anchors.edit`, create an anchor on the
+    /// selected tile, move the chosen one there, or delete an unreferenced
+    /// one.
+    Anchor,
 }
 
 /// What the zone brush paints.
@@ -133,6 +138,13 @@ enum DraftKind {
         parent: Option<String>,
         expected: [u8; 32],
     },
+    /// The id of a new anchor on plane tile `at` of the active view,
+    /// reviewed as [`Action::CreateAnchor`].
+    AnchorCreate {
+        plane: String,
+        at: [i64; 2],
+        expected: [u8; 32],
+    },
 }
 
 /// Most bytes a zone name draft holds: 256 characters of up to four bytes.
@@ -141,6 +153,8 @@ const MAX_ZONE_NAME_BYTES: usize = 4 * MAX_ZONE_NAME_CHARACTERS;
 const MAX_ZONE_CREATE_BYTES: usize = 128 + 1 + MAX_ZONE_NAME_BYTES;
 /// Most characters of a zone display name (FORMAT.md section 8).
 pub const MAX_ZONE_NAME_CHARACTERS: usize = 256;
+/// Most bytes a new-anchor draft holds: a World identifier.
+const MAX_ANCHOR_ID_BYTES: usize = 128;
 
 /// Which zone draft is open, for the hint shown with it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -175,6 +189,8 @@ pub struct ToolState {
     /// The chosen zone's parent choices while they are listed, computed
     /// when the list opens and again when the definitions change.
     parent_choices: Option<ParentChoices>,
+    /// The anchor chosen in Anchor mode's list.
+    anchor: Option<String>,
 }
 
 /// The zones that may become the chosen zone's parent: the first
@@ -499,6 +515,191 @@ impl ToolState {
         self.show_zones = !self.show_zones;
         Ok(self.show_zones)
     }
+    /// Whether anchor and portal badges are drawn: always in Anchor mode,
+    /// and in the other modes whenever the zone overlay shows (Zone mode,
+    /// or after [`Self::toggle_zones`]).
+    pub fn badges_visible(&self) -> bool {
+        self.mode == ToolMode::Anchor || self.zones_visible()
+    }
+    pub fn anchor_choice(&self) -> Option<&str> {
+        self.anchor.as_deref()
+    }
+    /// Choose an anchor of the active view's plane in the anchor list.
+    /// Editing it still needs the catalog grant.
+    pub fn choose_anchor(
+        &mut self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        anchor: &str,
+    ) -> Result<(), ToolError> {
+        if !defined_anchor(world, catalog, anchor) {
+            return Err(ToolError("The anchor is not defined in this plane"));
+        }
+        self.anchor = Some(anchor.to_owned());
+        Ok(())
+    }
+    /// Keep the anchor state true to the shown World after it changed: a
+    /// chosen anchor that is no longer defined is no longer chosen.
+    pub fn revalidate_anchors(&mut self, world: &World, catalog: &PreviewCatalog) {
+        if self
+            .anchor
+            .as_deref()
+            .is_some_and(|anchor| !defined_anchor(world, catalog, anchor))
+        {
+            self.anchor = None;
+        }
+    }
+    /// Begin typing the id of a new anchor on the selected tile, which must
+    /// be a tile of the active view. Needs `editing.anchors.edit`.
+    pub fn begin_anchor_create(
+        &mut self,
+        catalog: &PreviewCatalog,
+        selection: Option<&SelectionKey>,
+        expected: [u8; 32],
+        pending: bool,
+    ) -> Result<(), ToolError> {
+        available(pending)?;
+        let at = anchor_target(catalog, selection)?;
+        let input = self.new_limited_input(String::new(), MAX_ANCHOR_ID_BYTES)?;
+        self.retire_draft();
+        self.draft = Some(Draft {
+            stamp: None,
+            kind: DraftKind::AnchorCreate {
+                plane: catalog.view().0.into(),
+                at,
+                expected,
+            },
+            input,
+        });
+        Ok(())
+    }
+    /// The tile an open new-anchor draft is for.
+    pub fn anchor_draft(&self) -> Option<[i64; 2]> {
+        match self.draft.as_ref().map(|draft| &draft.kind) {
+            Some(DraftKind::AnchorCreate { at, .. }) => Some(*at),
+            _ => None,
+        }
+    }
+    /// The reviewed action of the open new-anchor draft. The id's shape
+    /// and whether the plane uses it already are checked here so the draft
+    /// stays open to fix them; the session checks them again.
+    pub fn anchor_action(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        let draft = self.draft.as_ref().ok_or(ToolError("No input draft"))?;
+        if draft.input.is_composing() {
+            return Err(ToolError("Finish or cancel composition before review"));
+        }
+        let DraftKind::AnchorCreate {
+            plane,
+            at: [x, y],
+            expected,
+        } = &draft.kind
+        else {
+            return Err(ToolError("No new-anchor draft is open"));
+        };
+        let id = draft.input.text();
+        if id.is_empty() {
+            return Err(ToolError("Type the new anchor's id first"));
+        }
+        if !tilewright_source::is_identifier(id) {
+            return Err(ToolError(
+                "An anchor id is 1 to 128 lowercase letters, digits, '_', '.' or '-', starting with a letter or digit",
+            ));
+        }
+        if world
+            .planes()
+            .get(plane)
+            .is_some_and(|source| source.anchors.contains_key(id))
+        {
+            return Err(ToolError("This plane already has an anchor with this id"));
+        }
+        if catalog.view().0 != plane {
+            return Err(ToolError("The view moved to another plane"));
+        }
+        Ok(Action::CreateAnchor {
+            plane: plane.clone(),
+            anchor: id.to_owned(),
+            x: *x,
+            y: *y,
+            expected: *expected,
+        })
+    }
+    /// Move the chosen anchor to the selected tile. The anchor must be on a
+    /// tile of the active view, and the selected tile another one.
+    pub fn move_anchor_action(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        selection: Option<&SelectionKey>,
+        expected: [u8; 32],
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        let (anchor, current) = self.editable_anchor(world, catalog)?;
+        let (plane, _, _) = catalog.view();
+        if !catalog.tile_in_active_view(plane, current.layer, current.at[0], current.at[1]) {
+            return Err(ToolError(
+                "Only an anchor on a tile of the view can be moved",
+            ));
+        }
+        let [x, y] = anchor_target(catalog, selection)?;
+        if current.at == [x, y] {
+            return Err(ToolError(
+                "The anchor is already on the selected tile: select its new tile",
+            ));
+        }
+        Ok(Action::MoveAnchor {
+            plane: plane.into(),
+            anchor,
+            x,
+            y,
+            expected,
+        })
+    }
+    /// Delete the chosen anchor. The session refuses it while a portal
+    /// names it, with the objects listed.
+    pub fn delete_anchor_action(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        expected: [u8; 32],
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        let (anchor, _) = self.editable_anchor(world, catalog)?;
+        Ok(Action::DeleteAnchor {
+            plane: catalog.view().0.into(),
+            anchor,
+            expected,
+        })
+    }
+    /// The chosen anchor and its place, when anchor editing is granted.
+    fn editable_anchor(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+    ) -> Result<(String, tilewright_source::Anchor), ToolError> {
+        if !catalog.editing().anchors.edit {
+            return Err(ToolError(
+                "The catalog does not allow editing anchors (editing.anchors.edit)",
+            ));
+        }
+        let anchor = self
+            .anchor
+            .as_ref()
+            .ok_or(ToolError("Choose an anchor in the anchor list first"))?;
+        let current = world
+            .planes()
+            .get(catalog.view().0)
+            .and_then(|source| source.anchors.get(anchor))
+            .ok_or(ToolError("The chosen anchor is no longer defined"))?;
+        Ok((anchor.clone(), *current))
+    }
     pub fn terrain_choice(&self) -> Option<&TerrainChoice> {
         self.terrain.as_ref()
     }
@@ -805,6 +1006,8 @@ impl ToolState {
         let Some(stamp) = draft.stamp.as_ref() else {
             return Err(ToolError(if self.zone_draft().is_some() {
                 "Zone drafts are reviewed as zone actions"
+            } else if self.anchor_draft().is_some() {
+                "Anchor drafts are reviewed as anchor actions"
             } else {
                 "The palette filter is never reviewed"
             }));
@@ -838,6 +1041,9 @@ impl ToolState {
             DraftKind::Filter => Err(ToolError("The palette filter is never reviewed")),
             DraftKind::ZoneName { .. } | DraftKind::ZoneCreate { .. } => {
                 Err(ToolError("Zone drafts are reviewed as zone actions"))
+            }
+            DraftKind::AnchorCreate { .. } => {
+                Err(ToolError("Anchor drafts are reviewed as anchor actions"))
             }
             DraftKind::Move => {
                 if !matches!(
@@ -1093,6 +1299,33 @@ impl ToolState {
     /// Abandon a running stroke without preparing anything.
     pub fn cancel_stroke(&mut self) -> bool {
         self.stroke.take().is_some()
+    }
+}
+
+/// Whether the active view's plane defines anchor `anchor`.
+fn defined_anchor(world: &World, catalog: &PreviewCatalog, anchor: &str) -> bool {
+    world
+        .planes()
+        .get(catalog.view().0)
+        .is_some_and(|source| source.anchors.contains_key(anchor))
+}
+
+/// The selected tile, when anchor editing is granted and it is a tile of the
+/// active view.
+fn anchor_target(
+    catalog: &PreviewCatalog,
+    selection: Option<&SelectionKey>,
+) -> Result<[i64; 2], ToolError> {
+    if !catalog.editing().anchors.edit {
+        return Err(ToolError(
+            "The catalog does not allow editing anchors (editing.anchors.edit)",
+        ));
+    }
+    match selection {
+        Some(SelectionKey::Cell {
+            plane, layer, x, y, ..
+        }) if catalog.tile_in_active_view(plane, *layer, *x, *y) => Ok([*x, *y]),
+        _ => Err(ToolError("Select a tile of the view first")),
     }
 }
 

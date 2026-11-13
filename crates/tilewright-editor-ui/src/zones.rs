@@ -327,9 +327,13 @@ pub struct ZoneUse<'w> {
     pub layers: usize,
     /// Chunks whose zone palette lists the zone although no tile of theirs
     /// holds it. Only a hand edit leaves such an entry; a zone stroke that
-    /// empties the last tile holding a zone drops its entry, so painting one
-    /// tile with the zone and then back removes it.
+    /// empties or repaints the last tile holding a zone drops its entry, so
+    /// painting one tile with the zone and then back removes it.
     pub listed: usize,
+    /// The first [`MAXIMUM_NAMED_CHUNKS`] of those chunks, as `(layer, chunk
+    /// x, chunk y)` in layer and chunk order, so a refusal says where they
+    /// are.
+    pub listed_chunks: Vec<(i32, i64, i64)>,
     /// Zones whose parent is this zone, sorted by id.
     pub children: Vec<&'w str>,
     /// Whether it is the plane's `default_zone`.
@@ -338,6 +342,8 @@ pub struct ZoneUse<'w> {
 
 /// Most child zones named in a refusal; the rest are counted.
 const MAXIMUM_NAMED_CHILDREN: usize = 3;
+/// Most palette-only chunks named in a refusal; the rest are counted.
+pub const MAXIMUM_NAMED_CHUNKS: usize = 3;
 
 fn plural(count: usize, one: &str, many: &str) -> String {
     if count == 1 {
@@ -368,9 +374,19 @@ impl ZoneUse<'_> {
             ));
         }
         if self.listed > 0 {
+            let mut named: Vec<String> = self
+                .listed_chunks
+                .iter()
+                .map(|(layer, x, y)| format!("layer {layer} chunk {x}_{y}"))
+                .collect();
+            let more = self.listed.saturating_sub(named.len());
+            if more > 0 {
+                named.push(format!("{more} more"));
+            }
             reasons.push(format!(
-                "the zone palette of {} still {} it with no tile (to drop the entry, paint one of its tiles with the zone, then back)",
+                "the zone palette of {} ({}) still {} it with no tile (to drop the entry, paint one of its tiles with the zone, then back)",
                 plural(self.listed, "chunk", "chunks"),
+                named.join(", "),
                 if self.listed == 1 { "lists" } else { "list" }
             ));
         }
@@ -436,7 +452,7 @@ pub fn zone_use<'w>(plane: &'w Plane, id: &str) -> ZoneUse<'w> {
         ..ZoneUse::default()
     };
     let mut layers = BTreeSet::new();
-    for (&(layer, _, _), chunk) in &plane.chunks {
+    for (&(layer, cx, cy), chunk) in &plane.chunks {
         let Some(index) = chunk.zones.palette.iter().position(|zone| zone == id) else {
             continue;
         };
@@ -448,6 +464,9 @@ pub fn zone_use<'w>(plane: &'w Plane, id: &str) -> ZoneUse<'w> {
             .count();
         if tiles == 0 {
             usage.listed += 1;
+            if usage.listed_chunks.len() < MAXIMUM_NAMED_CHUNKS {
+                usage.listed_chunks.push((layer, cx, cy));
+            }
         } else {
             usage.tiles += tiles;
             usage.chunks += 1;

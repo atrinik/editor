@@ -235,6 +235,16 @@
       "license": "MIT",
       "author": "Seraphina Studios",
       "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
+    },
+    {
+      "id": "gate",
+      "path": "preview-assets/gate.atx1",
+      "sha256": "b9b564a84475f870cb1660e60b65ec7610894d151c7cd7e6c1099cd6b66fa004",
+      "width": 16,
+      "height": 32,
+      "license": "MIT",
+      "author": "Seraphina Studios",
+      "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
     }
   ],
   "prototypes": [
@@ -347,6 +357,11 @@
       "proto": "grass_edge_15",
       "resource": "grass_edge_15",
       "anchor": "ground"
+    },
+    {
+      "proto": "gate",
+      "resource": "gate",
+      "anchor": "standing"
     }
   ],
   "editing": {
@@ -415,6 +430,9 @@
     "zones": {
       "paint": true,
       "manage": true
+    },
+    "anchors": {
+      "edit": true
     }
   }
 }

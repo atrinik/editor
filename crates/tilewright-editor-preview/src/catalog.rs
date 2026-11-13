@@ -20,6 +20,19 @@ pub struct EditingCapabilities {
     pub objects: BTreeMap<String, ObjectGrant>,
     /// Optional `editing.zones`. Absent, nothing about zones is granted.
     pub zones: ZoneGrant,
+    /// Optional `editing.anchors`. Absent, nothing about anchors is granted.
+    pub anchors: AnchorGrant,
+}
+
+/// `editing.anchors`: a capability flag, never a list of anchor ids, so the
+/// catalog keeps loading when anchors are added, moved or deleted.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AnchorGrant {
+    /// Edit the anchors of the active view's plane: create one on a tile of
+    /// the active view, move one that is on a tile of the view to another,
+    /// and delete any one of the plane that no portal names, wherever it
+    /// is. Anchor ids are fixed once created.
+    pub edit: bool,
 }
 
 /// `editing.zones`: capability flags, never a list of zone ids, so the
@@ -457,7 +470,7 @@ fn editing_specs(
     closed_optional(
         e,
         &["movable_uids", "terrain", "fields"],
-        &["objects", "zones"],
+        &["objects", "zones", "anchors"],
     )?;
     let mut editing = EditingCapabilities::default();
     for uid in array(member(e, "movable_uids")?)? {
@@ -511,6 +524,14 @@ fn editing_specs(
         editing.zones = ZoneGrant {
             paint: flag("paint")?,
             manage: flag("manage")?,
+        };
+    }
+    if let Some(anchors) = e.get("anchors") {
+        closed(anchors, &["edit"])?;
+        editing.anchors = AnchorGrant {
+            edit: member(anchors, "edit")?
+                .as_bool()
+                .ok_or_else(|| failure("anchor capability flags must be true or false"))?,
         };
     }
     Ok(editing)

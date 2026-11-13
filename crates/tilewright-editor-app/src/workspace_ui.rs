@@ -39,6 +39,17 @@ pub enum Control {
     ZoneCreate(Option<String>),
     /// Delete the chosen zone, when it is unused.
     ZoneDelete,
+    /// Anchor mode: anchor and portal badges, the anchor list and anchor
+    /// editing.
+    Anchor,
+    /// A row of the anchor list: choose this anchor.
+    AnchorChoose(String),
+    /// Type the id of a new anchor on the selected tile.
+    AnchorCreate,
+    /// Move the chosen anchor to the selected tile.
+    AnchorMove,
+    /// Delete the chosen anchor, when no portal names it.
+    AnchorDelete,
     Clear,
     Delete,
     Undo,
@@ -79,6 +90,9 @@ pub struct Widget {
     /// A solid colour square drawn where a thumbnail would be, for zone
     /// legend rows: the zone's overlay tint, opaque.
     pub swatch: Option<[f32; 4]>,
+    /// A 1 px frame of this colour around the swatch, for the badge legend
+    /// rows, whose badges carry the same outline.
+    pub swatch_outline: Option<[f32; 4]>,
 }
 
 /// Hit rectangles use physical pixels; display rectangles retain logical units
@@ -224,6 +238,7 @@ impl WorkspaceUi {
                 active,
                 thumbnail: None,
                 swatch: None,
+                swatch_outline: None,
             });
         }
     }

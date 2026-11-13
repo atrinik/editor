@@ -282,8 +282,10 @@ together, so both are dropped together and the status line says "Too many
 cells to preview."
 
 The overlay is always on in Zone mode. In the other modes it is off by
-default and O (or the sidebar's "Show zones  O" row) toggles it; the choice is
-kept across modes. The World pixels of the existing demonstration captures of
+default and O (or the sidebar's "Show zones and badges  O" row; "Show
+zones  O" in Anchor mode) toggles it; the choice is kept across modes. The
+anchor and portal badges (see Anchors) show wherever the zone overlay shows,
+and always in Anchor mode. The World pixels of the existing demonstration captures of
 other modes are therefore unchanged; their interface did change: the toolbar
 buttons are narrower to make room for Zone, the sidebar has the toggle row,
 and the inspector of a selected tile has zone lines.
@@ -291,7 +293,8 @@ and the inspector of a selected tile has zone lines.
 In Zone mode the sidebar lists every zone of the plane, sorted by id, with its
 tint as a swatch, its display name and how many tiles of the view it holds,
 or "not in view". A last row stands for the plane's default zone. Only the
-first 256 zones are listed; there is no filter yet. Zone ids come first in
+first 256 zones are listed, and then the header still counts every zone and
+a row says "First 256 zones shown"; there is no filter yet. Zone ids come first in
 these rows; when a row is too narrow the display name and count are dropped
 first, and then the id is elided in its middle, keeping its head and its
 tail, because hierarchical ids share their beginnings. The inspector shows a
@@ -341,8 +344,8 @@ says so), and the sidebar shows it below the list: its id, marked as fixed;
 its display name, or "none" and the name it inherits; its parent; how many
 tiles of the view show it, and how many of those only as the plane default
 (an empty cell shows the default zone without holding it); how many tiles
-hold it explicitly in the whole plane, every chunk of every layer, not only
-the view; chunks whose zone palette lists it with no tile; its child zones;
+hold it explicitly in the whole plane ("Held by 3 tiles in the plane"), every
+chunk of every layer, not only the view; chunks whose zone palette lists it with no tile; its child zones;
 whether it is the plane's default zone; and its `properties`, read-only, as
 compact JSON. A zone draft and the parent list belong to the zone they were
 opened for: choosing another zone, leaving Zone mode, or the zone ceasing to
@@ -386,9 +389,11 @@ one recovery record when accepted and byte-exact Undo and Redo:
   ("zone is in use and cannot be deleted: 6 tiles hold it, in 3 chunks on 2
   layers; 1 child zone (meadow.pond); it is the plane's default zone"). A
   chunk palette that lists the zone with no tile (only a hand edit leaves
-  one) is its own reason; to drop the entry, paint one tile of that chunk
-  with the zone and then back: a stroke drops a zone's entry when its last
-  tile in the chunk is emptied, while strokes of other zones keep it. Deleting writes one `remove` of the entry,
+  one) is its own reason, naming the first three such chunks by layer and
+  chunk ("layer 0 chunk 0_0", the chunk file `layers/0/0_0.jsonc`); to drop
+  the entry, paint one tile of that chunk with the zone and then back: a
+  stroke drops a zone's entry when its last tile in the chunk is emptied or
+  repainted, while strokes of other zones keep it. Deleting writes one `remove` of the entry,
   expecting its exact canonical JSON. Deleting the last zone leaves an empty
   `zones` array; the document stays.
 
@@ -403,6 +408,87 @@ under Y, named 'N'." and "Deletes unused zone X.". Editing `properties` or
 are not offered; a profile whose `zone_properties` schema requires a
 property makes World refuse a new zone, and the refusal is shown with
 nothing pending.
+
+### Anchors
+
+An anchor is a named tile, `{id, layer, at}` in the plane's
+`planes/<p>/anchors.jsonc`; a portal on an object can lead to one. Anchor
+mode (the toolbar's Anchor, or K) shows them:
+
+- **Badges.** Every tile of the view that holds an anchor gets a small light
+  badge in its first corner (top left in the top-down sample), and every tile
+  that holds an object with a portal, its own or one carried in its
+  inventory, a small dark badge in its last corner (top right). Each badge has
+  a 1 px outline of the other tone, so the light one reads on light ground and
+  the dark one on dark ground. A badge is the tile's own exact cell shape
+  scaled down toward that corner. Badges are markers, not tints: they are
+  drawn over objects, above all World content (after the last World quad,
+  below the interface), so an object on the tile, even one that covers the
+  whole tile such as a door, never hides one. They are unpickable: they never
+  reach the semantic, depth or coverage planes, and
+  a click on a badged tile still picks that tile. The badges show always in
+  Anchor mode and, in the other modes, whenever the zone overlay shows (Zone
+  mode, or after O). In Anchor mode O adds the zone tints. Anchors on other
+  layers or outside the view are listed, not drawn. Badges need none of the
+  World draw-order slots the zone tints use, so they still show when the zone
+  overlay cannot be drawn.
+- **List.** The sidebar names what the badges mean (each legend row carries
+  its badge's colour) and lists every anchor of the plane, sorted by id: its
+  layer and position, "in view" or "not in view", and how many portals in the
+  whole world name it. Only the first 256 are listed, with the real total in
+  the header. Ids come first and are elided in the middle when a row is too
+  narrow, as zone ids are. A row chooses the anchor; the chosen one shows its
+  fixed id, its place and the objects whose portals name it (the first three:
+  uid or "(no uid)", plane, layer and tile, "carried" for an inventory entry).
+- **Inspector.** A click in Anchor mode selects the tile under the pointer
+  through the exact cell mask, objects standing on it included. In every mode
+  a selected tile lists its anchors and how many portals name each, and a
+  selected object with a portal shows its target, read-only: a plane, layer
+  and tile, or an anchor id and where that anchor is. A portal without a
+  `plane` member targets its own object's plane.
+
+Editing needs the catalog's optional `editing.anchors` member, `{"edit":
+true}`: a capability flag, never a list of anchor ids, so the catalog keeps
+loading when anchors change. Without it the editing rows are absent and the
+status line says anchor editing is not granted. Every edit is limited to the
+active view's plane (create and move to tiles of the view; delete works on any
+anchor of the plane, in view or not, as zone deletion does), needs no pending change, and is one World transaction on
+`anchors.jsonc` with one recovery record when accepted and byte-exact Undo
+and Redo; the Session checks the grant, the plane, the view and the revision
+again whatever the window offered, and World's validation stands behind it.
+
+- **New anchor.** Select a tile of the view, press "New anchor at (x, y)",
+  type the id and press Enter. The id must be a World identifier the plane does
+  not use; the draft stays open until it is. The anchor is created on the
+  selected tile and the view's spatial layer: an absent `test` of
+  `["anchors", {"id": new}]` and an `insert` at the end of the `anchors`
+  array, or `document.create` of `anchors.jsonc` when the plane has none
+  (Undo deletes that document again). Two anchors may share a tile.
+- **Move.** Choose an anchor that is on a tile of the view, select its new
+  tile and press "Move here: (x, y)": one `set` of its `at`, expecting the old
+  position (its `layer` stays). Every portal that names it now leads to the
+  new tile; the review lists them.
+- **Delete.** Only an anchor no portal names can be deleted. Portals are
+  looked for everywhere: every plane, layer and chunk, placed objects and
+  inventory entries at any depth, with or without a uid. Otherwise the row
+  reads "Delete: 1 portal names it", disabled, under the list of those
+  objects, and the Session refuses with the count and the first three
+  ("anchor is named by portals and cannot be deleted: 1 portal: object
+  gate_east on main layer 0 (7, 0)"). Deleting writes one `remove` of the
+  entry, expecting its exact canonical JSON; deleting the last anchor leaves
+  an empty `anchors` array.
+- **Ids are fixed in this version.** Nothing renames an anchor. To get the
+  same effect, create a new anchor and point the portals at it, once portal
+  editing exists (the next change), then delete the old one.
+
+The review notes compare the anchors before and after, so Undo and Redo are
+described too: "Creates anchor camp on layer 0 at (2, 3).", "Moves anchor
+arrival from layer 0 (7, 3) to layer 0 (6, 2)." with "Portals naming it now
+lead to the new tile (1 portal: object gate_east on main layer 0 (7, 0))." or
+"No portal in the world names it.", and "Deletes anchor camp (layer 0, (3,
+4)); no portal in the world names it.". A move or a delete also warns,
+without blocking Accept, that scripts or saves outside the world may refer to
+the anchor id. Editing portals is not part of this version.
 
 ### Placing objects
 
@@ -521,7 +607,14 @@ tile (2,4) with it (`zone-created`), shows that it cannot be deleted while
 that tile holds it (`zone-delete-refused`: the Delete row disabled with its
 reason, as the window shows it; a press on a disabled row does nothing),
 undoes the paint and deletes it
-(`zone-delete`, pending; `zone-deleted`). It is a deterministic scripted demonstration,
+(`zone-delete`, pending; `zone-deleted`). When the catalog grants anchor
+editing it then enters Anchor mode (`anchors`: the badges and the list),
+selects the tile (2,3) and creates the anchor `camp` there (`anchor-create`,
+pending; `anchor-created`), selects (3,4) and moves `camp` there
+(`anchor-move`, pending), shows that `arrival`, which the portal of
+`gate_east` names, cannot be deleted (`anchor-delete-refused`: the Delete row
+disabled under the object that names it), and deletes `camp`
+(`anchor-delete`, pending; `anchor-deleted`). It is a deterministic scripted demonstration,
 not a claim of human input. `--reference` produces composed workspace CPU
 reference evidence and
 must be reported separately from an actual visible native window run. Native
