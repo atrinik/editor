@@ -137,13 +137,14 @@ mod tests {
 }
 
 mod session;
-pub use session::{Action, Session, SessionError, SessionPhase, SessionStatus};
+pub use session::{Action, PortalTarget, Session, SessionError, SessionPhase, SessionStatus};
 pub use tilewright_editor_preview::SelectionKey;
 
 pub mod anchors;
 pub mod brush;
 mod insertion;
 pub mod inspector;
+pub mod portals;
 mod removal;
 pub mod text_input;
 pub mod tools;

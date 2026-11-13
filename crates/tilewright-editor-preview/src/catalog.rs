@@ -57,6 +57,10 @@ pub struct ObjectGrant {
     /// names are profile object fields; World validates the values again
     /// when the placement is prepared.
     pub defaults: Vec<(String, String)>,
+    /// Optional `portal`: set, change or clear the portal of a top-level
+    /// object of this prototype in the active view. The target may be
+    /// anywhere; World checks that its plane and anchor exist.
+    pub portal: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -154,6 +158,12 @@ impl PreviewCatalog {
     /// Deletion is granted only per prototype, in the active view.
     pub fn can_delete(&self, world: &World, uid: &str) -> bool {
         self.prototype_grant(world, uid).is_some()
+    }
+    /// Portal editing is granted only per prototype (`portal: true`), in
+    /// the active view.
+    pub fn can_edit_portal(&self, world: &World, uid: &str) -> bool {
+        self.prototype_grant(world, uid)
+            .is_some_and(|grant| grant.portal)
     }
     /// Every field name granted for `uid`, per uid then per prototype,
     /// without duplicates.
@@ -537,8 +547,8 @@ fn editing_specs(
     Ok(editing)
 }
 
-/// `editing.objects`: `[{proto, layer, fields?, defaults?}]`, one entry per
-/// prototype.
+/// `editing.objects`: `[{proto, layer, fields?, defaults?, portal?}]`, one
+/// entry per prototype.
 fn object_grants(
     document: &Document,
     value: &Value,
@@ -547,7 +557,11 @@ fn object_grants(
 ) -> Result<BTreeMap<String, ObjectGrant>, PreviewError> {
     let mut grants = BTreeMap::new();
     for entry in array(value)? {
-        closed_optional(entry, &["proto", "layer"], &["fields", "defaults"])?;
+        closed_optional(
+            entry,
+            &["proto", "layer"],
+            &["fields", "defaults", "portal"],
+        )?;
         let proto = identifier(member(entry, "proto")?)?;
         if !prototypes.contains_key(&proto) {
             return Err(failure("object capability names an unmapped prototype"));
@@ -569,6 +583,12 @@ fn object_grants(
             Some(values) => object_defaults(document, values, world)?,
             None => Vec::new(),
         };
+        let portal = match entry.get("portal") {
+            Some(flag) => flag
+                .as_bool()
+                .ok_or_else(|| failure("object capability portal must be true or false"))?,
+            None => false,
+        };
         if grants
             .insert(
                 proto,
@@ -576,6 +596,7 @@ fn object_grants(
                     layer,
                     fields,
                     defaults,
+                    portal,
                 },
             )
             .is_some()

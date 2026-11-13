@@ -145,7 +145,37 @@ enum DraftKind {
         at: [i64; 2],
         expected: [u8; 32],
     },
+    /// A portal target typed as `layer x y` (the object's own plane `own`)
+    /// or `plane layer x y`, for object `uid`, reviewed as
+    /// [`Action::SetPortal`].
+    PortalLocation {
+        uid: String,
+        own: String,
+        expected: [u8; 32],
+    },
 }
+
+/// Which portal step is open for the selected object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PortalStep {
+    /// The list of anchors the portal may target.
+    Anchors,
+    /// The next click on a tile of the view becomes the target.
+    PickTile,
+}
+
+/// An open portal step: for which object and source revision.
+#[derive(Clone, Debug)]
+struct OpenPortalStep {
+    uid: String,
+    expected: [u8; 32],
+    step: PortalStep,
+}
+
+/// Most bytes a typed portal location holds: a plane id and three numbers.
+const MAX_PORTAL_LOCATION_BYTES: usize = 128 + 3 * 21;
+/// The largest plane coordinate World accepts: 2^53 - 1.
+const MAX_SAFE_COORDINATE: i64 = (1 << 53) - 1;
 
 /// Most bytes a zone name draft holds: 256 characters of up to four bytes.
 const MAX_ZONE_NAME_BYTES: usize = 4 * MAX_ZONE_NAME_CHARACTERS;
@@ -191,6 +221,8 @@ pub struct ToolState {
     parent_choices: Option<ParentChoices>,
     /// The anchor chosen in Anchor mode's list.
     anchor: Option<String>,
+    /// The open portal step of the selected object, if any.
+    portal: Option<OpenPortalStep>,
 }
 
 /// The zones that may become the chosen zone's parent: the first
@@ -700,6 +732,250 @@ impl ToolState {
             .ok_or(ToolError("The chosen anchor is no longer defined"))?;
         Ok((anchor.clone(), *current))
     }
+    /// The open portal step and the object it is for.
+    pub fn portal_step(&self) -> Option<(&str, PortalStep)> {
+        self.portal
+            .as_ref()
+            .map(|open| (open.uid.as_str(), open.step))
+    }
+    /// Whether the next click on the view picks a portal target.
+    pub fn portal_picking(&self) -> bool {
+        matches!(self.portal_step(), Some((_, PortalStep::PickTile)))
+    }
+    /// End an open portal step; whether one was open.
+    pub fn retire_portal(&mut self) -> bool {
+        self.portal.take().is_some()
+    }
+    /// Open `step` for the selected object, or close it when it is the one
+    /// already open. Opening ends any text draft, and a draft or another
+    /// step opened later ends this one. Needs the object's `portal` grant.
+    pub fn toggle_portal_step(
+        &mut self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        selection: Option<&SelectionKey>,
+        step: PortalStep,
+        expected: [u8; 32],
+        pending: bool,
+    ) -> Result<bool, ToolError> {
+        available(pending)?;
+        let uid = portal_object(world, catalog, selection)?;
+        if self
+            .portal
+            .as_ref()
+            .is_some_and(|open| open.uid == uid && open.step == step)
+        {
+            self.portal = None;
+            return Ok(false);
+        }
+        self.retire_draft();
+        self.portal = Some(OpenPortalStep {
+            uid: uid.to_owned(),
+            expected,
+            step,
+        });
+        Ok(true)
+    }
+    /// The open step's object, when it is still the selected object and
+    /// still granted, and the step is `step`.
+    fn open_portal(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        selection: Option<&SelectionKey>,
+        step: PortalStep,
+    ) -> Result<&OpenPortalStep, ToolError> {
+        let open = self
+            .portal
+            .as_ref()
+            .filter(|open| open.step == step)
+            .ok_or(match step {
+                PortalStep::Anchors => ToolError("Open the anchor list of the portal first"),
+                PortalStep::PickTile => ToolError("Choose Target a tile in view first"),
+            })?;
+        if portal_object(world, catalog, selection)? != open.uid {
+            return Err(ToolError(
+                "The portal step is for another object: select it again",
+            ));
+        }
+        Ok(open)
+    }
+    /// Target anchor `anchor` of plane `plane` from the open anchor list.
+    pub fn portal_anchor_action(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        selection: Option<&SelectionKey>,
+        (plane, anchor): (&str, &str),
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        let open = self.open_portal(world, catalog, selection, PortalStep::Anchors)?;
+        if !world
+            .planes()
+            .get(plane)
+            .is_some_and(|source| source.anchors.contains_key(anchor))
+        {
+            return Err(ToolError("The anchor is no longer defined"));
+        }
+        Ok(Action::SetPortal {
+            uid: open.uid.clone(),
+            target: Some(crate::PortalTarget::Anchor {
+                plane: plane.into(),
+                anchor: anchor.into(),
+            }),
+            expected: open.expected,
+        })
+    }
+    /// Target the picked tile `cell` of the view, on the view's spatial
+    /// layer, from the open pick step.
+    pub fn portal_pick_action(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        selection: Option<&SelectionKey>,
+        cell: &SelectionKey,
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        let open = self.open_portal(world, catalog, selection, PortalStep::PickTile)?;
+        let SelectionKey::Cell {
+            plane, layer, x, y, ..
+        } = cell
+        else {
+            return Err(ToolError("Click a tile of the view"));
+        };
+        if !catalog.tile_in_active_view(plane, *layer, *x, *y) {
+            return Err(ToolError("Click a tile of the view"));
+        }
+        Ok(Action::SetPortal {
+            uid: open.uid.clone(),
+            target: Some(crate::PortalTarget::Location {
+                plane: plane.clone(),
+                layer: *layer,
+                at: [*x, *y],
+            }),
+            expected: open.expected,
+        })
+    }
+    /// Clear the selected object's portal.
+    pub fn clear_portal_action(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        selection: Option<&SelectionKey>,
+        expected: [u8; 32],
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        let uid = portal_object(world, catalog, selection)?;
+        if world.object(uid).is_none_or(|object| object.portal.is_none()) {
+            return Err(ToolError("The object has no portal to clear"));
+        }
+        Ok(Action::SetPortal {
+            uid: uid.to_owned(),
+            target: None,
+            expected,
+        })
+    }
+    /// Begin typing a location target for the selected object's portal.
+    pub fn begin_portal_location(
+        &mut self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        selection: Option<&SelectionKey>,
+        expected: [u8; 32],
+        pending: bool,
+    ) -> Result<(), ToolError> {
+        available(pending)?;
+        let uid = portal_object(world, catalog, selection)?.to_owned();
+        let own = world
+            .object_location(&uid)
+            .ok_or(ToolError("The object is no longer in the world"))?
+            .plane
+            .clone();
+        let input = self.new_limited_input(String::new(), MAX_PORTAL_LOCATION_BYTES)?;
+        self.retire_draft();
+        self.portal = None;
+        self.draft = Some(Draft {
+            stamp: None,
+            kind: DraftKind::PortalLocation { uid, own, expected },
+            input,
+        });
+        Ok(())
+    }
+    /// The object an open typed-location draft is for.
+    pub fn portal_draft(&self) -> Option<&str> {
+        match self.draft.as_ref().map(|draft| &draft.kind) {
+            Some(DraftKind::PortalLocation { uid, .. }) => Some(uid),
+            _ => None,
+        }
+    }
+    /// The reviewed action of the open typed-location draft: `layer x y`
+    /// on the object's own plane, or `plane layer x y`, separated by spaces
+    /// or commas. The plane must exist, the layer must be a 32-bit integer
+    /// and the position integers World accepts; an error keeps the draft
+    /// open to fix it. The session checks the grant and the plane again.
+    pub fn portal_location_action(
+        &self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        selection: Option<&SelectionKey>,
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        let draft = self.draft.as_ref().ok_or(ToolError("No input draft"))?;
+        if draft.input.is_composing() {
+            return Err(ToolError("Finish or cancel composition before review"));
+        }
+        let DraftKind::PortalLocation { uid, own, expected } = &draft.kind else {
+            return Err(ToolError("No portal location draft is open"));
+        };
+        if portal_object(world, catalog, selection)? != uid {
+            return Err(ToolError(
+                "The draft is for another object: select it again",
+            ));
+        }
+        let words: Vec<&str> = draft
+            .input
+            .text()
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|word| !word.is_empty())
+            .collect();
+        let (plane, numbers) = match words.as_slice() {
+            [layer, x, y] => (own.as_str(), [*layer, *x, *y]),
+            [plane, layer, x, y] => (*plane, [*layer, *x, *y]),
+            [] => return Err(ToolError("Type layer x y, or plane layer x y")),
+            _ => {
+                return Err(ToolError(
+                    "Type three or four values: layer x y, or plane layer x y",
+                ));
+            }
+        };
+        if !world.planes().contains_key(plane) {
+            return Err(ToolError("The world has no plane with this id"));
+        }
+        let layer: i32 = numbers[0]
+            .parse()
+            .map_err(|_| ToolError("The layer must be a whole number (32-bit)"))?;
+        let coordinate = |text: &str| {
+            text.parse::<i64>()
+                .ok()
+                .filter(|value| value.abs() <= MAX_SAFE_COORDINATE)
+                .ok_or(ToolError(
+                    "x and y must be whole numbers within plus or minus 9007199254740991",
+                ))
+        };
+        Ok(Action::SetPortal {
+            uid: uid.clone(),
+            target: Some(crate::PortalTarget::Location {
+                plane: plane.into(),
+                layer,
+                at: [coordinate(numbers[1])?, coordinate(numbers[2])?],
+            }),
+            expected: *expected,
+        })
+    }
     pub fn terrain_choice(&self) -> Option<&TerrainChoice> {
         self.terrain.as_ref()
     }
@@ -919,14 +1195,18 @@ impl ToolState {
             let _ = draft.input.backspace();
         }
     }
-    /// Discard local input: the text draft and any running brush stroke.
-    /// The palette filter only loses focus; its committed text stays.
+    /// Discard local input: the text draft, an open portal step and any
+    /// running brush stroke. The palette filter only loses focus; its
+    /// committed text stays.
     pub fn cancel(&mut self) {
         self.retire_draft();
+        self.portal = None;
         self.stroke = None;
     }
     /// End the current draft. A focused filter keeps its committed text.
+    /// A new draft or step also ends an open portal step.
     fn retire_draft(&mut self) {
+        self.portal = None;
         if let Some(Draft {
             kind: DraftKind::Filter,
             input,
@@ -1008,6 +1288,8 @@ impl ToolState {
                 "Zone drafts are reviewed as zone actions"
             } else if self.anchor_draft().is_some() {
                 "Anchor drafts are reviewed as anchor actions"
+            } else if self.portal_draft().is_some() {
+                "Portal drafts are reviewed as portal actions"
             } else {
                 "The palette filter is never reviewed"
             }));
@@ -1044,6 +1326,9 @@ impl ToolState {
             }
             DraftKind::AnchorCreate { .. } => {
                 Err(ToolError("Anchor drafts are reviewed as anchor actions"))
+            }
+            DraftKind::PortalLocation { .. } => {
+                Err(ToolError("Portal drafts are reviewed as portal actions"))
             }
             DraftKind::Move => {
                 if !matches!(
@@ -1300,6 +1585,25 @@ impl ToolState {
     pub fn cancel_stroke(&mut self) -> bool {
         self.stroke.take().is_some()
     }
+}
+
+/// The selected object, when it is one whose portal the catalog lets the
+/// author edit: a top-level object of the active view whose prototype's
+/// grant has `portal: true`.
+fn portal_object<'s>(
+    world: &World,
+    catalog: &PreviewCatalog,
+    selection: Option<&'s SelectionKey>,
+) -> Result<&'s str, ToolError> {
+    let Some(SelectionKey::Object { uid }) = selection else {
+        return Err(ToolError("Select an object first"));
+    };
+    if !catalog.can_edit_portal(world, uid) {
+        return Err(ToolError(
+            "The catalog does not allow editing this object's portal (editing.objects portal)",
+        ));
+    }
+    Ok(uid)
 }
 
 /// Whether the active view's plane defines anchor `anchor`.
