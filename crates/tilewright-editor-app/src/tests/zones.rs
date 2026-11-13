@@ -148,26 +148,27 @@ fn the_overlay_shows_in_zone_mode_and_after_o_and_never_otherwise() {
     assert!(overlay_quads(&mut app).is_empty());
     app.control(Control::Select).unwrap();
     // O shows it outside Zone mode, with the sample's three badges (one
-    // anchor, two portal gates), and the sidebar row says so.
+    // anchor, two portal gates, each an outline and a badge), and the
+    // sidebar row says so.
     route(&mut app, &key(Keycode::O)).unwrap();
     assert_eq!(
         crate::prototype::zone_overlay(&app).len(),
         48,
         "every tile of 8 x 6"
     );
-    assert_eq!(overlay_quads(&mut app).len(), 48 + 3);
+    assert_eq!(overlay_quads(&mut app).len(), 48 + 2 * 3);
     assert!(sidebar_texts(&mut app).contains(&"Hide zones and badges  O".to_owned()));
     // N enters Zone mode: shown whatever the toggle says, and O there only
     // explains itself.
     route(&mut app, &key(Keycode::N)).unwrap();
     assert_eq!(app.tools.mode(), ToolMode::Zone);
-    assert_eq!(overlay_quads(&mut app).len(), 48 + 3);
+    assert_eq!(overlay_quads(&mut app).len(), 48 + 2 * 3);
     let error = route(&mut app, &key(Keycode::O)).unwrap_err();
     assert!(error.contains("always"), "{error}");
-    assert_eq!(overlay_quads(&mut app).len(), 48 + 3);
+    assert_eq!(overlay_quads(&mut app).len(), 48 + 2 * 3);
     // The toggle is kept across modes; O again hides it.
     route(&mut app, &key(Keycode::T)).unwrap();
-    assert_eq!(overlay_quads(&mut app).len(), 48 + 3);
+    assert_eq!(overlay_quads(&mut app).len(), 48 + 2 * 3);
     route(&mut app, &key(Keycode::O)).unwrap();
     assert!(overlay_quads(&mut app).is_empty());
     assert!(sidebar_texts(&mut app).contains(&"Show zones and badges  O".to_owned()));
@@ -179,6 +180,7 @@ fn the_overlay_shows_in_zone_mode_and_after_o_and_never_otherwise() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn zone_tints_sit_under_objects_and_never_reach_the_semantic_plane() {
     let (_temporary, mut app) = zone_application(|_| {});
     app.control(Control::Zone).unwrap();
@@ -235,9 +237,36 @@ fn zone_tints_sit_under_objects_and_never_reach_the_semantic_plane() {
         .filter(|(_, key)| matches!(key, SelectionKey::Object { .. }))
         .map(|(id, _)| id.0)
         .collect();
+    // The anchor and portal badges are markers drawn over objects; leave
+    // their pixels out.
+    let markers: Vec<[[f32; 2]; 2]> = crate::prototype::badge_overlay(&app)
+        .iter()
+        .map(|quad| {
+            let xs = quad.positions.map(|p| p[0]);
+            let ys = quad.positions.map(|p| p[1]);
+            [
+                [
+                    xs.into_iter().fold(f32::MAX, f32::min),
+                    ys.into_iter().fold(f32::MAX, f32::min),
+                ],
+                [
+                    xs.into_iter().fold(f32::MIN, f32::max),
+                    ys.into_iter().fold(f32::MIN, f32::max),
+                ],
+            ]
+        })
+        .collect();
+    let stride = usize::try_from(plain.width).unwrap();
+    #[allow(clippy::cast_precision_loss)]
+    let under_marker = |index: usize| {
+        let (x, y) = ((index % stride) as f32 + 0.5, (index / stride) as f32 + 0.5);
+        markers
+            .iter()
+            .any(|[min, max]| x >= min[0] && x <= max[0] && y >= min[1] && y <= max[1])
+    };
     let mut covered = 0;
     for (index, id) in plain.semantic_ids.iter().enumerate() {
-        if objects.contains(id) && plain.rgba8[index * 4 + 3] == 255 {
+        if objects.contains(id) && plain.rgba8[index * 4 + 3] == 255 && !under_marker(index) {
             assert_eq!(
                 shown.rgba8[index * 4..index * 4 + 4],
                 plain.rgba8[index * 4..index * 4 + 4]
@@ -1078,7 +1107,11 @@ fn unavailable_cell_slots_draw_no_overlay_and_say_so() {
     );
     route(&mut app, &key(Keycode::N)).unwrap();
     assert!(crate::prototype::zone_overlay(&app).is_empty());
-    assert!(overlay_quads(&mut app).is_empty());
+    // The badges need no slots: only they are drawn.
+    assert_eq!(
+        overlay_quads(&mut app).len(),
+        crate::prototype::badge_overlay(&app).len()
+    );
     assert_eq!(
         app.status_label(),
         "Zone overlay and stroke preview unavailable for this view."

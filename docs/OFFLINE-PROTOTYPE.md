@@ -418,15 +418,20 @@ mode (the toolbar's Anchor, or K) shows them:
 - **Badges.** Every tile of the view that holds an anchor gets a small light
   badge in its first corner (top left in the top-down sample), and every tile
   that holds an object with a portal, its own or one carried in its
-  inventory, a small dark badge in its last corner (top right). A badge is the
-  tile's own exact cell shape scaled down toward that corner, placed in the
-  World's draw order exactly like the zone tints: after the tile's terrain and
-  before anything drawn later, so a badge never covers an object on its tile
-  or a nearer tile, never reaches the semantic, depth or coverage planes, and
+  inventory, a small dark badge in its last corner (top right). Each badge has
+  a 1 px outline of the other tone, so the light one reads on light ground and
+  the dark one on dark ground. A badge is the tile's own exact cell shape
+  scaled down toward that corner. Badges are markers, not tints: they are
+  drawn over objects, above all World content (after the last World quad,
+  below the interface), so an object on the tile, even one that covers the
+  whole tile such as a door, never hides one. They are unpickable: they never
+  reach the semantic, depth or coverage planes, and
   a click on a badged tile still picks that tile. The badges show always in
   Anchor mode and, in the other modes, whenever the zone overlay shows (Zone
   mode, or after O). In Anchor mode O adds the zone tints. Anchors on other
-  layers or outside the view are listed, not drawn.
+  layers or outside the view are listed, not drawn. Badges need none of the
+  World draw-order slots the zone tints use, so they still show when the zone
+  overlay cannot be drawn.
 - **List.** The sidebar names what the badges mean (each legend row carries
   its badge's colour) and lists every anchor of the plane, sorted by id: its
   layer and position, "in view" or "not in view", and how many portals in the
@@ -446,7 +451,8 @@ Editing needs the catalog's optional `editing.anchors` member, `{"edit":
 true}`: a capability flag, never a list of anchor ids, so the catalog keeps
 loading when anchors change. Without it the editing rows are absent and the
 status line says anchor editing is not granted. Every edit is limited to the
-active view's plane, needs no pending change, and is one World transaction on
+active view's plane (create and move to tiles of the view; delete works on any
+anchor of the plane, in view or not, as zone deletion does), needs no pending change, and is one World transaction on
 `anchors.jsonc` with one recovery record when accepted and byte-exact Undo
 and Redo; the Session checks the grant, the plane, the view and the revision
 again whatever the window offered, and World's validation stands behind it.

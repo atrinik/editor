@@ -28,8 +28,10 @@ pub struct EditingCapabilities {
 /// catalog keeps loading when anchors are added, moved or deleted.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AnchorGrant {
-    /// Create, move and delete the anchors of the active view's plane, on
-    /// tiles of the active view. Anchor ids are fixed once created.
+    /// Edit the anchors of the active view's plane: create one on a tile of
+    /// the active view, move one that is on a tile of the view to another,
+    /// and delete any one of the plane that no portal names, wherever it
+    /// is. Anchor ids are fixed once created.
     pub edit: bool,
 }
 

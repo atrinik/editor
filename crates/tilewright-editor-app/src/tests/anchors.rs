@@ -5,6 +5,8 @@
 //! scene path the scripted demonstration captures: the badges, the anchor
 //! list and inspector lines, and create, move and delete, each reviewed and
 //! accepted as one World change.
+// Colours are copied, never computed, so they compare exactly.
+#![allow(clippy::float_cmp)]
 use super::acknowledge_ui;
 use super::zone_manage::{all_texts, enter, press, review_has, row_enabled, type_text};
 use super::zones::{button, key, route, sidebar_texts, zone_application};
@@ -61,7 +63,8 @@ fn click_object(app: &mut Application, uid: &str) {
 }
 
 #[test]
-fn badges_show_in_anchor_mode_under_objects_and_never_reach_the_semantic_plane() {
+fn badges_show_in_anchor_mode_over_the_world_and_never_reach_the_semantic_plane() {
+    use crate::workspace_render::{ANCHOR_BADGE, BADGE_OUTLINE, PORTAL_BADGE};
     let (_temporary, mut app) = zone_application(|_| {});
     // Other modes draw no badge until O shows the overlay.
     assert!(crate::prototype::badge_overlay(&app).is_empty());
@@ -69,18 +72,44 @@ fn badges_show_in_anchor_mode_under_objects_and_never_reach_the_semantic_plane()
     assert_eq!(app.tools.mode(), ToolMode::Anchor);
     let badges = crate::prototype::badge_overlay(&app);
     // One anchor in view, (7, 3); two gates with portals, (7, 0) and
-    // (0, 3). The out-of-view anchor gets none. Each tile is one cell quad.
-    assert_eq!(badges.len(), 3);
+    // (0, 3). The out-of-view anchor gets none. Each tile is one cell quad,
+    // drawn as an outline and then the badge.
+    assert_eq!(badges.len(), 2 * 3);
     assert!(crate::prototype::zone_overlay(&app).is_empty(), "no tints");
-    let anchor_badges = badges
+    // Above every World quad: markers, not tints.
+    let top = app
+        .prepared
+        .scene
+        .quads()
         .iter()
-        .filter(|badge| badge.color == crate::workspace_render::ANCHOR_BADGE)
-        .count();
-    assert_eq!(anchor_badges, 1);
-    for badge in &badges {
-        assert!(!badge.pickable && badge.layer == Layer::World && badge.glow.is_none());
-        // Smaller than its tile and inside it, in the World slot the zone
-        // tint of that tile takes.
+        .map(|quad| (quad.depth, quad.painter_order))
+        .max()
+        .unwrap();
+    let mut anchors = 0;
+    for pair in badges.chunks(2) {
+        let [outline, badge] = pair else {
+            panic!("an outline and a badge");
+        };
+        for quad in pair {
+            assert!(!quad.pickable && quad.layer == Layer::World && quad.glow.is_none());
+            assert!((quad.depth, quad.painter_order) > top);
+        }
+        // The outline is the other tone, one pixel wider on every side.
+        assert_eq!(
+            outline.color,
+            if badge.color == ANCHOR_BADGE {
+                PORTAL_BADGE
+            } else {
+                ANCHOR_BADGE
+            }
+        );
+        let [inner_min, inner_max] = bounds(badge.positions);
+        let [outer_min, outer_max] = bounds(outline.positions);
+        for axis in 0..2 {
+            assert!((inner_min[axis] - outer_min[axis] - BADGE_OUTLINE).abs() < 0.01);
+            assert!((outer_max[axis] - inner_max[axis] - BADGE_OUTLINE).abs() < 0.01);
+        }
+        // Smaller than its tile and inside it.
         let source = app
             .prepared
             .cell_scene
@@ -88,7 +117,6 @@ fn badges_show_in_anchor_mode_under_objects_and_never_reach_the_semantic_plane()
             .iter()
             .find(|quad| {
                 let [min, max] = bounds(quad.positions);
-                let [inner_min, inner_max] = bounds(badge.positions);
                 inner_min[0] >= min[0]
                     && inner_min[1] >= min[1]
                     && inner_max[0] <= max[0]
@@ -97,24 +125,20 @@ fn badges_show_in_anchor_mode_under_objects_and_never_reach_the_semantic_plane()
             })
             .unwrap();
         let [min, max] = bounds(source.positions);
-        let [inner_min, inner_max] = bounds(badge.positions);
         let size = max[0] - min[0];
         assert!((inner_max[0] - inner_min[0]) * 3.0 < size);
         // An anchor badge sits in its tile's top-left corner, a portal
         // badge in the top-right one.
         assert!(inner_min[1] - min[1] < size / 4.0);
-        if badge.color == crate::workspace_render::ANCHOR_BADGE {
+        if badge.color == ANCHOR_BADGE {
+            anchors += 1;
             assert!(inner_min[0] - min[0] < size / 4.0);
         } else {
+            assert_eq!(badge.color, PORTAL_BADGE);
             assert!(max[0] - inner_max[0] < size / 4.0);
         }
-        let key = app.prepared.cell_picks[&source.semantic_id].clone();
-        let mark = crate::workspace_render::stroke_overlay(&app.prepared, &BTreeSet::from([key]));
-        assert!(
-            mark.iter()
-                .any(|m| (m.depth, m.painter_order) == (badge.depth, badge.painter_order))
-        );
     }
+    assert_eq!(anchors, 1);
 
     app.refresh_ui();
     let with = crate::prototype::workspace_presentation(&mut app).unwrap();
@@ -131,26 +155,6 @@ fn badges_show_in_anchor_mode_under_objects_and_never_reach_the_semantic_plane()
     assert_eq!(shown.semantic_ids, plain.semantic_ids);
     assert_eq!(shown.depth, plain.depth);
     assert_eq!(shown.coverage, plain.coverage);
-    // Pixels a gate covers keep the gate's colour: a badge is drawn after
-    // its tile's terrain and before the object on it.
-    let gates: BTreeSet<u32> = app
-        .prepared
-        .picks
-        .iter()
-        .filter(|(_, key)| matches!(key, SelectionKey::Object { uid } if uid.starts_with("gate_")))
-        .map(|(id, _)| id.0)
-        .collect();
-    let mut covered = 0;
-    for (index, id) in plain.semantic_ids.iter().enumerate() {
-        if gates.contains(id) && plain.rgba8[index * 4 + 3] == 255 {
-            assert_eq!(
-                shown.rgba8[index * 4..index * 4 + 4],
-                plain.rgba8[index * 4..index * 4 + 4]
-            );
-            covered += 1;
-        }
-    }
-    assert!(covered > 0, "the sample's gates stand in the view");
     // A click on a badged tile still picks that tile.
     let mask = app.prepared.mask(app.view.frame_revision, true).unwrap();
     let at = super::cell_pixel(&mut app, 7, 3);
@@ -163,7 +167,7 @@ fn badges_show_in_anchor_mode_under_objects_and_never_reach_the_semantic_plane()
     // O adds the zone tints in Anchor mode; the badges stay.
     route(&mut app, &key(Keycode::O)).unwrap();
     assert_eq!(crate::prototype::zone_overlay(&app).len(), 48);
-    assert_eq!(crate::prototype::badge_overlay(&app).len(), 3);
+    assert_eq!(crate::prototype::badge_overlay(&app).len(), 2 * 3);
     assert!(sidebar_texts(&mut app).contains(&"Hide zones  O".to_owned()));
 }
 
@@ -346,7 +350,7 @@ fn create_move_and_delete_through_sdl_events_are_each_one_reviewed_change() {
     );
     // The badge follows it.
     let badges = crate::prototype::badge_overlay(&app);
-    assert_eq!(badges.len(), 4);
+    assert_eq!(badges.len(), 2 * 4);
     // Moving `arrival` lists the gate whose portal now leads elsewhere.
     press(&mut app, &Control::AnchorChoose("arrival".into()));
     press(&mut app, &Control::AnchorMove);
@@ -395,7 +399,7 @@ fn without_the_grant_anchor_mode_shows_and_lists_but_edits_nothing() {
         fs::write(path, serde_json::to_vec_pretty(&catalog).unwrap()).unwrap();
     });
     route(&mut app, &key(Keycode::K)).unwrap();
-    assert_eq!(crate::prototype::badge_overlay(&app).len(), 3);
+    assert_eq!(crate::prototype::badge_overlay(&app).len(), 2 * 3);
     let texts = all_texts(&mut app);
     assert!(has(&texts, "Anchor editing not granted"));
     assert!(texts.iter().any(|text| text.starts_with("arrival")
@@ -418,4 +422,189 @@ fn without_the_grant_anchor_mode_shows_and_lists_but_edits_nothing() {
     assert!(error.contains("editing.anchors.edit"), "{error}");
     assert!(app.session.history().pending().is_none());
     assert!(app.status_label().contains("does not grant anchor editing"));
+}
+
+#[test]
+fn a_badge_shows_over_a_tile_wide_object_that_carries_the_portal() {
+    let (_temporary, mut app) = zone_application(|world| {
+        let path = world.join("planes/main/layers/0/0_0.jsonc");
+        let mut chunk: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // A whole-tile object, like a door or stairs, with a portal.
+        chunk["objects"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+            "uid": "door_1", "at": [2, 4], "proto": "sand", "layer": "item",
+            "portal": {"layer": 0, "at": [1, 1]}}));
+        fs::write(path, serde_json::to_vec_pretty(&chunk).unwrap()).unwrap();
+    });
+    route(&mut app, &key(Keycode::K)).unwrap();
+    app.refresh_ui();
+    let with = crate::prototype::workspace_presentation(&mut app).unwrap();
+    let without = crate::workspace_render::compose(
+        &mut app.text,
+        &app.ui,
+        &app.prepared.scene,
+        app.prepared.resources.clone(),
+    )
+    .unwrap();
+    let shown = render(&with.scene, with.resources.clone());
+    let plain = render(&without.scene, without.resources);
+    let door = app
+        .prepared
+        .picks
+        .iter()
+        .find_map(|(id, key)| {
+            matches!(key, SelectionKey::Object { uid } if uid == "door_1").then_some(id.0)
+        })
+        .unwrap();
+    // The door's portal badge: every pixel inside it is the door's in the
+    // semantic plane, and shows the badge's colour.
+    let tile = app
+        .prepared
+        .cell_scene
+        .quads()
+        .iter()
+        .find(|quad| {
+            matches!(
+                app.prepared.cell_picks.get(&quad.semantic_id),
+                Some(SelectionKey::Cell { x: 2, y: 4, .. })
+            )
+        })
+        .map(|quad| bounds(quad.positions))
+        .unwrap();
+    let badge = crate::prototype::badge_overlay(&app)
+        .into_iter()
+        .filter(|quad| quad.color == crate::workspace_render::PORTAL_BADGE)
+        .find(|quad| {
+            let [min, max] = bounds(quad.positions);
+            min[0] >= tile[0][0]
+                && max[0] <= tile[1][0]
+                && min[1] >= tile[0][1]
+                && max[1] <= tile[1][1]
+        })
+        .unwrap();
+    let [min, max] = bounds(badge.positions);
+    let stride = usize::try_from(shown.width).unwrap();
+    let mut inside = 0;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    for y in (min[1].ceil() as usize)..(max[1].floor() as usize) {
+        for x in (min[0].ceil() as usize)..(max[0].floor() as usize) {
+            let index = y * stride + x;
+            assert_eq!(plain.semantic_ids[index], door, "the door covers the tile");
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let expected =
+                crate::workspace_render::PORTAL_BADGE.map(|c| (c * 255.0).round() as i32);
+            for (found, wanted) in shown.rgba8[index * 4..index * 4 + 3].iter().zip(expected) {
+                assert!((i32::from(*found) - wanted).abs() <= 2, "{x},{y}: {found}");
+            }
+            inside += 1;
+        }
+    }
+    assert!(inside > 0);
+    assert_eq!(shown.semantic_ids, plain.semantic_ids);
+}
+
+#[test]
+fn badges_need_no_cell_slots_and_anchor_mode_reports_nothing_missing() {
+    let (_temporary, mut app) = zone_application(|_| {});
+    assert!(app.prepared.withhold_cell_slots());
+    route(&mut app, &key(Keycode::K)).unwrap();
+    assert!(app.prepared.withhold_cell_slots());
+    assert_eq!(crate::prototype::badge_overlay(&app).len(), 2 * 3);
+    assert!(
+        !app.status_label().contains("unavailable"),
+        "{}",
+        app.status_label()
+    );
+}
+
+#[test]
+fn the_anchor_list_shows_the_first_256_and_states_the_real_total() {
+    let (_temporary, mut app) = zone_application(|world| {
+        let path = world.join("planes/main/anchors.jsonc");
+        let mut anchors: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let list = anchors["anchors"].as_array_mut().unwrap();
+        for n in 0..300 {
+            list.push(serde_json::json!({"id": format!("a{n:03}"), "layer": 1, "at": [n, 0]}));
+        }
+        fs::write(path, serde_json::to_vec_pretty(&anchors).unwrap()).unwrap();
+    });
+    route(&mut app, &key(Keycode::K)).unwrap();
+    let texts = sidebar_texts(&mut app);
+    for line in ["Anchors: 302 in the plane", "First 256 anchors shown"] {
+        assert!(has(&texts, line), "{line}");
+    }
+    let (rows, _) = app.inspector_rows();
+    let listed: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| match &row.1 {
+            Some(Control::AnchorChoose(id)) => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(listed.len(), 256);
+    assert_eq!((listed[0], listed[255]), ("a000", "a255"));
+}
+
+#[test]
+fn a_tile_click_ends_an_open_id_draft() {
+    let (_temporary, mut app) = zone_application(|_| {});
+    route(&mut app, &key(Keycode::K)).unwrap();
+    click_tile(&mut app, 2, 3);
+    press(&mut app, &Control::AnchorCreate);
+    type_text(&mut app, "camp");
+    assert_eq!(app.tools.anchor_draft(), Some([2, 3]));
+    click_tile(&mut app, 4, 4);
+    assert_eq!(app.tools.anchor_draft(), None);
+    assert!(app.tools.draft_text().is_none());
+    assert!(app.session.history().pending().is_none());
+    // The next draft is for the newly selected tile.
+    press(&mut app, &Control::AnchorCreate);
+    assert_eq!(app.tools.anchor_draft(), Some([4, 4]));
+}
+
+#[test]
+fn every_toolbar_control_and_the_notice_fit_the_minimum_window_width() {
+    let (_temporary, mut app) = zone_application(|_| {});
+    app.ui = crate::workspace_ui::WorkspaceUi::new((720, 480), (720, 480));
+    app.unsupported_runs = 1;
+    app.refresh_ui();
+    for (control, label) in [
+        (Control::Select, "Select"),
+        (Control::Move, "Move"),
+        (Control::Terrain, "Terrain"),
+        (Control::Place, "Place"),
+        (Control::Zone, "Zone"),
+        (Control::Anchor, "Anchor"),
+        (Control::Clear, "Clear"),
+        (Control::Undo, "Undo"),
+        (Control::Redo, "Redo"),
+        (Control::Delete, "Delete"),
+    ] {
+        let widget = app
+            .ui
+            .widgets
+            .iter()
+            .find(|widget| widget.control.as_ref() == Some(&control) && widget.layout.y == 8)
+            .unwrap_or_else(|| panic!("{label} is missing at 720 px"));
+        assert_eq!(widget.text, label, "{label} is cut");
+    }
+    let toolbar: Vec<_> = app
+        .ui
+        .widgets
+        .iter()
+        .filter(|widget| widget.layout.y == 8)
+        .map(|widget| (widget.layout.x, widget.layout.width, widget.text.clone()))
+        .collect();
+    // The notice is laid out after the last button, at least as wide as
+    // it was before Anchor was added (30 px), and cut to fit.
+    assert!(
+        toolbar
+            .iter()
+            .any(|(_, width, text)| *width >= 30 && text.starts_with('U')),
+        "{toolbar:?}"
+    );
 }

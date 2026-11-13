@@ -257,17 +257,6 @@ fn world_ordered_copies(
     prepared: &PreparedPreview,
     tint: impl Fn(&SelectionKey) -> Option<[f32; 4]>,
 ) -> Vec<Quad> {
-    world_ordered_cells(prepared, tint)
-        .into_iter()
-        .map(|(_, quad)| quad)
-        .collect()
-}
-
-/// [`world_ordered_copies`] with the cell each copy belongs to.
-fn world_ordered_cells(
-    prepared: &PreparedPreview,
-    tint: impl Fn(&SelectionKey) -> Option<[f32; 4]>,
-) -> Vec<(&SelectionKey, Quad)> {
     let Some(slots) = prepared.cell_slots() else {
         return Vec::new();
     };
@@ -276,41 +265,45 @@ fn world_ordered_cells(
         .quads()
         .iter()
         .filter_map(|quad| {
-            let key = prepared.cell_picks.get(&quad.semantic_id)?;
-            let color = tint(key)?;
+            let color = tint(prepared.cell_picks.get(&quad.semantic_id)?)?;
             let (depth, painter_order) = slots
                 .get(&quad.semantic_id)
                 .copied()
                 .flatten()
                 .unwrap_or((quad.depth.saturating_sub(1), 0));
-            Some((
-                key,
-                Quad {
-                    color,
-                    grayscale: 0.0,
-                    glow: None,
-                    pickable: false,
-                    layer: Layer::World,
-                    depth,
-                    painter_order,
-                    ..*quad
-                },
-            ))
+            Some(Quad {
+                color,
+                grayscale: 0.0,
+                glow: None,
+                pickable: false,
+                layer: Layer::World,
+                depth,
+                painter_order,
+                ..*quad
+            })
         })
         .collect()
 }
 
 /// The badge on a tile that holds an anchor: light, in the tile's first
-/// corner (the leftmost vertex, the top one of two).
-pub const ANCHOR_BADGE: [f32; 4] = [0.97, 0.97, 0.94, 0.95];
+/// corner (the leftmost vertex, the top one of two), outlined in
+/// [`BADGE_DARK`].
+pub const ANCHOR_BADGE: [f32; 4] = BADGE_LIGHT;
 /// The badge on a tile that holds an object with a portal: dark, in the
-/// tile's last corner (the rightmost vertex, the top one of two).
-pub const PORTAL_BADGE: [f32; 4] = [0.10, 0.10, 0.16, 0.92];
+/// tile's last corner (the rightmost vertex, the top one of two), outlined
+/// in [`BADGE_LIGHT`].
+pub const PORTAL_BADGE: [f32; 4] = BADGE_DARK;
+/// The two badge tones; each badge is outlined in the other one, so either
+/// reads on light and on dark ground.
+pub const BADGE_LIGHT: [f32; 4] = [0.97, 0.97, 0.94, 1.0];
+pub const BADGE_DARK: [f32; 4] = [0.10, 0.10, 0.16, 1.0];
 /// A badge is its tile's shape scaled by this much toward its corner.
 const BADGE_SCALE: f32 = 0.22;
 /// The corner a badge is scaled toward sits this far in from the tile's
 /// vertex toward the tile's centre, so the badge does not touch the edge.
 const BADGE_INSET: f32 = 0.12;
+/// Width of a badge's outline, in scene pixels.
+pub const BADGE_OUTLINE: f32 = 1.0;
 
 /// Which corner of its tile a badge takes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -319,43 +312,101 @@ enum Corner {
     Last,
 }
 
-/// The badges: on every tile of `anchors` a small light copy of the tile in
-/// its first corner, and on every tile of `portals` a small dark copy in its
-/// last corner. Each copy is the tile's own prepared cell shape, scaled
-/// toward a vertex of the tile, so it stays inside the tile in either
-/// projection, and is placed in the World scene's draw order exactly like
-/// the zone tints ([`zone_overlay`]): drawn after its tile's terrain and
-/// before anything the World draws later, so a badge never covers an object
-/// on its tile or a nearer tile. Unpickable; composed after the zone
-/// overlay, so it draws over its tile's tint. Nothing is drawn when the
-/// cell slots are unavailable.
+/// The badges: markers, not tints. On every tile of `anchors` a small light
+/// copy of the tile's exact cell shape in its first corner, and on every
+/// tile of `portals` a small dark one in its last corner, each scaled toward
+/// a vertex of the tile so it stays inside the tile in either projection,
+/// with a slightly larger copy of the other tone under it as an outline.
+/// They are drawn above all World content (after the last World quad of the
+/// prepared scene, and before effects and the interface), so an object on
+/// the tile, even one covering the whole tile, never hides one. Unpickable:
+/// the semantic, depth and coverage planes stay those of the World. They
+/// need no cell slots, so they show even when the zone overlay cannot.
 pub fn badge_overlay(
     prepared: &PreparedPreview,
     anchors: &BTreeSet<[i64; 2]>,
     portals: &BTreeSet<[i64; 2]>,
 ) -> Vec<Quad> {
+    let (depth, painter_order) = prepared
+        .scene
+        .quads()
+        .iter()
+        .filter(|quad| quad.layer == Layer::World)
+        .map(|quad| (quad.depth, quad.painter_order))
+        .max()
+        .map_or((0, 0), |(depth, order)| (depth, order.saturating_add(1)));
     let mut badges = Vec::new();
-    for (tiles, corner, color) in [
-        (anchors, Corner::First, ANCHOR_BADGE),
-        (portals, Corner::Last, PORTAL_BADGE),
+    for (tiles, corner, color, outline) in [
+        (anchors, Corner::First, BADGE_LIGHT, BADGE_DARK),
+        (portals, Corner::Last, BADGE_DARK, BADGE_LIGHT),
     ] {
         if tiles.is_empty() {
             continue;
         }
         let mut cells: BTreeMap<[i64; 2], Vec<Quad>> = BTreeMap::new();
-        for (key, quad) in world_ordered_cells(prepared, |key| match key {
-            SelectionKey::Cell { x, y, .. } if tiles.contains(&[*x, *y]) => Some(color),
-            _ => None,
-        }) {
-            if let SelectionKey::Cell { x, y, .. } = key {
-                cells.entry([*x, *y]).or_default().push(quad);
+        for quad in prepared.cell_scene.quads() {
+            if let Some(SelectionKey::Cell { x, y, .. }) =
+                prepared.cell_picks.get(&quad.semantic_id)
+                && tiles.contains(&[*x, *y])
+            {
+                cells.entry([*x, *y]).or_default().push(Quad {
+                    color,
+                    grayscale: 0.0,
+                    glow: None,
+                    pickable: false,
+                    layer: Layer::World,
+                    depth,
+                    painter_order,
+                    ..*quad
+                });
             }
         }
         for quads in cells.into_values() {
-            badges.extend(shrink(quads, corner));
+            let badge = shrink(quads, corner);
+            // The outline first: copies in one slot draw in the order passed.
+            badges.extend(grow(&badge, BADGE_OUTLINE).into_iter().map(|quad| Quad {
+                color: outline,
+                ..quad
+            }));
+            badges.extend(badge);
         }
     }
     badges
+}
+
+/// `quads` scaled about the centre of their bounds so they reach `width`
+/// further out on each side.
+fn grow(quads: &[Quad], width: f32) -> Vec<Quad> {
+    let points = || quads.iter().flat_map(|quad| quad.positions);
+    let (Some(left), Some(right), Some(top), Some(bottom)) = (
+        points().map(|p| p[0]).reduce(f32::min),
+        points().map(|p| p[0]).reduce(f32::max),
+        points().map(|p| p[1]).reduce(f32::min),
+        points().map(|p| p[1]).reduce(f32::max),
+    ) else {
+        return Vec::new();
+    };
+    let centre = [f32::midpoint(left, right), f32::midpoint(top, bottom)];
+    let factor = |extent: f32| {
+        if extent > 0.0 {
+            (extent + 2.0 * width) / extent
+        } else {
+            1.0
+        }
+    };
+    let (fx, fy) = (factor(right - left), factor(bottom - top));
+    quads
+        .iter()
+        .map(|quad| Quad {
+            positions: quad.positions.map(|p| {
+                [
+                    centre[0] + fx * (p[0] - centre[0]),
+                    centre[1] + fy * (p[1] - centre[1]),
+                ]
+            }),
+            ..*quad
+        })
+        .collect()
 }
 
 /// The quads of one tile scaled by [`BADGE_SCALE`] toward its `corner`.
@@ -692,16 +743,36 @@ fn row_background<'a>(
 }
 
 /// A legend row's colour swatch, above the row's background.
-fn swatch<'a>(widget: &Widget, identity: &mut u32, order: u32) -> Result<Option<UiPrimitive<'a>>> {
+fn swatch<'a>(widget: &Widget, identity: &mut u32, order: u32) -> Result<Vec<UiPrimitive<'a>>> {
     let (Some(color), Some(square)) = (widget.swatch, swatch_rect(widget.layout)) else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
-    Ok(Some(UiPrimitive::Solid {
-        bounds: rect(square),
+    let mut primitives = Vec::new();
+    let inner = match widget.swatch_outline {
+        // The frame first: primitives of one order draw in identity order.
+        Some(outline) if square.width > 2 && square.height > 2 => {
+            primitives.push(UiPrimitive::Solid {
+                bounds: rect(square),
+                clip: rect(widget.layout),
+                paint: paint(identity, order, outline)?,
+                pickable: false,
+            });
+            Rect {
+                x: square.x + 1,
+                y: square.y + 1,
+                width: square.width - 2,
+                height: square.height - 2,
+            }
+        }
+        _ => square,
+    };
+    primitives.push(UiPrimitive::Solid {
+        bounds: rect(inner),
         clip: rect(widget.layout),
         paint: paint(identity, order, color)?,
         pickable: false,
-    }))
+    });
+    Ok(primitives)
 }
 
 #[allow(clippy::cast_precision_loss)]

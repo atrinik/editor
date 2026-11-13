@@ -31,6 +31,11 @@ python3 tools/package-font-notice.py --root . --stage "${stage}/tilewright-edito
 python3 tools/prepare-font-pack.py stage --root . --font-pack "${font_pack}" \
   --stage "${stage}/tilewright-editor-${version}" >/dev/null
 "${stage}/tilewright-editor-${version}/bin/tilewright-editor" version >/dev/null
+# The packaged sample must open as a World with the packaged binary: a fixture
+# file left out of policy/package-assets.json would ship a sample that does not
+# load.
+"${stage}/tilewright-editor-${version}/bin/tilewright-editor" open \
+  "${stage}/tilewright-editor-${version}/samples/prototype-neutral" >/dev/null
 SYFT_CHECK_FOR_APP_UPDATE=false syft \
   "${stage}/tilewright-editor-${version}/bin/tilewright-editor" \
   --source-name tilewright-editor --source-version "${version}" \

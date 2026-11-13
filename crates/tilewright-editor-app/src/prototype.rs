@@ -68,6 +68,8 @@ const ANCHOR_RENAME_HINT: [&str; 2] =
 /// The badge legend rows of Anchor mode; each carries its badge's colour.
 const ANCHOR_LEGEND: &str = "Light badge: anchor";
 const PORTAL_LEGEND: &str = "Dark badge: portal object";
+/// The widest a toolbar button gets, whatever its label measures.
+const TOOLBAR_BUTTON_MAXIMUM: u32 = 96;
 /// Most anchors listed for one selected tile.
 const MAXIMUM_TILE_ANCHORS: usize = 8;
 /// Most anchors in Anchor mode's list, like the zone list.
@@ -109,6 +111,57 @@ const DEMO_NAMED_ANCHOR: &str = "arrival";
 struct ZoneView {
     key: ([u8; 32], u64),
     tiles: Vec<([i64; 2], String)>,
+}
+
+/// The anchor and portal facts the sidebar and the badges show, for one
+/// shown World: computed once per rebuild (the shown World changes only
+/// then) instead of scanning the World on every redraw.
+#[derive(Clone, Debug, Default)]
+struct AnchorView {
+    /// The source revision of the shown World these facts are for.
+    key: [u8; 32],
+    /// For each anchor of the view's plane that a portal names, the objects
+    /// whose portals name it, described for one sidebar row each.
+    named: std::collections::BTreeMap<String, Vec<String>>,
+    /// The view's tiles that hold an anchor, and those that hold an object
+    /// with a portal.
+    anchor_tiles: std::collections::BTreeSet<[i64; 2]>,
+    portal_tiles: std::collections::BTreeSet<[i64; 2]>,
+}
+impl AnchorView {
+    fn of(
+        world: &tilewright_source::World,
+        catalog: &tilewright_editor_preview::PreviewCatalog,
+    ) -> Self {
+        let plane = catalog.view().0;
+        let mut named = std::collections::BTreeMap::<String, Vec<String>>::new();
+        for holder in anchors::portals(world) {
+            if let anchors::Target::Anchor {
+                plane: target,
+                anchor,
+            } = holder.target
+                && target == plane
+            {
+                named
+                    .entry(anchor.to_owned())
+                    .or_default()
+                    .push(anchors::describe_holder_short(&holder));
+            }
+        }
+        Self {
+            key: world.source_digest(),
+            named,
+            anchor_tiles: anchors::view_anchors(world, catalog)
+                .into_iter()
+                .map(|(_, at)| at)
+                .collect(),
+            portal_tiles: anchors::view_portal_tiles(world, catalog),
+        }
+    }
+    /// How many portals name anchor `id` of the view's plane.
+    fn count(&self, id: &str) -> usize {
+        self.named.get(id).map_or(0, Vec::len)
+    }
 }
 
 /// A sidebar row whose text names a zone id that must stay
@@ -168,6 +221,9 @@ struct Application {
     /// legend and the overlay, keyed by the World source revision and the
     /// frame it was computed for.
     zone_view: Option<ZoneView>,
+    /// The anchor and portal facts of the shown World, computed when it is
+    /// rebuilt.
+    anchor_view: Option<AnchorView>,
     /// The scene limits every composed frame must meet: the scene library's
     /// defaults (`SceneLimits::default()`), never queried from the renderer;
     /// tests lower them.
@@ -247,6 +303,7 @@ pub fn run(arguments: &[String]) -> Result<()> {
         prepared_scenes: 1,
         preview_omitted: false,
         zone_view: None,
+        anchor_view: None,
         frame_limits: tilewright_scene::SceneLimits::default(),
     };
     println!(
@@ -314,6 +371,7 @@ impl Application {
             .revalidate_zones(self.session.world(), self.session.catalog());
         self.tools
             .revalidate_anchors(self.session.world(), self.session.catalog());
+        self.anchor_view = Some(AnchorView::of(self.session.world(), self.session.catalog()));
         self.prepare_scene()
     }
 
@@ -729,77 +787,60 @@ impl Application {
         self.ui = ui;
     }
 
-    fn toolbar(&self, ui: &mut WorkspaceUi) {
+    /// The toolbar: one button per mode and command, each as wide as its
+    /// label needs, so all of them and the notice after them fit the
+    /// 720-pixel minimum window width.
+    fn toolbar(&mut self, ui: &mut WorkspaceUi) {
         let ready = self.blocked.is_none() && self.session.can_prepare();
         let mode = self.tools.mode();
-        for (x, width, label, control, enabled, active) in [
+        let buttons = [
+            ("Select", Control::Select, true, mode == ToolMode::Select),
+            ("Move", Control::Move, true, mode == ToolMode::Move),
+            ("Terrain", Control::Terrain, true, mode == ToolMode::Terrain),
             (
-                8,
-                76,
-                "Select",
-                Control::Select,
-                true,
-                mode == ToolMode::Select,
-            ),
-            (90, 64, "Move", Control::Move, true, mode == ToolMode::Move),
-            (
-                160,
-                84,
-                "Terrain",
-                Control::Terrain,
-                true,
-                mode == ToolMode::Terrain,
-            ),
-            (
-                250,
-                64,
                 "Place",
                 Control::Place,
                 !tools::object_palette(self.session.catalog()).is_empty(),
                 mode == ToolMode::Place,
             ),
-            (320, 64, "Zone", Control::Zone, true, mode == ToolMode::Zone),
+            ("Zone", Control::Zone, true, mode == ToolMode::Zone),
+            ("Anchor", Control::Anchor, true, mode == ToolMode::Anchor),
             (
-                390,
-                76,
-                "Anchor",
-                Control::Anchor,
-                true,
-                mode == ToolMode::Anchor,
-            ),
-            (
-                472,
-                64,
                 "Clear",
                 Control::Clear,
                 self.session.selection().is_some(),
                 false,
             ),
             (
-                542,
-                64,
                 "Undo",
                 Control::Undo,
                 ready && self.session.history().depths().0 > 0,
                 false,
             ),
             (
-                612,
-                64,
                 "Redo",
                 Control::Redo,
                 ready && self.session.history().depths().1 > 0,
                 false,
             ),
             (
-                682,
-                72,
                 "Delete",
                 Control::Delete,
                 ready && self.selection_deletable(),
                 false,
             ),
-        ] {
+        ];
+        let mut x = 8;
+        for (label, control, enabled, active) in buttons {
+            // The label's shaped width, the 8 px the row text keeps free and
+            // a little air.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let width = self
+                .text
+                .layout(label, crate::workspace_render::text_size(32), None)
+                .map_or(TOOLBAR_BUTTON_MAXIMUM, |layout| {
+                    (layout.size()[0].ceil() as u32 + 12).min(TOOLBAR_BUTTON_MAXIMUM)
+                });
             ui.widget(
                 Rect {
                     x,
@@ -812,13 +853,14 @@ impl Application {
                 enabled,
                 active,
             );
+            x += width + 4;
         }
         if self.unsupported_runs > 0 {
             ui.widget(
                 Rect {
-                    x: 762,
+                    x: x + 4,
                     y: 8,
-                    width: ui.logical_size().0.saturating_sub(772),
+                    width: ui.logical_size().0.saturating_sub(x + 14),
                     height: 32,
                 },
                 format!(
@@ -1033,9 +1075,9 @@ impl Application {
             rows.push(("Anchors here: none".into(), None, true, false));
             return;
         }
-        let counts = anchors::reference_counts(world, plane);
+        let facts = self.anchor_view();
         for id in here.iter().take(MAXIMUM_TILE_ANCHORS) {
-            let named = counts.get(id).copied().unwrap_or(0);
+            let named = facts.count(id);
             let suffix = format!(", {}", anchors::portal_count(named));
             id_row(
                 rows,
@@ -1078,7 +1120,7 @@ impl Application {
         let Some(source) = world.planes().get(plane) else {
             return;
         };
-        let counts = anchors::reference_counts(world, plane);
+        let facts = self.anchor_view();
         let selected = match self.session.selection() {
             Some(SelectionKey::Cell {
                 plane: p,
@@ -1123,20 +1165,19 @@ impl Application {
             }
         }
         let total = source.anchors.len();
-        rows.push((
-            if total > MAXIMUM_LISTED_ANCHORS {
-                format!("Anchors: {total} in the plane, first {MAXIMUM_LISTED_ANCHORS} shown")
-            } else {
-                format!("Anchors: {total} in the plane")
-            },
-            None,
-            true,
-            false,
-        ));
+        rows.push((format!("Anchors: {total} in the plane"), None, true, false));
+        if total > MAXIMUM_LISTED_ANCHORS {
+            rows.push((
+                format!("First {MAXIMUM_LISTED_ANCHORS} anchors shown"),
+                None,
+                true,
+                false,
+            ));
+        }
         for (id, anchor) in source.anchors.iter().take(MAXIMUM_LISTED_ANCHORS) {
             let [x, y] = anchor.at;
             let in_view = anchor.layer == layer && catalog.tile_in_active_view(plane, layer, x, y);
-            let named = counts.get(id.as_str()).copied().unwrap_or(0);
+            let named = facts.count(id);
             let seen = if in_view { "in view" } else { "not in view" };
             let portals = anchors::portal_count(named);
             let long = format!(" = layer {} ({x}, {y}), {seen}, {portals}", anchor.layer);
@@ -1173,7 +1214,6 @@ impl Application {
         selected: Option<[i64; 2]>,
         ready: bool,
     ) {
-        let world = self.session.world();
         let catalog = self.session.catalog();
         let (plane, _, _) = catalog.view();
         let [x, y] = anchor.at;
@@ -1200,7 +1240,8 @@ impl Application {
             true,
             false,
         ));
-        let holders = anchors::references(world, plane, id);
+        let facts = self.anchor_view();
+        let holders = facts.named.get(id).map_or(&[][..], Vec::as_slice);
         if holders.is_empty() {
             rows.push(("Named by no portal".into(), None, true, false));
         } else {
@@ -1211,7 +1252,7 @@ impl Application {
                 false,
             ));
             for holder in holders.iter().take(anchors::MAXIMUM_NAMED) {
-                rows.push((anchors::describe_holder_short(holder), None, true, false));
+                rows.push((holder.clone(), None, true, false));
             }
             if holders.len() > anchors::MAXIMUM_NAMED {
                 rows.push((
@@ -1266,12 +1307,27 @@ impl Application {
         });
     }
 
-    /// Whether an overlay (zone tints, badges or a stroke preview) is
-    /// wanted now but cannot be drawn because the cell slots are
-    /// unavailable.
+    /// Whether an overlay that needs the World's draw order (zone tints or
+    /// a stroke preview) is wanted now but cannot be drawn because the cell
+    /// slots are unavailable. Badges are drawn above the World and need no
+    /// slots, so Anchor mode alone never reports this.
     fn overlay_unavailable(&self) -> bool {
-        (self.tools.zones_visible() || self.tools.badges_visible() || self.tools.stroke().is_some())
+        (self.tools.zones_visible() || self.tools.stroke().is_some())
             && self.prepared.cell_slots().is_none()
+    }
+
+    /// The anchor facts of the shown World: those computed at the last
+    /// rebuild while they are current, else computed now.
+    fn anchor_view(&self) -> std::borrow::Cow<'_, AnchorView> {
+        match &self.anchor_view {
+            Some(view) if view.key == self.session.world().source_digest() => {
+                std::borrow::Cow::Borrowed(view)
+            }
+            _ => std::borrow::Cow::Owned(AnchorView::of(
+                self.session.world(),
+                self.session.catalog(),
+            )),
+        }
     }
 
     fn zone_view_key(&self) -> ([u8; 32], u64) {
@@ -2095,9 +2151,15 @@ impl Application {
         let swatches: Vec<_> = rows
             .iter()
             .map(|row| match row.0.as_str() {
-                ANCHOR_LEGEND => Some(crate::workspace_render::ANCHOR_BADGE),
-                PORTAL_LEGEND => Some(crate::workspace_render::PORTAL_BADGE),
-                _ => swatch(&row.1),
+                ANCHOR_LEGEND => (
+                    Some(crate::workspace_render::ANCHOR_BADGE),
+                    Some(crate::workspace_render::PORTAL_BADGE),
+                ),
+                PORTAL_LEGEND => (
+                    Some(crate::workspace_render::PORTAL_BADGE),
+                    Some(crate::workspace_render::ANCHOR_BADGE),
+                ),
+                _ => (swatch(&row.1), None),
             })
             .collect();
         let rows: Vec<_> = rows
@@ -2162,7 +2224,7 @@ impl Application {
                 && let Some(widget) = ui.widgets.last_mut()
             {
                 widget.thumbnail = thumbnail;
-                widget.swatch = swatch;
+                (widget.swatch, widget.swatch_outline) = swatch;
             }
             y += row_height + ROW_GAP;
         }
@@ -4481,13 +4543,8 @@ fn badge_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
     if !app.tools.badges_visible() || app.prepared.frame_revision != app.view.frame_revision {
         return Vec::new();
     }
-    let (world, catalog) = (app.session.world(), app.session.catalog());
-    let anchored = anchors::view_anchors(world, catalog)
-        .into_iter()
-        .map(|(_, at)| at)
-        .collect();
-    let portals = anchors::view_portal_tiles(world, catalog);
-    crate::workspace_render::badge_overlay(&app.prepared, &anchored, &portals)
+    let facts = app.anchor_view();
+    crate::workspace_render::badge_overlay(&app.prepared, &facts.anchor_tiles, &facts.portal_tiles)
 }
 
 /// Compose the cached prepared World with `overlay` and the interface. If

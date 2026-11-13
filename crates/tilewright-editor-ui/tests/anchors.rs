@@ -707,3 +707,18 @@ fn crlf_comments_and_compact_spacing_survive_every_edit_byte_for_byte() {
         assert_eq!(fs::read_to_string(root.join(ANCHORS)).unwrap(), text);
     }
 }
+
+#[test]
+fn a_carried_portal_badges_its_holders_tile() {
+    let (_dir, session) = fixture_with(|root| {
+        edit_json(root, CHUNK, |chunk| {
+            // `marker_2` at (1, 4) carries an entry that carries a portal.
+            chunk["objects"][1]["inventory"] = json!([{"proto": "marker",
+                "inventory": [{"uid": "token", "proto": "marker",
+                    "portal": {"anchor": "lookout"}}]}]);
+        });
+    });
+    let tiles = anchors::view_portal_tiles(session.world(), session.catalog());
+    assert!(tiles.contains(&[1, 4]), "{tiles:?}");
+    assert_eq!(tiles.len(), 3);
+}
