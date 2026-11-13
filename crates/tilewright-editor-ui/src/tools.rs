@@ -730,9 +730,11 @@ impl ToolState {
         available(pending)?;
         let draft = self.draft.as_ref().ok_or(ToolError("No input draft"))?;
         let Some(stamp) = draft.stamp.as_ref() else {
-            return Err(ToolError(
-                "The palette filter is never reviewed, and zone drafts are reviewed as zone actions",
-            ));
+            return Err(ToolError(if self.zone_draft().is_some() {
+                "Zone drafts are reviewed as zone actions"
+            } else {
+                "The palette filter is never reviewed"
+            }));
         };
         if inspector.stamp.as_ref() != Some(stamp) {
             return Err(ToolError(
