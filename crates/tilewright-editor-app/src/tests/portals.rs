@@ -359,3 +359,23 @@ fn isometric_badge_outlines_are_a_full_pixel_wide_across_every_slanted_edge() {
         assert!(axis_only < 0.95 * w, "{axis_only}");
     }
 }
+
+#[test]
+fn a_frame_past_the_scene_limits_names_the_overlay_it_leaves_out() {
+    let (_temporary, mut app) = zone_application(|_| {});
+    route(&mut app, &key(Keycode::K)).unwrap();
+    // In Anchor mode only the badges are drawn.
+    app.preview_omitted = true;
+    assert_eq!(
+        app.status_label(),
+        "Anchor and portal badges left out: too many for one frame."
+    );
+    // With the zone overlay shown, both are.
+    app.preview_omitted = false;
+    route(&mut app, &key(Keycode::O)).unwrap();
+    app.preview_omitted = true;
+    assert_eq!(
+        app.status_label(),
+        "Zone overlay and badges left out: too many cells for one frame."
+    );
+}
