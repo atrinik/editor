@@ -1184,18 +1184,15 @@ impl Application {
     }
 
     /// The pinned, unclickable row under the filter that always names the
-    /// prototype a tile click places, with its thumbnail, and says when the
-    /// filter hides its palette row. It never scrolls. Returns the next free
+    /// prototype a tile click places, in full and with its thumbnail, even
+    /// when the filter hides its palette row. It never scrolls, and is
+    /// dimmed while a pending change blocks placing. Returns the next free
     /// row.
     fn placing_row(&self, ui: &mut WorkspaceUi, y: u32) -> u32 {
         let catalog = self.session.catalog();
         let (text, thumbnail) = match self.tools.placement_choice() {
             Some(proto) => (
-                if self.tools.filtered_palette(catalog).contains(&proto) {
-                    format!("Placing: {proto}")
-                } else {
-                    format!("Placing (hidden): {proto}")
-                },
+                format!("Placing: {proto}"),
                 self.session.resources().prototype_texture(catalog, proto),
             ),
             None => ("Placing: choose a type below".into(), None),
@@ -1215,7 +1212,7 @@ impl Application {
             },
             text,
             None,
-            true,
+            self.session.history().pending().is_none(),
             false,
         );
         if ui.widgets.len() > before

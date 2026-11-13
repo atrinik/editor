@@ -137,7 +137,7 @@ fn slash_typing_enter_and_escape_order_through_real_sdl_events() {
     );
     assert_eq!(
         row_text(&mut app, "Placing").as_deref(),
-        Some("Placing (hidden): bush")
+        Some("Placing: bush")
     );
 
     // Enter keeps the text and releases focus; it reviews nothing.
@@ -404,8 +404,12 @@ fn scrolled_rows(app: &mut Application) -> Vec<crate::workspace_ui::Widget> {
 
 #[test]
 fn a_shrinking_filter_pulls_the_scroll_back_so_rows_stay_laid_out() {
+    // One application; only the window size changes. The sidebar layout
+    // reads nothing but `ui`. The sweep of heights is what catches a lost
+    // row gap: single heights may happen to fit either way.
+    let (_temporary, mut app) = scrolling_application((320, 229), 1);
     for height in 200..=229 {
-        let (_temporary, mut app) = scrolling_application((320, height), 1);
+        app.ui = WorkspaceUi::new((320, height), (320, height));
         // Scroll to the end, then shrink the list to its header and one row.
         app.sidebar_scroll = usize::MAX;
         app.refresh_ui();
@@ -451,6 +455,7 @@ fn a_shrinking_filter_pulls_the_scroll_back_so_rows_stay_laid_out() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, clippy::float_cmp)]
 fn the_pinned_placing_row_names_a_hidden_choice_after_an_accept_and_a_notice() {
     let (temporary, mut app) = delete_application(|_| {});
     let chunk = temporary
@@ -474,14 +479,19 @@ fn the_pinned_placing_row_names_a_hidden_choice_after_an_accept_and_a_notice() {
     // A notice also takes the status line.
     app.notice = Some("Something else happened.".into());
     assert_eq!(app.status_label(), "Input not applied. Details below.");
-    // The pinned row still names the choice, and says when it is hidden.
+    // The pinned row still names the choice in full while the filter hides
+    // its palette row.
     acknowledge_ui(&mut app);
     press(&mut app, &mut input, Keycode::Slash).unwrap();
     app.notice = Some("Something else happened.".into());
     type_text(&mut app, &mut input, "st").unwrap();
     assert_eq!(
+        palette_rows(&mut app),
+        [("stone / item".to_owned(), true, false)]
+    );
+    assert_eq!(
         row_text(&mut app, "Placing").as_deref(),
-        Some("Placing (hidden): lamp")
+        Some("Placing: lamp")
     );
     let pinned = app
         .ui
@@ -491,21 +501,13 @@ fn the_pinned_placing_row_names_a_hidden_choice_after_an_accept_and_a_notice() {
         .unwrap()
         .clone();
     assert_eq!(pinned.control, None);
+    assert!(pinned.enabled);
     assert!(pinned.thumbnail.is_some());
     assert_eq!(
         app.ui.hit(pinned.bounds.x + 4, pinned.bounds.y + 4),
         crate::workspace_ui::Hit::Panel
     );
     assert_eq!(app.status_label(), "Input not applied. Details below.");
-    // A visible choice drops the suffix.
-    app.tools.select_all().unwrap();
-    type_text(&mut app, &mut input, "la").unwrap();
-    assert_eq!(
-        row_text(&mut app, "Placing").as_deref(),
-        Some("Placing: lamp")
-    );
-    app.tools.select_all().unwrap();
-    type_text(&mut app, &mut input, "st").unwrap();
     // A tile click prepares exactly the named prototype.
     acknowledge_ui(&mut app);
     let tile = cell_pixel(&mut app, 2, 1);
@@ -516,4 +518,53 @@ fn the_pinned_placing_row_names_a_hidden_choice_after_an_accept_and_a_notice() {
     assert_eq!(operation["object"]["proto"], "lamp");
     assert_eq!(operation["at"], serde_json::json!([2, 1]));
     assert_eq!(fs::read(&chunk).unwrap(), accepted);
+    // While that change is pending nothing can be placed: the pinned row
+    // and its thumbnail are dimmed like the palette rows.
+    app.refresh_ui();
+    let pinned = app
+        .ui
+        .widgets
+        .iter()
+        .find(|widget| widget.text.starts_with("Placing"))
+        .unwrap();
+    assert_eq!(pinned.text, "Placing: lamp");
+    assert!(!pinned.enabled);
+    let lamp = app
+        .session
+        .resources()
+        .prototype_texture(app.session.catalog(), "lamp")
+        .unwrap();
+    let quads = thumbnail_quads(&mut app);
+    let dimmed = quads
+        .iter()
+        .find(|quad| quad.resource_id == lamp.id)
+        .unwrap();
+    assert_eq!(dimmed.color[3], 0.5);
+    assert_eq!(dimmed.grayscale, 1.0);
+}
+
+#[test]
+fn long_ids_that_differ_at_the_end_stay_whole_in_the_pinned_row_at_minimum_width() {
+    // The native window's minimum size is 720x480; the sidebar is then at
+    // its narrowest. The pinned row's text goes through the same elision
+    // as every other row: its width less the thumbnail indent.
+    let (_temporary, mut app) = scrolling_application((720, 480), 1);
+    app.refresh_ui();
+    let pinned = app
+        .ui
+        .widgets
+        .iter()
+        .find(|widget| widget.text.starts_with("Placing"))
+        .unwrap()
+        .clone();
+    assert_eq!(pinned.layout.width, app.ui.sidebar_width());
+    let width =
+        pinned.layout.width - crate::workspace_render::thumbnail_indent(pinned.layout.height);
+    for id in ["wall_torch_lit", "wall_torch_unlit"] {
+        let text = format!("Placing: {id}");
+        assert_eq!(
+            crate::workspace_render::fit_text(&mut app.text, &text, width, pinned.layout.height),
+            text
+        );
+    }
 }
