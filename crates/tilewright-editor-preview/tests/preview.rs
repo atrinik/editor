@@ -541,6 +541,7 @@ fn optional_object_grants_parse_strictly_and_their_absence_changes_nothing() {
         ObjectGrant {
             layer: "item".into(),
             fields: ["label".to_owned()].into(),
+            defaults: Vec::new(),
         }
     );
     assert!(editing.objects["grass"].fields.is_empty());
@@ -589,4 +590,173 @@ fn optional_object_grants_parse_strictly_and_their_absence_changes_nothing() {
     c["editing"]["placement"] = json!([]);
     put(dir.path(), "preview.jsonc", &c.to_string());
     assert!(loader::load(&root, &world, limits).is_err());
+}
+
+/// Give the preview fixture's profile an object field schema: an optional
+/// short `label`, an optional `count` from 0 to 9, a required `kind` of a
+/// fixed set, and a structured `settings` object.
+fn with_object_fields(dir: &Path, required_kind: bool) -> World {
+    put(
+        dir,
+        "profile/schema/object.jsonc",
+        &json!({"format": "tilewright.schema/1", "fields": {
+            "label": {"type": "string", "max_length": 8},
+            "count": {"type": "integer", "min": 0, "max": 9},
+            "kind": {"type": "string", "values": ["plain", "fancy"], "required": required_kind},
+            "settings": {"type": "object", "fields": {"active": {"type": "boolean", "required": true}}}
+        }})
+        .to_string(),
+    );
+    let profile_path = dir.join("profile/profile.jsonc");
+    let mut profile: Value = serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
+    profile["object_fields"] = json!("schema/object.jsonc");
+    put(dir, "profile/profile.jsonc", &profile.to_string());
+    tilewright_source::load(dir).unwrap()
+}
+
+#[test]
+fn object_defaults_parse_strictly_and_their_absence_changes_nothing() {
+    let (dir, root, _, original) = fixture(false, false);
+    let world = with_object_fields(dir.path(), false);
+    let limits = PreviewLimits::default();
+    let load = |objects: Value| {
+        let mut catalog = original.clone();
+        catalog["editing"]["objects"] = objects;
+        put(dir.path(), "preview.jsonc", &catalog.to_string());
+        loader::load(&root, &world, limits)
+    };
+
+    // An entry written for deletion alone loads unchanged, with no defaults.
+    let (catalog, _) =
+        load(json!([{"proto": "marker", "layer": "item", "fields": ["label"]}])).unwrap();
+    assert!(catalog.editing().objects["marker"].defaults.is_empty());
+    let (catalog, _) = load(json!([{"proto": "marker", "layer": "item", "defaults": {}}])).unwrap();
+    assert!(catalog.editing().objects["marker"].defaults.is_empty());
+
+    // Defaults keep catalog order (written out of sorted order here) and
+    // canonical JSON; `fields` keeps its meaning as editable field names.
+    let mut text = original.clone();
+    text["editing"]["objects"] =
+        json!([{"proto": "marker", "layer": "item", "fields": ["label"], "defaults": "DEFAULTS"}]);
+    let text = text.to_string().replace(
+        r#""DEFAULTS""#,
+        r#"{"settings": {"active": true}, "label": "New", "kind": "plain", "count": 3}"#,
+    );
+    put(dir.path(), "preview.jsonc", &text);
+    let (catalog, _) = loader::load(&root, &world, limits).unwrap();
+    let grant = &catalog.editing().objects["marker"];
+    assert_eq!(grant.fields, ["label".to_owned()].into());
+    assert_eq!(
+        grant.defaults,
+        [
+            ("settings".to_owned(), r#"{"active":true}"#.to_owned()),
+            ("label".to_owned(), r#""New""#.to_owned()),
+            ("kind".to_owned(), r#""plain""#.to_owned()),
+            ("count".to_owned(), "3".to_owned()),
+        ]
+    );
+
+    for (case, defaults) in [
+        json!([]),
+        json!("label"),
+        json!({"unknown": 1}),
+        json!({"label": 1}),
+        json!({"label": "far too long"}),
+        json!({"count": 10}),
+        json!({"count": -1}),
+        json!({"count": 1.5}),
+        json!({"kind": "other"}),
+        json!({"settings": "on"}),
+        json!({"at": [0, 0]}),
+        json!({"uid": "o.fixed"}),
+        json!({"proto": "grass"}),
+        json!({"layer": "floor"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            load(json!([{"proto": "marker", "layer": "item", "defaults": defaults}])).is_err(),
+            "case {case}"
+        );
+    }
+    // A duplicate member is refused by the strict JSONC reader itself.
+    let mut text = original.clone();
+    text["editing"]["objects"] =
+        json!([{"proto": "marker", "layer": "item", "defaults": {"label": "a"}}]);
+    let text = text
+        .to_string()
+        .replace(r#"{"label":"a"}"#, r#"{"label":"a","label":"b"}"#);
+    put(dir.path(), "preview.jsonc", &text);
+    assert!(loader::load(&root, &world, limits).is_err());
+}
+
+/// The same prototype grants, one tile at a time around the view edges and
+/// in another plane at in-bounds x/y.
+#[test]
+fn prototype_grants_stop_at_the_view_plane_and_its_upper_bounds() {
+    let (dir, root, _, mut catalog) = fixture(false, false);
+    put(
+        dir.path(),
+        "world.jsonc",
+        r#"{"format":"tilewright.world/1","profile":"profile/profile.jsonc","planes":["main","other"]}"#,
+    );
+    put(
+        dir.path(),
+        "planes/other/plane.jsonc",
+        r#"{"format":"tilewright.plane/1","id":"other","kind":"shared","chunk_size":32}"#,
+    );
+    let object = |uid: &str, x: i64, y: i64| json!({"uid": uid, "at": [x, y], "proto": "marker", "layer": "item"});
+    put(
+        dir.path(),
+        "planes/other/layers/0/0_0.jsonc",
+        &json!({"format": "tilewright.chunk/1", "plane": "other", "layer": 0, "chunk": [0, 0],
+            "objects": [object("elsewhere", 1, 1)]})
+        .to_string(),
+    );
+    put(
+        dir.path(),
+        "planes/main/layers/0/0_0.jsonc",
+        &json!({"format": "tilewright.chunk/1", "plane": "main", "layer": 0, "chunk": [0, 0],
+            "objects": [object("marker_1", 0, 0), object("last_x", 2, 1), object("last_y", 1, 2),
+                object("past_x", 3, 1), object("past_y", 1, 3)]})
+        .to_string(),
+    );
+    let world = with_object_fields(dir.path(), false);
+    // View [0, 0] to [2, 2] inclusive: width and height 3.
+    catalog["view"]["bounds"] = json!([0, 0, 3, 3]);
+    catalog["editing"]["objects"] =
+        json!([{"proto": "marker", "layer": "item", "fields": ["label"]}]);
+    put(dir.path(), "preview.jsonc", &catalog.to_string());
+    let (catalog, _) = loader::load(&root, &world, PreviewLimits::default()).unwrap();
+
+    for uid in ["marker_1", "last_x", "last_y"] {
+        assert!(catalog.in_active_view(&world, uid), "{uid}");
+        assert!(catalog.can_delete(&world, uid), "{uid}");
+        assert!(catalog.can_edit_field(&world, uid, "label"), "{uid}");
+    }
+    // Another plane at in-bounds x/y, and one tile past the upper x and y
+    // bounds: no delete, no field edit, no move.
+    for uid in ["elsewhere", "past_x", "past_y"] {
+        assert!(!catalog.in_active_view(&world, uid), "{uid}");
+        assert!(!catalog.can_delete(&world, uid), "{uid}");
+        assert!(!catalog.can_edit_field(&world, uid, "label"), "{uid}");
+        assert!(!catalog.can_move(&world, uid), "{uid}");
+    }
+    // Placement targets use the same scope.
+    assert!(catalog.tile_in_active_view("main", 0, 2, 2));
+    assert!(catalog.tile_in_active_view("main", 0, 0, 0));
+    for (plane, layer, x, y) in [
+        ("other", 0, 1, 1),
+        ("main", 1, 1, 1),
+        ("main", 0, 3, 2),
+        ("main", 0, 2, 3),
+        ("main", 0, -1, 0),
+        ("main", 0, 0, -1),
+    ] {
+        assert!(
+            !catalog.tile_in_active_view(plane, layer, x, y),
+            "{plane} {layer} {x} {y}"
+        );
+    }
 }

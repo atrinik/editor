@@ -47,6 +47,16 @@
       "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
     },
     {
+      "id": "stone",
+      "path": "preview-assets/stone.atx1",
+      "sha256": "7a0b46d966738d7c2b338cf6f70167b252dc19c1bc71d60ff3e956d2d129f82c",
+      "width": 24,
+      "height": 24,
+      "license": "MIT",
+      "author": "Seraphina Studios",
+      "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
+    },
+    {
       "id": "grass_edge_1",
       "path": "preview-assets/grass_edge_1.atx1",
       "sha256": "da3b826e8e361847715a4e105ecdccfef564e716b825f107eb5bc30a59d96930",
@@ -214,6 +224,11 @@
       "anchor": "standing"
     },
     {
+      "proto": "stone",
+      "resource": "stone",
+      "anchor": "standing"
+    },
+    {
       "proto": "grass_edge_1",
       "resource": "grass_edge_1",
       "anchor": "ground"
@@ -315,6 +330,20 @@
         "fields": [
           "label"
         ]
+      },
+      {
+        "proto": "stone",
+        "layer": "item",
+        "fields": [
+          "label"
+        ],
+        "defaults": {
+          "label": "New stone",
+          "settings": {
+            "active": false,
+            "visits": 0
+          }
+        }
       }
     ]
   }

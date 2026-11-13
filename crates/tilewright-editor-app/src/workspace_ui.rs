@@ -22,6 +22,7 @@ pub enum Control {
     Select,
     Move,
     Terrain,
+    Place,
     Clear,
     Delete,
     Undo,
@@ -33,7 +34,12 @@ pub enum Control {
     BrushSize(i8),
     BrushShape,
     Field(String),
-    Palette { grid: String, prototype: String },
+    Palette {
+        grid: String,
+        prototype: String,
+    },
+    /// A row of the Place palette: choose this prototype.
+    PlacePalette(String),
     EditDraft,
     ApplyDraft,
     CancelDraft,

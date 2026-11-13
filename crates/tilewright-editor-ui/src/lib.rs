@@ -141,7 +141,9 @@ pub use session::{Action, Session, SessionError, SessionPhase, SessionStatus};
 pub use tilewright_editor_preview::SelectionKey;
 
 pub mod brush;
+mod insertion;
 pub mod inspector;
 mod removal;
 pub mod text_input;
 pub mod tools;
+pub mod uid;

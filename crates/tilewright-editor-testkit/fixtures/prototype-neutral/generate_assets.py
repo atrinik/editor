@@ -16,7 +16,7 @@ NOTICE = 'Copyright 2026 Seraphina Studios; original geometric fixture, MIT.'
 
 
 def image(name):
-    width, height = (24, 40) if name == 'marker' else (32, 32)
+    width, height = {'marker': (24, 40), 'stone': (24, 24)}.get(name, (32, 32))
     pixels = bytearray()
     for y in range(height):
         for x in range(width):
@@ -30,6 +30,16 @@ def image(name):
                     color = (245, 178, 66, 255)
                 if 8 <= x <= 15 and 8 <= y <= 12:
                     color = (255, 239, 193, 255)
+            elif name == 'stone':
+                # A grey rounded stone: a 22x18 ellipse resting on the
+                # bottom edge, with a lighter upper face.
+                color = (0, 0, 0, 0)
+                dx, dy = (x - 11.5) / 11, (y - 14.5) / 9
+                if dx * dx + dy * dy <= 1:
+                    color = (96, 101, 110, 255)
+                    ex, ey = (x - 10.5) / 7, (y - 11.5) / 4
+                    if ex * ex + ey * ey <= 1:
+                        color = (150, 156, 166, 255)
             elif name.startswith('grass_edge_'):
                 mask = int(name.rsplit('_', 1)[1])
                 edge = ((mask & 1 and y < 4) or (mask & 2 and x >= 28)
@@ -49,7 +59,7 @@ def image(name):
 
 def outputs():
     resources, assets = [], []
-    names = ['grass', 'sand', 'marker'] + ['grass_edge_' + str(i) for i in range(1, 16)]
+    names = ['grass', 'sand', 'marker', 'stone'] + ['grass_edge_' + str(i) for i in range(1, 16)]
     result = {}
     for name in names:
         width, height, data = image(name)
@@ -65,10 +75,13 @@ def outputs():
     catalog = dict(format='tilewright.editor-preview/1', profile=dict(id='sample.meadow', version='1'),
                    view=dict(plane='main', layer=0, bounds=[0, 0, 8, 6]), presentation='authored',
                    resources=resources,
-                   prototypes=[dict(proto=n, resource=n, anchor='standing' if n == 'marker' else 'ground') for n in names],
+                   prototypes=[dict(proto=n, resource=n, anchor='standing' if n in ('marker', 'stone') else 'ground') for n in names],
                    editing=dict(movable_uids=['marker_1'], terrain=[dict(grid='floor', values=['grass', 'sand'])],
                                 fields=[dict(uid='marker_1', field='label')],
-                                objects=[dict(proto='marker', layer='item', fields=['label'])]))
+                                objects=[dict(proto='marker', layer='item', fields=['label']),
+                                         dict(proto='stone', layer='item', fields=['label'],
+                                              defaults=dict(label='New stone',
+                                                            settings=dict(active=False, visits=0)))]))
     result[ROOT / 'preview.jsonc'] = (json.dumps(catalog, indent=2) + '\n').encode()
     result[REPO / 'provenance/assets.json'] = (json.dumps(dict(schema_version=1, assets=assets), indent=2) + '\n').encode()
     return result

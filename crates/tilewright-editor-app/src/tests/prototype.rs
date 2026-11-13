@@ -92,6 +92,11 @@ fn application_with_source(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, A
 #[test]
 fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() {
     let (temporary, mut app) = application();
+    // The native demonstration installs the same deterministic uid source.
+    app.session
+        .set_uid_source(Box::new(tilewright_editor_ui::uid::SeededUidSource::new(
+            super::DEMO_UID_SEED,
+        )));
     app.demo_all().unwrap();
     let marker = app.session.world().object("marker_1").unwrap();
     assert!(marker.fields.iter().any(|(name, value)| name == "label"
@@ -100,10 +105,25 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
     assert_eq!(chunk.ground[0].value(4 * 32 + 6), Some("sand"));
     // The scripted deletion takes the spare marker and leaves the edited one.
     assert!(app.session.world().object("marker_2").is_none());
-    assert_eq!(app.session.history().depths(), (4, 0));
+    // The scripted placement puts the last palette prototype on the empty
+    // demonstration tile, with the first deterministic uid, and selects it.
+    let mut first = [0; 16];
+    tilewright_editor_ui::uid::UidSource::fill(
+        &mut tilewright_editor_ui::uid::SeededUidSource::new(super::DEMO_UID_SEED),
+        &mut first,
+    )
+    .unwrap();
+    let placed = tilewright_editor_ui::uid::format_uid(first);
+    let stone = app.session.world().object(&placed).unwrap();
+    assert_eq!((stone.proto.as_str(), stone.at), ("stone", Some([6, 1])));
+    assert_eq!(
+        app.session.selection(),
+        Some(&tilewright_editor_preview::SelectionKey::Object { uid: placed })
+    );
+    assert_eq!(app.session.history().depths(), (5, 0));
     for phase in [
         "before", "pending", "cancel", "after", "undo", "redo", "field", "terrain", "delete",
-        "deleted",
+        "deleted", "place", "placed",
     ] {
         assert!(
             temporary
@@ -1774,4 +1794,157 @@ fn deletion_warnings_never_push_a_diff_just_under_the_budget_past_it() {
     assert!(app.session.world().object("marker_2").is_none());
     assert_eq!(app.recovery.records().len(), 1);
     drop(temporary);
+}
+
+fn widget_point(app: &mut Application, control: &crate::workspace_ui::Control) -> [f32; 2] {
+    app.refresh_ui();
+    let widget = app
+        .ui
+        .widgets
+        .iter()
+        .find(|widget| widget.control.as_ref() == Some(control))
+        .unwrap();
+    #[allow(clippy::cast_precision_loss)]
+    [
+        (widget.bounds.x + widget.bounds.width / 2) as f32,
+        (widget.bounds.y + widget.bounds.height / 2) as f32,
+    ]
+}
+
+fn toolbar_place_enabled(app: &mut Application) -> bool {
+    app.refresh_ui();
+    app.ui
+        .widgets
+        .iter()
+        .find(|widget| widget.control == Some(crate::workspace_ui::Control::Place))
+        .unwrap()
+        .enabled
+}
+
+#[test]
+fn p_a_palette_row_and_a_tile_click_review_one_placement_that_accepts_and_undoes() {
+    use crate::workspace_ui::Control;
+    use sdl3::keyboard::Keycode;
+    use tilewright_editor_preview::SelectionKey;
+    use tilewright_editor_ui::tools::ToolMode;
+    let (temporary, mut app) = delete_application(|_| {});
+    app.session
+        .set_uid_source(Box::new(tilewright_editor_ui::uid::SeededUidSource::new(7)));
+    let chunk = temporary
+        .path()
+        .join("world/planes/main/layers/0/0_0.jsonc");
+    let original = fs::read(&chunk).unwrap();
+    assert!(toolbar_place_enabled(&mut app));
+
+    // A focused text draft keeps P for itself.
+    app.select_visible_object(super::Capability::Field).unwrap();
+    app.control(Control::Field("label".into())).unwrap();
+    acknowledge_ui(&mut app);
+    let mut input = crate::native_input::NativeInput::new(7);
+    input.begin_batch(false, app.tools.input_revision().map(|r| r.draft));
+    super::native_text_event(&mut app, &input_key(7, Keycode::P, false), &mut input)
+        .unwrap()
+        .unwrap();
+    assert_eq!(app.tools.mode(), ToolMode::Select);
+    app.control(Control::CancelDraft).unwrap();
+    acknowledge_ui(&mut app);
+
+    // Without a draft the real key event reaches the world shortcut.
+    assert!(
+        super::native_text_event(&mut app, &input_key(7, Keycode::P, false), &mut input).is_none()
+    );
+    super::native_key(&mut app, Keycode::P).unwrap();
+    assert_eq!(app.tools.mode(), ToolMode::Place);
+    // The first palette row is chosen on entry; rows are plain text.
+    assert_eq!(app.tools.placement_choice(), Some("marker"));
+    app.refresh_ui();
+    let rows: Vec<_> = app
+        .ui
+        .widgets
+        .iter()
+        .filter(|widget| matches!(widget.control, Some(Control::PlacePalette(_))))
+        .map(|widget| (widget.text.clone(), widget.active))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("marker / item".to_owned(), true),
+            ("stone / item".to_owned(), false)
+        ]
+    );
+    assert_eq!(app.status_label(), "Ready. Click a tile to place marker.");
+
+    // A palette row click chooses its prototype.
+    acknowledge_ui(&mut app);
+    let row = widget_point(&mut app, &Control::PlacePalette("stone".into()));
+    super::native_pointer(&mut app, row, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    assert_eq!(app.tools.placement_choice(), Some("stone"));
+    assert!(app.session.history().pending().is_none());
+
+    // A click on an empty tile prepares exactly one reviewed insertion.
+    acknowledge_ui(&mut app);
+    let tile = cell_pixel(&mut app, 6, 1);
+    super::native_pointer(&mut app, tile, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    let pending = app.session.history().pending().unwrap();
+    assert_eq!(pending.changed().count(), 1);
+    assert_eq!(
+        pending.sealed().matches(r#""op":"object.insert""#).count(),
+        1
+    );
+    let sealed = pending.sealed().to_owned();
+    assert_eq!(fs::read(&chunk).unwrap(), original);
+    let review = app.diff_lines();
+    assert!(
+        review[0].starts_with("Adds stone at tile (6, 1) of main layer 0, with uid o."),
+        "{review:?}"
+    );
+    assert!(app.source_review().complete);
+    // A second click while the review is pending prepares nothing new.
+    acknowledge_ui(&mut app);
+    let other = cell_pixel(&mut app, 5, 1);
+    let error = super::native_pointer(&mut app, other, BRUSH_WINDOW, BRUSH_WINDOW).unwrap_err();
+    assert!(error.contains("pending"), "{error}");
+    assert_eq!(app.session.history().pending().unwrap().sealed(), sealed);
+
+    acknowledge_ui(&mut app);
+    super::native_key(&mut app, Keycode::Return).unwrap();
+    assert!(app.session.history().pending().is_none());
+    assert_eq!(app.recovery.records().len(), 1);
+    let Some(SelectionKey::Object { uid: placed }) = app.session.selection().cloned() else {
+        panic!("the placed object is selected after Accept");
+    };
+    assert_eq!(app.session.world().object(&placed).unwrap().proto, "stone");
+    assert!(fs::read_to_string(&chunk).unwrap().contains(&placed));
+    // The placed object is deletable through the same per-prototype grant.
+    assert!(toolbar_delete_enabled(&mut app));
+
+    acknowledge_ui(&mut app);
+    super::native_key(&mut app, Keycode::Z).unwrap();
+    acknowledge_ui(&mut app);
+    super::native_key(&mut app, Keycode::Return).unwrap();
+    assert_eq!(fs::read(&chunk).unwrap(), original);
+    assert_eq!(app.recovery.records().len(), 2);
+}
+
+#[test]
+fn without_a_placeable_prototype_place_is_disabled_with_a_plain_reason() {
+    use crate::workspace_ui::Control;
+    use sdl3::keyboard::Keycode;
+    use tilewright_editor_ui::tools::ToolMode;
+    let (_temporary, mut app) = delete_application(|world| {
+        let path = world.join("preview.jsonc");
+        let mut catalog: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        catalog["editing"]
+            .as_object_mut()
+            .unwrap()
+            .remove("objects");
+        fs::write(path, serde_json::to_vec_pretty(&catalog).unwrap()).unwrap();
+    });
+    assert!(!toolbar_place_enabled(&mut app));
+    let error = super::native_key(&mut app, Keycode::P).unwrap_err();
+    assert_eq!(error, super::NOTHING_TO_PLACE);
+    assert!(app.control(Control::Place).is_err());
+    assert_eq!(app.tools.mode(), ToolMode::Select);
+    assert!(app.session.history().pending().is_none());
 }
