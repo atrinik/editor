@@ -94,6 +94,7 @@ fn application_with_source(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, A
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() {
     let (temporary, mut app) = application();
     // The native demonstration installs the same deterministic uid source.

@@ -26,6 +26,17 @@ column 5, then renames `meadow` to `Open meadow`, creates `meadow.grove`
 (`Grove`) under it, paints `(2,4)` with it, shows its Delete row disabled
 while that tile holds it, undoes the paint and deletes it.
 
+The plane has two anchors in `planes/main/anchors.jsonc`: `arrival` on layer 0
+at `(7,3)`, in view, and `lookout` on layer 0 at `(-2,0)`, left of the view.
+Two `gate` objects carry the sample's portals: `gate_east` at `(7,0)` leads to
+the anchor `arrival`, and `gate_west` at `(0,3)` to the location `(-2,2)` on
+layer 0 of the same plane. The gate is a 16x32 standing prototype (two slate
+posts under a lintel, open between them) that no editing grant reaches, so
+the scripted move, field edit and deletion still take the markers. The catalog
+grants `editing.anchors` `{edit: true}`; the scripted demonstration creates
+the anchor `camp` on `(2,3)`, moves it to `(3,4)`, shows that `arrival` cannot
+be deleted while `gate_east` names it, and deletes `camp`.
+
 For negative/cross-chunk picking, use the same world with bounds `[-2,0,4,3]`.
 Chunk `[-1,0]` contains ground at x=-2/-1 and the marker `marker_negative` at
 `(-1,1)`; chunk `[0,0]` continues the ground at x=0/1.
@@ -55,4 +66,5 @@ little-endian u32 dimensions and exactly width*height*4 row-major RGBA8 bytes.
 Ground is 32x32; the transparent amber sign is 24x40 with a distinct standing
 silhouette, the grey stone is a 24x24 standing ellipse with a lighter top, the green bush
 is 28x24 (three overlapping discs), the brown crate is a 24x24 framed box with
-a diagonal brace, and the lamp is a 16x40 dark post with a pale yellow light. Rendering and projection are supplied by the shared renderer.
+a diagonal brace, the lamp is a 16x40 dark post with a pale yellow light, and
+the gate is a 16x32 pair of slate posts under a lighter lintel with a pale step. Rendering and projection are supplied by the shared renderer.

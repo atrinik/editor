@@ -52,8 +52,9 @@ const NOTHING_TO_PLACE: &str = "Place is unavailable: the catalog grants no prot
 const TEXT_ROW_HEIGHT: u32 = 26;
 const PALETTE_ROW_HEIGHT: u32 = 40;
 const ROW_GAP: u32 = 2;
-/// Zone legend and palette rows: compact, so an id, a display name and a
-/// tile count fit on one line in the smaller type.
+/// Zone legend and palette rows and anchor list rows: compact, so an id, a
+/// display name and a tile count, or an id, a place and a portal count, fit
+/// on one line in the smaller type.
 const ZONE_ROW_HEIGHT: u32 = 22;
 /// Shown with every zone management row set: ids cannot be changed later.
 const ZONE_IDS_FIXED: &str = "Zone ids are fixed once created";
@@ -1136,16 +1137,16 @@ impl Application {
             let [x, y] = anchor.at;
             let in_view = anchor.layer == layer && catalog.tile_in_active_view(plane, layer, x, y);
             let named = counts.get(id.as_str()).copied().unwrap_or(0);
-            let place = if in_view { "in view" } else { "not in view" };
+            let seen = if in_view { "in view" } else { "not in view" };
             let portals = anchors::portal_count(named);
-            let long = format!(" = layer {} ({x}, {y}), {place}, {portals}", anchor.layer);
+            let long = format!(" = layer {} ({x}, {y}), {seen}, {portals}", anchor.layer);
             fits.push((
                 rows.len(),
                 IdText::Id {
                     id: id.clone(),
                     variants: vec![
                         (String::new(), long.clone()),
-                        (String::new(), format!(" ({x}, {y}), {place}, {portals}")),
+                        (String::new(), format!(" ({x}, {y}), {seen}, {portals}")),
                         (String::new(), format!(" ({x}, {y}), {portals}")),
                         (String::new(), format!(", {portals}")),
                         (String::new(), String::new()),
@@ -1798,7 +1799,7 @@ impl Application {
                     true,
                     false,
                 );
-                let place = world
+                let location = world
                     .planes()
                     .get(plane)
                     .and_then(|source| source.anchors.get(anchor))
@@ -1814,7 +1815,7 @@ impl Application {
                             )
                         },
                     );
-                rows.push((place, None, true, false));
+                rows.push((location, None, true, false));
             }
         }
     }
@@ -1940,13 +1941,13 @@ impl Application {
             let Some(row) = rows.get_mut(index) else {
                 continue;
             };
-            let (height, indent) = if matches!(row.1, Some(Control::ZonePalette(_))) {
-                (
+            let (height, indent) = match row.1 {
+                Some(Control::ZonePalette(_)) => (
                     ZONE_ROW_HEIGHT,
                     crate::workspace_render::thumbnail_indent(ZONE_ROW_HEIGHT),
-                )
-            } else {
-                (TEXT_ROW_HEIGHT, 0)
+                ),
+                Some(Control::AnchorChoose(_)) => (ZONE_ROW_HEIGHT, 0),
+                _ => (TEXT_ROW_HEIGHT, 0),
             };
             let available = width.saturating_sub(indent);
             row.0 = match text {
@@ -2115,7 +2116,10 @@ impl Application {
         let height = |row: &(String, Option<Control>, bool, bool, Option<_>)| {
             if row.4.is_some() {
                 PALETTE_ROW_HEIGHT
-            } else if matches!(row.1, Some(Control::ZonePalette(_))) {
+            } else if matches!(
+                row.1,
+                Some(Control::ZonePalette(_) | Control::AnchorChoose(_))
+            ) {
                 ZONE_ROW_HEIGHT
             } else {
                 TEXT_ROW_HEIGHT
@@ -2587,41 +2591,44 @@ impl Application {
                 Ok(())
             }
             Control::Coordinates | Control::Field(_) | Control::ApplyDraft => {
-                let inspected = inspector::inspect(
-                    self.session.world(),
-                    self.session.catalog(),
-                    self.session.selection(),
-                    self.session.generation(),
-                    self.session.history().document().revision(),
-                );
-                let unavailable = self.blocked.is_some() || !self.session.can_prepare();
-                match control {
-                    Control::Coordinates => self
-                        .tools
-                        .begin_move(&inspected, unavailable)
-                        .map_err(|error| error.to_string()),
-                    Control::Field(field) => self
-                        .tools
-                        .begin_field(&inspected, &field, unavailable)
-                        .map_err(|error| error.to_string()),
-                    _ => {
-                        let snapshot = self.tools.draft_snapshot().ok_or("no draft")?;
-                        let layout = self
-                            .text
-                            .layout(&snapshot.display_text, 18.0, None)
-                            .map_err(|error| error.to_string())?;
-                        if !layout.missing_glyphs().is_empty() {
-                            return Err(
-                                "missing font glyphs: review blocked; draft preserved".into()
-                            );
-                        }
-                        let action = self
-                            .tools
-                            .build_action(&inspected, unavailable)
-                            .map_err(|error| error.to_string())?;
-                        self.action(action)
-                    }
+                self.draft_control(control)
+            }
+        }
+    }
+
+    /// The coordinate and field drafts: begin one, or review the open one.
+    fn draft_control(&mut self, control: Control) -> Result<()> {
+        let inspected = inspector::inspect(
+            self.session.world(),
+            self.session.catalog(),
+            self.session.selection(),
+            self.session.generation(),
+            self.session.history().document().revision(),
+        );
+        let unavailable = self.blocked.is_some() || !self.session.can_prepare();
+        match control {
+            Control::Coordinates => self
+                .tools
+                .begin_move(&inspected, unavailable)
+                .map_err(|error| error.to_string()),
+            Control::Field(field) => self
+                .tools
+                .begin_field(&inspected, &field, unavailable)
+                .map_err(|error| error.to_string()),
+            _ => {
+                let snapshot = self.tools.draft_snapshot().ok_or("no draft")?;
+                let layout = self
+                    .text
+                    .layout(&snapshot.display_text, 18.0, None)
+                    .map_err(|error| error.to_string())?;
+                if !layout.missing_glyphs().is_empty() {
+                    return Err("missing font glyphs: review blocked; draft preserved".into());
                 }
+                let action = self
+                    .tools
+                    .build_action(&inspected, unavailable)
+                    .map_err(|error| error.to_string())?;
+                self.action(action)
             }
         }
     }

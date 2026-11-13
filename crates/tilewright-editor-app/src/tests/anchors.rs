@@ -398,7 +398,9 @@ fn without_the_grant_anchor_mode_shows_and_lists_but_edits_nothing() {
     assert_eq!(crate::prototype::badge_overlay(&app).len(), 3);
     let texts = all_texts(&mut app);
     assert!(has(&texts, "Anchor editing not granted"));
-    assert!(texts.iter().any(|text| text.starts_with("arrival (7, 3)")));
+    assert!(texts.iter().any(|text| text.starts_with("arrival")
+        && text.contains("(7, 3)")
+        && text.contains("1 portal")));
     for control in [
         Control::AnchorCreate,
         Control::AnchorMove,

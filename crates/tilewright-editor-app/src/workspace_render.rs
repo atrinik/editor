@@ -264,10 +264,10 @@ fn world_ordered_copies(
 }
 
 /// [`world_ordered_copies`] with the cell each copy belongs to.
-fn world_ordered_cells<'p>(
-    prepared: &'p PreparedPreview,
+fn world_ordered_cells(
+    prepared: &PreparedPreview,
     tint: impl Fn(&SelectionKey) -> Option<[f32; 4]>,
-) -> Vec<(&'p SelectionKey, Quad)> {
+) -> Vec<(&SelectionKey, Quad)> {
     let Some(slots) = prepared.cell_slots() else {
         return Vec::new();
     };
