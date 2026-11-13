@@ -2426,7 +2426,13 @@ impl Application {
             return "Input not applied. Details below.".into();
         }
         if self.preview_omitted {
-            return "Zone overlay left out: too many cells for one frame.".into();
+            // Badges show with the zones, and alone in Anchor mode.
+            return if self.tools.zones_visible() {
+                "Zone overlay and badges left out: too many cells for one frame."
+            } else {
+                "Anchor and portal badges left out: too many for one frame."
+            }
+            .into();
         }
         if self.overlay_unavailable() {
             return OVERLAY_UNAVAILABLE.into();
@@ -4580,11 +4586,12 @@ fn compose_with_preview(
 }
 
 fn workspace_presentation(app: &mut Application) -> Result<crate::workspace_render::Presentation> {
-    // Zone tints first, then badges, so the badges and the stroke preview
-    // draw over the tints: copies of two
-    // overlays in the same (depth, painter order) slot are ordered only by
-    // the order they are passed here, the first getting the lower semantic
-    // identities and drawing first.
+    // Zone tints and the stroke preview take the World's cell slots: each
+    // copy draws right after its tile's terrain, and where a zone tint and
+    // a preview mark share a slot they draw in the order passed here, so
+    // the preview, passed last, draws over the tint. Badges take no cell
+    // slot: they sit in their own slot after the last World quad, above
+    // every tile and object, whatever order they are passed in.
     let mut overlay = zone_overlay(app);
     overlay.extend(badge_overlay(app));
     overlay.extend(stroke_overlay(app));

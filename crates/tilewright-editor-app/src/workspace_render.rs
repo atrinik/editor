@@ -374,8 +374,14 @@ pub fn badge_overlay(
     badges
 }
 
-/// `quads` scaled about the centre of their bounds so they reach `width`
-/// further out on each side.
+/// `quads` scaled uniformly about the centre of their bounds so that every
+/// edge moves at least `width` outward, measured perpendicular to the edge.
+/// An edge at distance `d` from the centre moves `(f - 1) d` for a factor
+/// `f`; taking `f = 1 + width / d_min` over the nearest edge line moves the
+/// nearest edge exactly `width` and every other one further. On a square
+/// top-down tile every edge is equally near, so the outline is `width` on
+/// all sides; on a slanted isometric diamond it is `width` perpendicular to
+/// each edge, not along the axes (where it is wider).
 fn grow(quads: &[Quad], width: f32) -> Vec<Quad> {
     let points = || quads.iter().flat_map(|quad| quad.positions);
     let (Some(left), Some(right), Some(top), Some(bottom)) = (
@@ -387,21 +393,33 @@ fn grow(quads: &[Quad], width: f32) -> Vec<Quad> {
         return Vec::new();
     };
     let centre = [f32::midpoint(left, right), f32::midpoint(top, bottom)];
-    let factor = |extent: f32| {
-        if extent > 0.0 {
-            (extent + 2.0 * width) / extent
-        } else {
-            1.0
-        }
+    // The distance from the centre to the line through each quad edge; an
+    // edge of no length has no line.
+    let nearest = quads
+        .iter()
+        .flat_map(|quad| {
+            (0..4).filter_map(|index| {
+                let (a, b) = (quad.positions[index], quad.positions[(index + 1) % 4]);
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let length = dx.hypot(dy);
+                (length > f32::EPSILON).then(|| {
+                    ((centre[0] - a[0]) * dy - (centre[1] - a[1]) * dx).abs() / length
+                })
+            })
+        })
+        .filter(|distance| *distance > f32::EPSILON)
+        .reduce(f32::min);
+    let Some(nearest) = nearest else {
+        return quads.to_vec();
     };
-    let (fx, fy) = (factor(right - left), factor(bottom - top));
+    let factor = 1.0 + width / nearest;
     quads
         .iter()
         .map(|quad| Quad {
             positions: quad.positions.map(|p| {
                 [
-                    centre[0] + fx * (p[0] - centre[0]),
-                    centre[1] + fy * (p[1] - centre[1]),
+                    centre[0] + factor * (p[0] - centre[0]),
+                    centre[1] + factor * (p[1] - centre[1]),
                 ]
             }),
             ..*quad
