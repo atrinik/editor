@@ -107,23 +107,43 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
     assert!(app.session.world().object("marker_2").is_none());
     // The scripted placement puts the last palette prototype on the empty
     // demonstration tile, with the first deterministic uid, and selects it.
-    let mut first = [0; 16];
-    tilewright_editor_ui::uid::UidSource::fill(
-        &mut tilewright_editor_ui::uid::SeededUidSource::new(super::DEMO_UID_SEED),
-        &mut first,
-    )
-    .unwrap();
-    let placed = tilewright_editor_ui::uid::format_uid(first);
+    let mut source = tilewright_editor_ui::uid::SeededUidSource::new(super::DEMO_UID_SEED);
+    let mut next_uid = || {
+        let mut bytes = [0; 16];
+        tilewright_editor_ui::uid::UidSource::fill(&mut source, &mut bytes).unwrap();
+        tilewright_editor_ui::uid::format_uid(bytes)
+    };
+    let placed = next_uid();
     let stone = app.session.world().object(&placed).unwrap();
     assert_eq!((stone.proto.as_str(), stone.at), ("stone", Some([6, 1])));
+    // The search step types "LA", which keeps only `lamp`, chooses it and
+    // places it on (2,1) with the next uid; that object ends selected.
+    let searched = next_uid();
+    let lamp = app.session.world().object(&searched).unwrap();
+    assert_eq!((lamp.proto.as_str(), lamp.at), ("lamp", Some([2, 1])));
     assert_eq!(
         app.session.selection(),
-        Some(&tilewright_editor_preview::SelectionKey::Object { uid: placed })
+        Some(&tilewright_editor_preview::SelectionKey::Object { uid: searched })
     );
-    assert_eq!(app.session.history().depths(), (5, 0));
+    assert_eq!(app.tools.palette_filter(), "LA");
+    assert!(!app.tools.filter_focused());
+    assert_eq!(app.session.history().depths(), (6, 0));
     for phase in [
-        "before", "pending", "cancel", "after", "undo", "redo", "field", "terrain", "delete",
-        "deleted", "place", "placed",
+        "before",
+        "pending",
+        "cancel",
+        "after",
+        "undo",
+        "redo",
+        "field",
+        "terrain",
+        "delete",
+        "deleted",
+        "place",
+        "placed",
+        "palette",
+        "search-place",
+        "search-placed",
     ] {
         assert!(
             temporary
@@ -1855,8 +1875,8 @@ fn p_a_palette_row_and_a_tile_click_review_one_placement_that_accepts_and_undoes
     );
     super::native_key(&mut app, Keycode::P).unwrap();
     assert_eq!(app.tools.mode(), ToolMode::Place);
-    // The first palette row is chosen on entry; rows are plain text.
-    assert_eq!(app.tools.placement_choice(), Some("marker"));
+    // The first palette row is chosen on entry.
+    assert_eq!(app.tools.placement_choice(), Some("bush"));
     app.refresh_ui();
     let rows: Vec<_> = app
         .ui
@@ -1868,11 +1888,14 @@ fn p_a_palette_row_and_a_tile_click_review_one_placement_that_accepts_and_undoes
     assert_eq!(
         rows,
         [
-            ("marker / item".to_owned(), true),
+            ("bush / item".to_owned(), true),
+            ("crate / item".to_owned(), false),
+            ("lamp / item".to_owned(), false),
+            ("marker / item".to_owned(), false),
             ("stone / item".to_owned(), false)
         ]
     );
-    assert_eq!(app.status_label(), "Ready. Click a tile to place marker.");
+    assert_eq!(app.status_label(), "Ready. Click a tile to place bush.");
 
     // A palette row click chooses its prototype.
     acknowledge_ui(&mut app);
@@ -1948,3 +1971,6 @@ fn without_a_placeable_prototype_place_is_disabled_with_a_plain_reason() {
     assert_eq!(app.tools.mode(), ToolMode::Select);
     assert!(app.session.history().pending().is_none());
 }
+
+#[path = "palette.rs"]
+mod palette;

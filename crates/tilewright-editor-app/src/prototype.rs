@@ -29,7 +29,7 @@ use tilewright_render_wgpu::WgpuRenderer;
 use tilewright_scene::SemanticId;
 use tilewright_source::SourceRoot;
 
-const HELP: &str = "Select / Move / Terrain / Place (P) | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+const HELP: &str = "Select / Move / Terrain / Place (P) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
 const STROKE_INTERRUPTED: &str = "Brush stroke ended before release; nothing was prepared.";
 
 type Result<T> = std::result::Result<T, String>;
@@ -42,10 +42,17 @@ const REVIEW_WARNING_BYTES: usize = 16 << 10;
 const REVIEW_WARNINGS_OMITTED: &str = "Further warnings are omitted from this review.";
 const REVIEW_LIMIT_MESSAGE: &str = "Change exceeds the visible review limit. Cancel this edit.";
 const NOTHING_TO_PLACE: &str = "Place is unavailable: the catalog grants no prototype to place.";
+const NO_PALETTE_MATCH: &str = "No prototype matches the filter.";
+const FILTER_PLACEHOLDER: &str = "Filter types: click or press /";
+const FILTER_HINT: &str = "Enter keeps the filter / Esc clears it";
 /// Seed of the deterministic uids the scripted demonstration places with.
 const DEMO_UID_SEED: u64 = 0x5eed_0b1e_c7ed_0001;
 /// The empty tile of the neutral sample the scripted demonstration places on.
 const DEMO_PLACE_TILE: (i64, i64) = (6, 1);
+/// The palette filter the scripted demonstration types, and the empty tile
+/// it places the one matching prototype on.
+const DEMO_FILTER: &str = "LA";
+const DEMO_SEARCH_TILE: (i64, i64) = (2, 1);
 
 /// Which granted edit a scripted selection needs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -594,10 +601,15 @@ impl Application {
         self.review(&mut ui);
         for widget in &mut ui.widgets {
             if widget.editable.is_none() {
+                let indent = if widget.thumbnail.is_some() {
+                    crate::workspace_render::thumbnail_indent(widget.layout.height)
+                } else {
+                    0
+                };
                 widget.text = crate::workspace_render::fit_text(
                     &mut self.text,
                     &widget.text,
-                    widget.layout.width,
+                    widget.layout.width.saturating_sub(indent),
                     widget.layout.height,
                 );
             }
@@ -785,16 +797,30 @@ impl Application {
         rows
     }
 
-    /// The Place palette: one plain row per placeable prototype, sorted by
-    /// prototype id, the chosen one marked.
+    /// The Place palette: one row per placeable prototype the filter keeps,
+    /// sorted by prototype id, the chosen one marked when it is shown. The
+    /// sidebar gives each row its prototype's thumbnail.
     fn place_rows(&self, rows: &mut UiRows, ready: bool) {
         let catalog = self.session.catalog();
-        let palette = tools::object_palette(catalog);
-        if palette.is_empty() {
+        let total = tools::object_palette(catalog).len();
+        if total == 0 {
             rows.push((NOTHING_TO_PLACE.into(), None, false, false));
             return;
         }
-        rows.push(("Place palette: click a tile".into(), None, true, false));
+        let palette = self.tools.filtered_palette(catalog);
+        rows.push((
+            if self.tools.palette_filter().is_empty() {
+                "Place palette: click a tile".into()
+            } else {
+                format!("Place palette: {} of {total} match", palette.len())
+            },
+            None,
+            true,
+            false,
+        ));
+        if palette.is_empty() {
+            rows.push((NO_PALETTE_MATCH.into(), None, false, false));
+        }
         for proto in palette {
             let layer = catalog
                 .editing()
@@ -955,7 +981,16 @@ impl Application {
         let width = ui.sidebar_width();
         let rows = self.inspector_rows();
         let mut y = 56;
-        if let Some(snapshot) = self.tools.draft_snapshot() {
+        if self.tools.mode() == ToolMode::Place
+            && !tools::object_palette(self.session.catalog()).is_empty()
+        {
+            y = self.filter_field(ui, y);
+        }
+        if let Some(snapshot) = self
+            .tools
+            .draft_snapshot()
+            .filter(|_| !self.tools.filter_focused())
+        {
             let supported = self
                 .text
                 .layout(&snapshot.display_text, 18.0, None)
@@ -1013,11 +1048,28 @@ impl Application {
             );
             y += 36;
         }
+        self.sidebar_rows(ui, rows, y);
+    }
+
+    /// The scrolled sidebar rows from logical `y` down, each 26 px tall on
+    /// a 28 px pitch; only rows that fit whole are laid out. Place palette
+    /// rows carry their prototype's thumbnail.
+    fn sidebar_rows(&mut self, ui: &mut WorkspaceUi, rows: UiRows, mut y: u32) {
+        let x = ui.sidebar_x();
+        let width = ui.sidebar_width();
         let visible = usize::try_from(ui.logical_height().saturating_sub(y) / 28).unwrap_or(0);
         self.sidebar_scroll = self.sidebar_scroll.min(rows.len().saturating_sub(visible));
         for (text, control, enabled, active) in
             rows.into_iter().skip(self.sidebar_scroll).take(visible)
         {
+            let thumbnail = match &control {
+                Some(Control::PlacePalette(proto)) => self
+                    .session
+                    .resources()
+                    .prototype_texture(self.session.catalog(), proto),
+                _ => None,
+            };
+            let before = ui.widgets.len();
             ui.widget(
                 Rect {
                     x,
@@ -1030,8 +1082,68 @@ impl Application {
                 enabled,
                 active,
             );
+            if ui.widgets.len() > before
+                && let Some(widget) = ui.widgets.last_mut()
+            {
+                widget.thumbnail = thumbnail;
+            }
             y += 28;
         }
+    }
+
+    /// The Place palette filter, fixed at the top of the sidebar above the
+    /// scrolled rows: the focused text field with a hint, or a plain row
+    /// showing the filter that focuses it. Returns the next free row.
+    fn filter_field(&self, ui: &mut WorkspaceUi, mut y: u32) -> u32 {
+        let x = ui.sidebar_x();
+        let width = ui.sidebar_width();
+        if let Some(snapshot) = self
+            .tools
+            .draft_snapshot()
+            .filter(|_| self.tools.filter_focused())
+        {
+            ui.editable(
+                Rect {
+                    x,
+                    y,
+                    width,
+                    height: 30,
+                },
+                snapshot,
+            );
+            y += 34;
+            ui.widget(
+                Rect {
+                    x,
+                    y,
+                    width,
+                    height: 22,
+                },
+                FILTER_HINT,
+                None,
+                true,
+                false,
+            );
+            return y + 26;
+        }
+        let filter = self.tools.palette_filter();
+        ui.widget(
+            Rect {
+                x,
+                y,
+                width,
+                height: 30,
+            },
+            if filter.is_empty() {
+                FILTER_PLACEHOLDER.into()
+            } else {
+                format!("Filter: {filter}")
+            },
+            Some(Control::PaletteFilter),
+            true,
+            !filter.is_empty(),
+        );
+        y + 34
     }
 
     fn review(&mut self, ui: &mut WorkspaceUi) {
@@ -1129,7 +1241,17 @@ impl Application {
             SessionPhase::Ready if self.tools.mode() == ToolMode::Place => {
                 return self.tools.placement_choice().map_or_else(
                     || "Choose a type to place in the sidebar.".into(),
-                    |proto| format!("Ready. Click a tile to place {proto}."),
+                    |proto| {
+                        if self
+                            .tools
+                            .filtered_palette(self.session.catalog())
+                            .contains(&proto)
+                        {
+                            format!("Ready. Click a tile to place {proto}.")
+                        } else {
+                            format!("Ready. Click a tile to place {proto} (hidden by the filter).")
+                        }
+                    },
                 );
             }
             SessionPhase::Ready => "Ready. Select an object or choose Terrain.",
@@ -1240,6 +1362,13 @@ impl Application {
                 Ok(())
             }
             Control::Place => self.enter_place_mode(),
+            Control::PaletteFilter => self.tools.focus_filter().map_err(|error| error.to_string()),
+            // Enter in the focused filter keeps its text and releases focus;
+            // the filter is never reviewed.
+            Control::ApplyDraft if self.tools.filter_focused() => {
+                self.tools.release_filter();
+                Ok(())
+            }
             Control::PlacePalette(prototype) => self
                 .tools
                 .choose_placement(self.session.catalog(), &prototype)
@@ -1432,8 +1561,34 @@ impl Application {
             .map(|proto| (*proto).to_owned())
             .ok_or(NOTHING_TO_PLACE)?;
         self.control(Control::PlacePalette(proto))?;
+        self.place_on_tile(DEMO_PLACE_TILE)
+    }
+
+    /// Palette search: focus the filter, type the demonstration filter,
+    /// capture the narrowed palette with its thumbnails, then choose the
+    /// first matching row and place it on the search demonstration tile.
+    fn search_demo(&mut self) -> Result<()> {
+        self.control(Control::Place)?;
+        self.control(Control::PaletteFilter)?;
+        self.tools
+            .input(DEMO_FILTER)
+            .map_err(|error| error.to_string())?;
+        self.capture("palette")?;
+        let proto = self
+            .tools
+            .filtered_palette(self.session.catalog())
+            .first()
+            .map(|proto| (*proto).to_owned())
+            .ok_or("the demonstration filter matches no prototype")?;
+        self.control(Control::ApplyDraft)?;
+        self.control(Control::PlacePalette(proto))?;
+        self.place_on_tile(DEMO_SEARCH_TILE)
+    }
+
+    /// Click the empty neutral tile `(x, y)` in Place mode through the
+    /// exact cell mask.
+    fn place_on_tile(&mut self, (x, y): (i64, i64)) -> Result<()> {
         let frame = self.frame(true)?;
-        let (x, y) = DEMO_PLACE_TILE;
         let hit = self
             .prepared
             .cell_picks
@@ -1511,14 +1666,20 @@ impl Application {
                 self.action(Action::Accept)?;
                 self.capture("placed")?;
             }
-            9 => return Ok(true),
+            9 if !tools::object_palette(self.session.catalog()).is_empty() => {
+                self.search_demo()?;
+                self.capture("search-place")?;
+                self.action(Action::Accept)?;
+                self.capture("search-placed")?;
+            }
+            10 => return Ok(true),
             _ => {}
         }
         Ok(false)
     }
 
     fn demo_all(&mut self) -> Result<()> {
-        for step in 0..10 {
+        for step in 0..11 {
             if self.demo_step(step)? {
                 break;
             }
@@ -1897,12 +2058,13 @@ fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
     let editing = app.session.catalog().editing();
     if (step == 5 && !grants_fields(editing))
         || (step == 6 && editing.terrain.is_empty())
-        || ((step == 7 || step == 8) && editing.objects.is_empty())
+        || ((7..=9).contains(&step) && editing.objects.is_empty())
     {
         None
     } else {
         [
             "before", "pending", "after", "undo", "redo", "field", "terrain", "delete", "place",
+            "palette",
         ]
         .get(step)
         .copied()
@@ -2340,7 +2502,13 @@ fn native_pointer_selection(
     let (px, py) = crate::viewport::physical_pixel(position, logical, physical)
         .ok_or("pointer outside physical viewport")?;
     app.refresh_ui();
-    match app.ui.hit(px, py) {
+    let hit = app.ui.hit(px, py);
+    // A press anywhere but the focused filter field releases its focus and
+    // keeps its text; the press then does what it would do anyway.
+    if app.tools.filter_focused() && hit != Hit::Control(Control::EditDraft) {
+        app.tools.release_filter();
+    }
+    match hit {
         Hit::Control(Control::EditDraft) => {
             let geometry = app
                 .displayed_text
@@ -2440,6 +2608,22 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
     }
     // Text focus owns every key before global shortcuts. Unicode text arrives
     // exclusively through SDL TextInput, never by guessing keycode characters.
+    if app.tools.filter_focused() {
+        // The focused palette filter: Esc clears it, Enter keeps it; both
+        // release focus. Every other key is text or ignored.
+        return match key {
+            Keycode::Return | Keycode::KpEnter => app.control(Control::ApplyDraft),
+            Keycode::Escape => {
+                app.tools.clear_filter();
+                Ok(())
+            }
+            Keycode::Backspace => {
+                app.tools.backspace();
+                Ok(())
+            }
+            _ => Ok(()),
+        };
+    }
     if app.tools.draft_text().is_some() {
         return match key {
             Keycode::Return | Keycode::KpEnter => app.control(Control::ApplyDraft),
@@ -2460,6 +2644,11 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
         }
         return Ok(());
     }
+    // Esc clears a palette filter before it cancels a pending edit.
+    if key == Keycode::Escape && app.tools.clear_filter() {
+        app.presented_generation = None;
+        return Ok(());
+    }
     match key {
         Keycode::Return | Keycode::KpEnter => app.action(Action::Accept),
         Keycode::Escape => app.action(Action::Cancel),
@@ -2473,6 +2662,9 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
         Keycode::Down if app.tools.mode() == ToolMode::Move => app.nudge([0, 1]),
         Keycode::T => app.control(Control::Terrain),
         Keycode::P => app.control(Control::Place),
+        Keycode::Slash if app.tools.mode() == ToolMode::Place => {
+            app.control(Control::PaletteFilter)
+        }
         Keycode::LeftBracket if app.tools.mode() == ToolMode::Terrain => {
             app.control(Control::BrushSize(-1))
         }

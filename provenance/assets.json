@@ -46,6 +46,39 @@
       "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
     },
     {
+      "path": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/preview-assets/bush.atx1",
+      "source": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/generate_assets.py",
+      "author": "Seraphina Studios",
+      "license": "MIT",
+      "sha256": "2e50e61176206b04f06424fd1508c997b1260a84179827ce712cad25f44a6c92",
+      "width": 28,
+      "height": 24,
+      "transformation": "Deterministic authored integer pixel geometry; standalone ATX1 RGBA8.",
+      "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
+    },
+    {
+      "path": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/preview-assets/crate.atx1",
+      "source": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/generate_assets.py",
+      "author": "Seraphina Studios",
+      "license": "MIT",
+      "sha256": "28effb497c6a697be963bca366d66737fc0d8679a4b715756c3300c35b82738e",
+      "width": 24,
+      "height": 24,
+      "transformation": "Deterministic authored integer pixel geometry; standalone ATX1 RGBA8.",
+      "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
+    },
+    {
+      "path": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/preview-assets/lamp.atx1",
+      "source": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/generate_assets.py",
+      "author": "Seraphina Studios",
+      "license": "MIT",
+      "sha256": "462d0e16469fce5f4ee2359a1a85853aa97488caeb0103f7dfbbe754a25904b6",
+      "width": 16,
+      "height": 40,
+      "transformation": "Deterministic authored integer pixel geometry; standalone ATX1 RGBA8.",
+      "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
+    },
+    {
       "path": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/preview-assets/grass_edge_1.atx1",
       "source": "crates/tilewright-editor-testkit/fixtures/prototype-neutral/generate_assets.py",
       "author": "Seraphina Studios",

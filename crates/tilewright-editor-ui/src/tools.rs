@@ -59,14 +59,37 @@ pub fn object_palette(catalog: &PreviewCatalog) -> Vec<&str> {
         .collect()
 }
 
+/// Most UTF-8 bytes the Place palette filter holds.
+pub const MAX_FILTER_BYTES: usize = 64;
+
+/// Whether the palette filter `filter` keeps `prototype`: its id contains
+/// the filter text, ignoring case. Both sides are folded one character at a
+/// time with Unicode's full lowercase mapping (`char::to_lowercase`), with
+/// no locale tailoring, no context (capital sigma always becomes `σ`, never
+/// final `ς`) and no normalization, so precomposed and decomposed accents do
+/// not match each other. An empty filter keeps everything.
+pub fn palette_matches(prototype: &str, filter: &str) -> bool {
+    let fold = |text: &str| {
+        text.chars()
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    fold(prototype).contains(&fold(filter))
+}
+
 #[derive(Clone, Debug)]
 enum DraftKind {
     Field(String),
     Move,
+    /// The Place palette filter. Local view state only: it is bound to no
+    /// selection or World revision and never becomes an action.
+    Filter,
 }
 #[derive(Clone, Debug)]
 struct Draft {
-    stamp: SnapshotStamp,
+    /// The selection and revision a field or move draft was begun for;
+    /// `None` for the palette filter.
+    stamp: Option<SnapshotStamp>,
     kind: DraftKind,
     input: TextInput,
 }
@@ -76,6 +99,9 @@ pub struct ToolState {
     mode: ToolMode,
     terrain: Option<TerrainChoice>,
     placement: Option<String>,
+    /// The palette filter's committed text while it is not focused. While it
+    /// is focused, the focused draft holds the text.
+    filter: String,
     draft: Option<Draft>,
     next_draft: u64,
     brush: Brush,
@@ -95,8 +121,13 @@ impl ToolState {
     pub fn mode(&self) -> ToolMode {
         self.mode
     }
+    /// Switching tools ends any draft. Leaving Place mode also clears the
+    /// palette filter, so Place always opens with the whole palette.
     pub fn set_mode(&mut self, mode: ToolMode) {
         self.cancel();
+        if mode != ToolMode::Place {
+            self.filter.clear();
+        }
         self.mode = mode;
     }
     pub fn brush(&self) -> Brush {
@@ -143,6 +174,87 @@ impl ToolState {
         }
         self.placement = Some(prototype.into());
         Ok(())
+    }
+    /// The palette filter's committed text (an active composition is not
+    /// part of it until committed).
+    pub fn palette_filter(&self) -> &str {
+        match &self.draft {
+            Some(Draft {
+                kind: DraftKind::Filter,
+                input,
+                ..
+            }) => input.text(),
+            _ => &self.filter,
+        }
+    }
+    pub fn filter_focused(&self) -> bool {
+        matches!(
+            self.draft,
+            Some(Draft {
+                kind: DraftKind::Filter,
+                ..
+            })
+        )
+    }
+    /// The palette rows the filter keeps, in palette order. It narrows the
+    /// view only: choosing and placing still check the whole palette.
+    pub fn filtered_palette<'a>(&self, catalog: &'a PreviewCatalog) -> Vec<&'a str> {
+        let filter = self.palette_filter();
+        object_palette(catalog)
+            .into_iter()
+            .filter(|proto| palette_matches(proto, filter))
+            .collect()
+    }
+    /// Give keyboard focus to the palette filter, keeping its text, with the
+    /// caret at the end. Only in Place mode; a pending diff does not block
+    /// it because the filter never touches the World. Any other draft is
+    /// discarded, as when another field is begun.
+    pub fn focus_filter(&mut self) -> Result<(), ToolError> {
+        if self.mode != ToolMode::Place {
+            return Err(ToolError("The palette filter is only in Place mode"));
+        }
+        if self.filter_focused() {
+            return Ok(());
+        }
+        let text = std::mem::take(&mut self.filter);
+        let identity = self
+            .next_draft
+            .checked_add(1)
+            .ok_or(ToolError("Draft identity exhausted"))?;
+        let input = TextInput::with_limit(text.clone(), identity, MAX_FILTER_BYTES);
+        let input = match input {
+            Ok(input) => input,
+            Err(error) => {
+                self.filter = text;
+                return Err(error);
+            }
+        };
+        self.next_draft = identity;
+        self.draft = Some(Draft {
+            stamp: None,
+            kind: DraftKind::Filter,
+            input,
+        });
+        Ok(())
+    }
+    /// Release filter focus and keep its committed text (Enter, or a click
+    /// anywhere else). An uncommitted composition is dropped.
+    pub fn release_filter(&mut self) {
+        if self.filter_focused() {
+            self.retire_draft();
+        }
+    }
+    /// Esc for the filter: clear its text and release its focus. Returns
+    /// whether there was anything to clear; `false` means Esc keeps its
+    /// next meaning.
+    pub fn clear_filter(&mut self) -> bool {
+        let focused = self.filter_focused();
+        if focused {
+            self.draft = None;
+        }
+        let had_text = !self.filter.is_empty();
+        self.filter.clear();
+        focused || had_text
     }
     /// One placement on the exact cell `cell` picked from the current
     /// frame. The session checks the grant, view and revision again.
@@ -198,8 +310,9 @@ impl ToolState {
             return Err(ToolError("Input exceeds byte budget"));
         }
         let input = self.new_input(text)?;
+        self.retire_draft();
         self.draft = Some(Draft {
-            stamp,
+            stamp: Some(stamp),
             kind: DraftKind::Field(field.into()),
             input,
         });
@@ -219,12 +332,14 @@ impl ToolState {
         else {
             return Err(ToolError("Selection has no movement capability"));
         };
+        let stamp = inspector
+            .stamp
+            .clone()
+            .ok_or(ToolError("No valid selection"))?;
         let input = self.new_input(format!("{x},{y}"))?;
+        self.retire_draft();
         self.draft = Some(Draft {
-            stamp: inspector
-                .stamp
-                .clone()
-                .ok_or(ToolError("No valid selection"))?,
+            stamp: Some(stamp),
             kind: DraftKind::Move,
             input,
         });
@@ -242,9 +357,21 @@ impl ToolState {
         }
     }
     /// Discard local input: the text draft and any running brush stroke.
+    /// The palette filter only loses focus; its committed text stays.
     pub fn cancel(&mut self) {
-        self.draft = None;
+        self.retire_draft();
         self.stroke = None;
+    }
+    /// End the current draft. A focused filter keeps its committed text.
+    fn retire_draft(&mut self) {
+        if let Some(Draft {
+            kind: DraftKind::Filter,
+            input,
+            ..
+        }) = self.draft.take()
+        {
+            input.text().clone_into(&mut self.filter);
+        }
     }
     pub fn draft_text(&self) -> Option<&str> {
         self.draft.as_ref().map(|draft| draft.input.text())
@@ -303,7 +430,10 @@ impl ToolState {
     ) -> Result<Action, ToolError> {
         available(pending)?;
         let draft = self.draft.as_ref().ok_or(ToolError("No input draft"))?;
-        if inspector.stamp.as_ref() != Some(&draft.stamp) {
+        let Some(stamp) = draft.stamp.as_ref() else {
+            return Err(ToolError("The palette filter is never reviewed"));
+        };
+        if inspector.stamp.as_ref() != Some(stamp) {
             return Err(ToolError(
                 "Draft selection, generation or source revision is stale",
             ));
@@ -311,7 +441,7 @@ impl ToolState {
         if draft.input.is_composing() {
             return Err(ToolError("Finish or cancel composition before review"));
         }
-        let SelectionKey::Object { uid } = &draft.stamp.key else {
+        let SelectionKey::Object { uid } = &stamp.key else {
             return Err(ToolError("Draft requires an object"));
         };
         match &draft.kind {
@@ -326,9 +456,10 @@ impl ToolState {
                     uid: uid.clone(),
                     field: field.clone(),
                     value,
-                    expected: draft.stamp.revision,
+                    expected: stamp.revision,
                 })
             }
+            DraftKind::Filter => Err(ToolError("The palette filter is never reviewed")),
             DraftKind::Move => {
                 if !matches!(
                     inspector.selection,
@@ -353,7 +484,7 @@ impl ToolState {
                     uid: uid.clone(),
                     x,
                     y,
-                    expected: draft.stamp.revision,
+                    expected: stamp.revision,
                 })
             }
         }
@@ -460,7 +591,7 @@ impl ToolState {
             .map(|stamp| stamp.generation)
             .ok_or(ToolError("Paint requires the current inspected cell"))?;
         let (_, _, bounds) = inspector.catalog.view();
-        self.draft = None;
+        self.retire_draft();
         let mut stroke = Stroke::begin(
             plane, layer, grid, proto, self.brush, expected, generation, bounds,
         );

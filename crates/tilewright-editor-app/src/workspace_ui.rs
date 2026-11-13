@@ -40,6 +40,8 @@ pub enum Control {
     },
     /// A row of the Place palette: choose this prototype.
     PlacePalette(String),
+    /// The Place palette filter field, unfocused: focus it.
+    PaletteFilter,
     EditDraft,
     ApplyDraft,
     CancelDraft,
@@ -55,6 +57,9 @@ pub struct Widget {
     pub control: Option<Control>,
     pub enabled: bool,
     pub active: bool,
+    /// A preview image drawn at the start of the row, for Place palette rows.
+    /// Its texture is the prototype's ready preview resource.
+    pub thumbnail: Option<tilewright_render_world::TextureRef>,
 }
 
 /// Hit rectangles use physical pixels; display rectangles retain logical units
@@ -152,7 +157,8 @@ impl WorkspaceUi {
         ui
     }
 
-    fn scale(&self, rect: Rect) -> Rect {
+    /// Logical layout rectangle to physical pixels, as hit bounds use.
+    pub fn scale(&self, rect: Rect) -> Rect {
         let scale = |value: u32, axis: usize| -> u32 {
             let (from, to) = if axis == 0 {
                 (self.logical.0, self.size.0)
@@ -197,6 +203,7 @@ impl WorkspaceUi {
                 control,
                 enabled,
                 active,
+                thumbnail: None,
             });
         }
     }
