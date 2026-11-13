@@ -47,6 +47,12 @@ pub enum Action {
         proto: String,
         expected: [u8; 32],
     },
+    /// Delete one placed object in the active view, with its inventory, as
+    /// one reviewed `object.remove`.
+    Remove {
+        uid: String,
+        expected: [u8; 32],
+    },
     Accept,
     Cancel,
     Undo,
@@ -148,6 +154,9 @@ pub struct Session {
     selection: Option<SelectionKey>,
     generation: u64,
     status: SessionStatus,
+    /// Review warnings for the pending transaction, refreshed after every
+    /// dispatch; only dispatch changes the pending transaction.
+    warnings: Vec<String>,
 }
 impl Session {
     pub fn new(history: History, catalog: PreviewCatalog, resources: ReadyResources) -> Self {
@@ -165,6 +174,7 @@ impl Session {
                 cleaned: None,
                 recovery_descriptor: None,
             },
+            warnings: Vec::new(),
         }
     }
     pub fn history(&self) -> &History {
@@ -212,6 +222,11 @@ impl Session {
             .checked_add(1)
             .ok_or_else(|| refuse("frame generation exhausted"))?;
         Ok(())
+    }
+    /// Review warnings for every object the pending transaction removes,
+    /// judged against the committed World. They never block Accept.
+    pub fn pending_warnings(&self) -> &[String] {
+        &self.warnings
     }
     fn verify_catalog(&self) -> Result<(), SessionError> {
         loader::revalidate(
@@ -434,6 +449,9 @@ impl Session {
         recovery: &mut impl RecoveryStore,
     ) -> Result<(), SessionError> {
         let result = self.dispatch_inner(action, recovery);
+        self.warnings = self.history.pending().map_or_else(Vec::new, |pending| {
+            crate::removal::warnings(self.history.document().world(), pending.sealed())
+        });
         if let Err(error) = &result {
             self.status.message = error.to_string();
             if self.status.phase != SessionPhase::Blocked {
@@ -472,6 +490,7 @@ impl Session {
                     | Action::SetField { .. }
                     | Action::Paint { .. }
                     | Action::PaintStroke { .. }
+                    | Action::Remove { .. }
                     | Action::Undo
                     | Action::Redo
             )
@@ -502,10 +521,10 @@ impl Session {
                 y,
                 expected,
             } => {
-                if !self.catalog.editing().movable_uids.contains(&uid) || !self.in_bounds(x, y) {
+                let world = self.history.document().world();
+                if !self.catalog.can_move(world, &uid) || !self.in_bounds(x, y) {
                     return Err(refuse("movement capability or bounds refused"));
                 }
-                let world = self.history.document().world();
                 let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
                 let location = world
                     .object_location(&uid)
@@ -563,15 +582,10 @@ impl Session {
                 expected,
             } => {
                 bounded_value(&value)?;
-                if !self
-                    .catalog
-                    .editing()
-                    .fields
-                    .contains(&(uid.clone(), field.clone()))
-                {
+                let world = self.history.document().world();
+                if !self.catalog.can_edit_field(world, &uid, &field) {
                     return Err(refuse("field capability or value budget refused"));
                 }
-                let world = self.history.document().world();
                 if world.profile().object_fields.field(&field).is_none() {
                     return Err(refuse("field absent from authoritative schema"));
                 }
@@ -630,6 +644,27 @@ impl Session {
                 // One gesture is one operation, so review, recovery, undo and
                 // redo each treat the whole stroke as a single World change.
                 self.prepare(expected,&json!({"op":"terrain.set","plane":plane,"layer":layer,"grid":grid,"cells":cells}))
+            }
+            Action::Remove { uid, expected } => {
+                let world = self.history.document().world();
+                let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
+                if !self.catalog.editing().objects.contains_key(&object.proto) {
+                    return Err(refuse(
+                        "deletion capability refused: the catalog does not grant this object's prototype",
+                    ));
+                }
+                // The same active-view scope as every per-prototype grant.
+                if !self.catalog.can_delete(world, &uid) {
+                    return Err(refuse(
+                        "only placed objects in the active view can be deleted",
+                    ));
+                }
+                // Addressed by uid and guarded by prototype, like the
+                // cross-chunk move: the inverse reinserts the exact bytes.
+                self.prepare(
+                    expected,
+                    &json!({"op":"object.remove","uid":uid,"expect":{"proto":object.proto}}),
+                )
             }
             Action::Accept => self.accept(recovery),
             Action::Cancel => {

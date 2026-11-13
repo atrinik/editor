@@ -26,6 +26,8 @@ pub enum SelectionSummary<'a> {
         layer: i32,
         at: Option<[i64; 2]>,
         movable: bool,
+        /// The catalog grants deletion for this object's prototype.
+        deletable: bool,
     },
     Cell {
         plane: &'a str,
@@ -93,28 +95,15 @@ pub fn inspect<'a>(
                 result.reason = Some("Selection is outside the active top-level view");
                 return result;
             }
-            let size = i64::from(world.planes()[&location.plane].chunk_size);
-            let at = object.at.and_then(|[x, y]| {
-                Some([
-                    location
-                        .chunk
-                        .1
-                        .checked_mul(size)?
-                        .checked_add(i64::from(x))?,
-                    location
-                        .chunk
-                        .2
-                        .checked_mul(size)?
-                        .checked_add(i64::from(y))?,
-                ])
-            });
+            let at = plane_coordinates(world, location, object);
             result.selection = Some(SelectionSummary::Object {
                 uid,
                 prototype: &object.proto,
                 plane: &location.plane,
                 layer: location.chunk.0,
                 at,
-                movable: at.is_some() && catalog.editing().movable_uids.contains(uid),
+                movable: at.is_some() && catalog.can_move(world, uid),
+                deletable: catalog.can_delete(world, uid),
             });
             let fields = world.profile().object_fields.fields();
             result.truncated = fields.len() > MAX_INSPECTOR_ROWS;
@@ -170,6 +159,28 @@ pub fn inspect<'a>(
     result
 }
 
+/// A placed object's plane coordinates, or `None` without a position.
+fn plane_coordinates(
+    world: &World,
+    location: &tilewright_source::ObjectLocation,
+    object: &Object,
+) -> Option<[i64; 2]> {
+    let size = i64::from(world.planes()[&location.plane].chunk_size);
+    let [x, y] = object.at?;
+    Some([
+        location
+            .chunk
+            .1
+            .checked_mul(size)?
+            .checked_add(i64::from(x))?,
+        location
+            .chunk
+            .2
+            .checked_mul(size)?
+            .checked_add(i64::from(y))?,
+    ])
+}
+
 fn inspect_fields<'a>(
     world: &'a World,
     catalog: &PreviewCatalog,
@@ -196,11 +207,7 @@ fn inspect_fields<'a>(
             Some("Structured field is read-only")
         } else if current.is_none() && spec.required {
             Some("Required field is absent; source must be repaired")
-        } else if !catalog
-            .editing()
-            .fields
-            .contains(&(uid.to_owned(), name.clone()))
-        {
+        } else if !catalog.can_edit_field(world, uid, name) {
             Some("Field has no editing capability")
         } else if !choices_bounded(world, &spec.field_type) {
             Some("Field choices exceed input budget")

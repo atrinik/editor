@@ -98,8 +98,12 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         && value == &tilewright_source::FieldValue::String("Edited offline".into())));
     let chunk = &app.session.world().planes()["main"].chunks[&(0, 0, 0)];
     assert_eq!(chunk.ground[0].value(4 * 32 + 6), Some("sand"));
+    // The scripted deletion takes the spare marker and leaves the edited one.
+    assert!(app.session.world().object("marker_2").is_none());
+    assert_eq!(app.session.history().depths(), (4, 0));
     for phase in [
-        "before", "pending", "cancel", "after", "undo", "redo", "field", "terrain",
+        "before", "pending", "cancel", "after", "undo", "redo", "field", "terrain", "delete",
+        "deleted",
     ] {
         assert!(
             temporary
@@ -118,7 +122,7 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
 #[test]
 fn rejected_pending_undo_refreshes_actual_pending_scene_and_invalidates_old_picks() {
     let (_temporary, mut app) = application();
-    app.select_visible_object(false).unwrap();
+    app.select_visible_object(super::Capability::Move).unwrap();
     app.nudge([1, 0]).unwrap();
     let pending = app.session.world().source_digest();
     let pending_generation = app.view.frame_revision;
@@ -151,7 +155,7 @@ fn focused_text_consumes_global_shortcuts_without_invalidating_world_generation(
     use crate::workspace_ui::Control;
     use sdl3::keyboard::Keycode;
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     let generation = app.session.generation();
     let camera = app.view.camera.center;
@@ -213,7 +217,7 @@ fn terrain_requires_explicit_palette_and_panel_controls_never_publish() {
 fn combining_text_reaches_review_without_normalization_or_source_write() {
     use crate::workspace_ui::Control;
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.select_all().unwrap();
     app.tools
@@ -364,7 +368,7 @@ fn cpu_evidence_png_contains_shared_workspace_ui_and_preserves_world_revision_pr
 fn readable_controls_and_inspector_copy_fit_960_and_1280_windows() {
     use crate::workspace_ui::{Control, WorkspaceUi};
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     for size in [(960, 640), (1280, 800)] {
         app.ui = WorkspaceUi::new(size, size);
         app.refresh_ui();
@@ -440,7 +444,7 @@ fn long_display_labels_elide_using_shared_measurements_and_keep_full_draft() {
     assert!(fitted.ends_with("..."));
     assert_ne!(fitted, original);
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.input(" extended visible field draft").unwrap();
     let draft = app.tools.draft_text().unwrap().to_owned();
@@ -490,7 +494,7 @@ fn compact_chunk_review_shows_changed_label_before_accept_and_undo_restores_exac
     });
     let path = temporary.path().join("world").join(chunk_path);
     let original = fs::read(&path).unwrap();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     while app.tools.draft_text().is_some_and(|text| !text.is_empty()) {
         app.tools.backspace();
@@ -639,7 +643,7 @@ fn oversized_review_blocks_button_enter_and_scripted_accept_without_losing_pendi
 fn long_utf8_draft_shows_working_tail_and_caret_while_full_value_reaches_review() {
     use crate::workspace_ui::{Control, WorkspaceUi};
     let (temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.ui = WorkspaceUi::new((960, 640), (960, 640));
     app.control(Control::Field("label".into())).unwrap();
     while app.tools.draft_text().is_some_and(|text| !text.is_empty()) {
@@ -746,7 +750,7 @@ fn real_sdl_events_preserve_preedit_offsets_focus_and_submission_order() {
         keyboard::Keycode,
     };
     let (temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.select_all().unwrap();
     let original = fs::read(
@@ -820,7 +824,7 @@ fn real_sdl_events_preserve_preedit_offsets_focus_and_submission_order() {
     );
     assert!(!app.displayed_input_ready());
     app.action(Action::Cancel).unwrap();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     let prior = app.tools.draft_text().unwrap().to_owned();
     input.begin_batch(
@@ -862,7 +866,7 @@ fn real_sdl_events_preserve_preedit_offsets_focus_and_submission_order() {
 fn stale_displayed_geometry_blocks_pointer_but_keyboard_uses_current_draft() {
     use crate::workspace_ui::{Control, WorkspaceUi};
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.ui = WorkspaceUi::new((960, 640), (320, 240));
     app.control(Control::Field("label".into())).unwrap();
     app.refresh_ui();
@@ -890,7 +894,7 @@ fn deletion_and_clipboard_paste_return_wait_for_displayed_draft() {
     use tilewright_editor_ui::text_input::{TextCursor, TextSelection};
     for key in [Keycode::Backspace, Keycode::Delete, Keycode::V] {
         let (_temporary, mut app) = application();
-        app.select_visible_object(true).unwrap();
+        app.select_visible_object(super::Capability::Field).unwrap();
         app.control(Control::Field("label".into())).unwrap();
         app.tools.select_all().unwrap();
         app.tools.input("abc").unwrap();
@@ -958,7 +962,7 @@ fn native_typing_ime_and_paste_reject_line_and_paragraph_separators() {
     };
     for separator in ["\u{2028}", "\u{2029}"] {
         let (_temporary, mut app) = application();
-        app.select_visible_object(true).unwrap();
+        app.select_visible_object(super::Capability::Field).unwrap();
         app.control(Control::Field("label".into())).unwrap();
         acknowledge_ui(&mut app);
         let before = app.tools.draft_snapshot().unwrap();
@@ -1014,7 +1018,7 @@ fn switched_or_refocused_draft_rejects_previously_drained_ime_events() {
     use crate::workspace_ui::{Control, WorkspaceUi};
     use sdl3::{event::Event, mouse::MouseButton};
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.ui = WorkspaceUi::new((960, 640), (320, 240));
     app.control(Control::Field("label".into())).unwrap();
     acknowledge_ui(&mut app);
@@ -1102,7 +1106,7 @@ fn escape_composition_cancel_fences_queued_text_and_allows_fresh_input() {
     use crate::workspace_ui::Control;
     use sdl3::{event::Event, keyboard::Keycode};
     let (temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.select_all().unwrap();
     let committed = app.tools.draft_snapshot().unwrap();
@@ -1221,7 +1225,7 @@ fn real_shift_and_repeated_arrows_use_current_draft_without_intermediate_frames(
     use tilewright_editor_ui::text_input::{TextCursor, TextSelection};
     for (shift, arrows) in [(true, 1), (true, 2), (false, 2)] {
         let (_temporary, mut app) = application();
-        app.select_visible_object(true).unwrap();
+        app.select_visible_object(super::Capability::Field).unwrap();
         app.control(Control::Field("label".into())).unwrap();
         app.tools.select_all().unwrap();
         app.tools.input("e\u{301}a🙂b").unwrap();
@@ -1290,7 +1294,7 @@ fn backspace_then_left_uses_current_shaped_text_and_return_stays_fenced() {
     use crate::workspace_ui::Control;
     use sdl3::keyboard::Keycode;
     let (_temporary, mut app) = application();
-    app.select_visible_object(true).unwrap();
+    app.select_visible_object(super::Capability::Field).unwrap();
     app.control(Control::Field("label".into())).unwrap();
     app.tools.select_all().unwrap();
     app.tools.input("e\u{301}a🙂b").unwrap();
@@ -1599,4 +1603,175 @@ fn a_press_during_a_stroke_only_ends_it_visibly_wherever_it_lands() {
     super::native_stroke_release(&mut app, other, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
     assert_eq!(terrain_value(&app, 0, 1).as_deref(), Some("grass"));
     assert_eq!(terrain_value(&app, 2, 3).as_deref(), Some("sand"));
+}
+
+fn delete_application(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, Application) {
+    use crate::workspace_ui::WorkspaceUi;
+    let (temporary, mut app) = application_with_source(prepare);
+    app.ui = WorkspaceUi::new(BRUSH_WINDOW, BRUSH_WINDOW);
+    app.view.camera.width = BRUSH_WINDOW.0;
+    app.view.camera.height = BRUSH_WINDOW.1;
+    app.rebuild().unwrap();
+    acknowledge_ui(&mut app);
+    (temporary, app)
+}
+
+fn toolbar_delete_enabled(app: &mut Application) -> bool {
+    app.refresh_ui();
+    app.ui
+        .widgets
+        .iter()
+        .find(|widget| widget.control == Some(crate::workspace_ui::Control::Delete))
+        .unwrap()
+        .enabled
+}
+
+#[test]
+fn the_delete_key_reviews_one_deletion_with_warnings_and_text_focus_keeps_it() {
+    use crate::workspace_ui::Control;
+    use sdl3::keyboard::Keycode;
+    use tilewright_editor_preview::SelectionKey;
+    let (temporary, mut app) = delete_application(|_| {});
+    let chunk = temporary
+        .path()
+        .join("world/planes/main/layers/0/0_0.jsonc");
+    let original = fs::read(&chunk).unwrap();
+    // Nothing selected: the key is refused with a plain reason.
+    let error = super::native_key(&mut app, Keycode::Delete).unwrap_err();
+    assert!(error.contains("Select an object"), "{error}");
+    assert!(!toolbar_delete_enabled(&mut app));
+
+    app.select_visible_object(super::Capability::Delete)
+        .unwrap();
+    assert_eq!(
+        app.session.selection(),
+        Some(&SelectionKey::Object {
+            uid: "marker_2".into()
+        })
+    );
+    assert!(toolbar_delete_enabled(&mut app));
+
+    // A focused text draft owns Delete: it edits the draft, never the World.
+    app.control(Control::Field("label".into())).unwrap();
+    acknowledge_ui(&mut app);
+    let mut input = crate::native_input::NativeInput::new(7);
+    input.begin_batch(false, app.tools.input_revision().map(|r| r.draft));
+    super::native_text_event(&mut app, &input_key(7, Keycode::Delete, false), &mut input)
+        .unwrap()
+        .unwrap();
+    super::native_key(&mut app, Keycode::Delete).unwrap();
+    assert!(app.session.history().pending().is_none());
+    app.control(Control::CancelDraft).unwrap();
+    acknowledge_ui(&mut app);
+
+    // Without a draft the real key event falls through to world shortcuts.
+    assert!(
+        super::native_text_event(&mut app, &input_key(7, Keycode::Delete, false), &mut input)
+            .is_none()
+    );
+    super::native_key(&mut app, Keycode::Delete).unwrap();
+    assert!(app.session.history().pending().is_some());
+    assert_eq!(fs::read(&chunk).unwrap(), original);
+    let review = app.diff_lines();
+    assert!(
+        review[0].contains("marker_2") && review[0].contains("do not reuse"),
+        "{review:?}"
+    );
+    assert!(app.source_review().complete);
+    // A pending deletion fences every other preparation, Delete included.
+    assert!(!toolbar_delete_enabled(&mut app));
+    let error = app.delete_selected().unwrap_err();
+    assert!(error.contains("pending"), "{error}");
+
+    acknowledge_ui(&mut app);
+    super::native_key(&mut app, Keycode::Return).unwrap();
+    assert!(app.session.history().pending().is_none());
+    assert!(app.session.world().object("marker_2").is_none());
+    assert_eq!(app.recovery.records().len(), 1);
+    assert!(!fs::read_to_string(&chunk).unwrap().contains("marker_2"));
+    acknowledge_ui(&mut app);
+    super::native_key(&mut app, Keycode::Z).unwrap();
+    acknowledge_ui(&mut app);
+    super::native_key(&mut app, Keycode::Return).unwrap();
+    assert_eq!(fs::read(&chunk).unwrap(), original);
+    assert_eq!(app.recovery.records().len(), 2);
+}
+
+#[test]
+fn objects_without_a_prototype_grant_show_delete_disabled_and_refuse_the_key() {
+    use sdl3::keyboard::Keycode;
+    let (temporary, mut app) = delete_application(|world| {
+        let path = world.join("preview.jsonc");
+        let mut catalog: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        catalog["editing"]
+            .as_object_mut()
+            .unwrap()
+            .remove("objects");
+        fs::write(path, serde_json::to_vec_pretty(&catalog).unwrap()).unwrap();
+    });
+    let chunk = temporary
+        .path()
+        .join("world/planes/main/layers/0/0_0.jsonc");
+    let original = fs::read(&chunk).unwrap();
+    // marker_1 keeps its per-uid movement grant, which never implies deletion.
+    app.select_visible_object(super::Capability::Move).unwrap();
+    assert!(!toolbar_delete_enabled(&mut app));
+    let error = super::native_key(&mut app, Keycode::Delete).unwrap_err();
+    assert!(error.contains("does not allow deleting"), "{error}");
+    assert!(app.session.history().pending().is_none());
+    assert!(app.recovery.records().is_empty());
+    assert_eq!(fs::read(chunk).unwrap(), original);
+}
+
+/// A neutral fixture whose `marker_2` carries `pad` bytes of custom data,
+/// with that marker deleted and pending.
+fn padded_deletion(pad: usize) -> (tempfile::TempDir, Application, usize) {
+    let (temporary, mut app) = delete_application(|world| {
+        let path = world.join("planes/main/layers/0/0_0.jsonc");
+        let mut chunk: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        chunk["objects"][1]["custom"] =
+            serde_json::json!({"example.org": {"note": "a".repeat(pad)}});
+        fs::write(path, serde_json::to_vec_pretty(&chunk).unwrap()).unwrap();
+    });
+    app.select_visible_object(super::Capability::Delete)
+        .unwrap();
+    app.delete_selected().unwrap();
+    let plan = app.session.history().pending().unwrap();
+    let start = super::MAXIMUM_REVIEW_BYTES * 4;
+    let mut remaining = start;
+    for file in plan.changed() {
+        assert!(super::append_change_review(
+            &mut Vec::new(),
+            file.before.as_deref().unwrap_or("<absent>"),
+            file.after.as_deref().unwrap_or("<absent>"),
+            &mut remaining,
+        ));
+    }
+    (temporary, app, start - remaining)
+}
+
+#[test]
+fn deletion_warnings_never_push_a_diff_just_under_the_budget_past_it() {
+    let pad = 60_000;
+    let (_temporary, _app, used) = padded_deletion(pad);
+    let slack = 4;
+    let (temporary, mut app, used) =
+        padded_deletion(pad + super::MAXIMUM_REVIEW_BYTES - used - slack);
+    assert!(used <= super::MAXIMUM_REVIEW_BYTES, "{used}");
+    let warning = app.session.pending_warnings()[0].clone();
+    // Sharing the diff budget would have made this review incomplete.
+    assert!(warning.len() > super::MAXIMUM_REVIEW_BYTES - used);
+    let review = app.source_review();
+    assert!(review.complete);
+    assert_eq!(review.lines[0], warning);
+    app.refresh_ui();
+    assert!(app.ui.widgets.iter().any(|widget| widget.control
+        == Some(crate::workspace_ui::Control::Accept)
+        && widget.enabled));
+    app.action(Action::Accept).unwrap();
+    assert!(app.session.world().object("marker_2").is_none());
+    assert_eq!(app.recovery.records().len(), 1);
+    drop(temporary);
 }

@@ -12,6 +12,19 @@ pub struct EditingCapabilities {
     pub movable_uids: BTreeSet<String>,
     pub terrain: BTreeMap<String, BTreeSet<String>>,
     pub fields: BTreeSet<(String, String)>,
+    /// Optional `editing.objects`: one grant per prototype. Each lets the
+    /// author delete, move and edit the named fields of objects of that
+    /// prototype, but only top-level objects in the active view (see
+    /// [`PreviewCatalog::in_active_view`]); `layer` is the render layer a
+    /// placed object will use.
+    pub objects: BTreeMap<String, ObjectGrant>,
+}
+
+/// One `editing.objects` entry, keyed by its prototype.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ObjectGrant {
+    pub layer: String,
+    pub fields: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +63,78 @@ impl PreviewCatalog {
     }
     pub const fn editing(&self) -> &EditingCapabilities {
         &self.editing
+    }
+    /// Whether `uid` names a top-level object in this view's plane and
+    /// spatial layer whose tile lies inside the view bounds. Per-prototype
+    /// grants reach only such objects; per-uid grants keep their own reach.
+    pub fn in_active_view(&self, world: &World, uid: &str) -> bool {
+        let (Some(location), Some(object)) = (world.object_location(uid), world.object(uid)) else {
+            return false;
+        };
+        let Some([x, y]) = object.at else {
+            return false;
+        };
+        let Some(plane) = world.planes().get(&location.plane) else {
+            return false;
+        };
+        let size = i64::from(plane.chunk_size);
+        let global =
+            |chunk: i64, local: u16| chunk.checked_mul(size)?.checked_add(i64::from(local));
+        let [min_x, min_y, width, height] = self.bounds;
+        location.path.len() == 1
+            && location.plane == self.plane
+            && location.chunk.0 == self.layer
+            && global(location.chunk.1, x)
+                .and_then(|x| x.checked_sub(min_x))
+                .is_some_and(|x| x >= 0 && x < width)
+            && global(location.chunk.2, y)
+                .and_then(|y| y.checked_sub(min_y))
+                .is_some_and(|y| y >= 0 && y < height)
+    }
+    /// The `editing.objects` grant for `uid`'s prototype, when the object
+    /// is in the active view.
+    fn prototype_grant(&self, world: &World, uid: &str) -> Option<&ObjectGrant> {
+        let grant = self.editing.objects.get(&world.object(uid)?.proto)?;
+        self.in_active_view(world, uid).then_some(grant)
+    }
+    /// Movement is granted per uid (`movable_uids`) or, in the active view,
+    /// per prototype.
+    pub fn can_move(&self, world: &World, uid: &str) -> bool {
+        self.editing.movable_uids.contains(uid) || self.prototype_grant(world, uid).is_some()
+    }
+    /// A field edit is granted per uid (`fields`) or, in the active view,
+    /// per prototype.
+    pub fn can_edit_field(&self, world: &World, uid: &str, field: &str) -> bool {
+        self.editing
+            .fields
+            .iter()
+            .any(|(object, name)| object == uid && name == field)
+            || self
+                .prototype_grant(world, uid)
+                .is_some_and(|grant| grant.fields.contains(field))
+    }
+    /// Deletion is granted only per prototype, in the active view.
+    pub fn can_delete(&self, world: &World, uid: &str) -> bool {
+        self.prototype_grant(world, uid).is_some()
+    }
+    /// Every field name granted for `uid`, per uid then per prototype,
+    /// without duplicates.
+    pub fn editable_fields(&self, world: &World, uid: &str) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .editing
+            .fields
+            .iter()
+            .filter(|(object, _)| object == uid)
+            .map(|(_, field)| field.as_str())
+            .collect();
+        if let Some(grant) = self.prototype_grant(world, uid) {
+            for field in &grant.fields {
+                if !names.contains(&field.as_str()) {
+                    names.push(field);
+                }
+            }
+        }
+        names
     }
     #[allow(clippy::cast_precision_loss)]
     pub fn default_view(
@@ -107,6 +192,24 @@ fn closed(value: &Value, keys: &[&str]) -> Result<(), PreviewError> {
         || members
             .iter()
             .any(|member| !keys.contains(&member.key.as_str()))
+    {
+        return Err(failure("unknown or missing catalog key"));
+    }
+    Ok(())
+}
+/// Like [`closed`], but the `optional` keys may also appear.
+fn closed_optional(value: &Value, keys: &[&str], optional: &[&str]) -> Result<(), PreviewError> {
+    let members = value
+        .as_object()
+        .ok_or_else(|| failure("expected object"))?;
+    let present = members
+        .iter()
+        .filter(|member| keys.contains(&member.key.as_str()))
+        .count();
+    if present != keys.len()
+        || members.iter().any(|member| {
+            !keys.contains(&member.key.as_str()) && !optional.contains(&member.key.as_str())
+        })
     {
         return Err(failure("unknown or missing catalog key"));
     }
@@ -325,7 +428,7 @@ fn editing_specs(
     world: &World,
     prototypes: &BTreeMap<String, (String, Anchor)>,
 ) -> Result<EditingCapabilities, PreviewError> {
-    closed(e, &["movable_uids", "terrain", "fields"])?;
+    closed_optional(e, &["movable_uids", "terrain", "fields"], &["objects"])?;
     let mut editing = EditingCapabilities::default();
     for uid in array(member(e, "movable_uids")?)? {
         let uid = identifier(uid)?;
@@ -365,5 +468,44 @@ fn editing_specs(
             return Err(failure("invalid or duplicate field capability"));
         }
     }
+    if let Some(objects) = e.get("objects") {
+        editing.objects = object_grants(objects, world, prototypes)?;
+    }
     Ok(editing)
+}
+
+/// `editing.objects`: `[{proto, layer, fields?}]`, one entry per prototype.
+fn object_grants(
+    value: &Value,
+    world: &World,
+    prototypes: &BTreeMap<String, (String, Anchor)>,
+) -> Result<BTreeMap<String, ObjectGrant>, PreviewError> {
+    let mut grants = BTreeMap::new();
+    for entry in array(value)? {
+        closed_optional(entry, &["proto", "layer"], &["fields"])?;
+        let proto = identifier(member(entry, "proto")?)?;
+        if !prototypes.contains_key(&proto) {
+            return Err(failure("object capability names an unmapped prototype"));
+        }
+        let layer = identifier(member(entry, "layer")?)?;
+        if world.profile().render_layer_index(&layer).is_none() {
+            return Err(failure("object capability names an unknown render layer"));
+        }
+        let mut fields = BTreeSet::new();
+        if let Some(names) = entry.get("fields") {
+            for name in array(names)? {
+                let field = identifier(name)?;
+                if world.profile().object_fields.field(&field).is_none() || !fields.insert(field) {
+                    return Err(failure("invalid or duplicate object field capability"));
+                }
+            }
+        }
+        if grants
+            .insert(proto, ObjectGrant { layer, fields })
+            .is_some()
+        {
+            return Err(failure("duplicate object capability prototype"));
+        }
+    }
+    Ok(grants)
 }

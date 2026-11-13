@@ -4,7 +4,9 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{fmt::Write, fs, path::Path};
-use tilewright_editor_preview::{PreviewLimits, SelectionKey, loader, prepare, render_scene};
+use tilewright_editor_preview::{
+    ObjectGrant, PreviewLimits, SelectionKey, loader, prepare, render_scene,
+};
 use tilewright_render_api::{BackendPreference, TargetDescriptor, TargetKind};
 use tilewright_render_resources::ResourceRequest;
 use tilewright_render_testkit::ReferenceRenderer;
@@ -499,4 +501,92 @@ fn a_retained_gesture_mask_matches_every_single_pick_and_only_its_frame() {
     }
     assert!(p.mask(4, true).is_err());
     assert!(p.mask(0, true).is_err());
+}
+
+#[test]
+fn optional_object_grants_parse_strictly_and_their_absence_changes_nothing() {
+    let (dir, root, _, original) = fixture(false, false);
+    put(
+        dir.path(),
+        "profile/schema/object.jsonc",
+        r#"{"format":"tilewright.schema/1","fields":{"label":{"type":"string","max_length":8},"note":{"type":"string","max_length":8}}}"#,
+    );
+    let profile_path = dir.path().join("profile/profile.jsonc");
+    let mut profile: Value = serde_json::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
+    profile["object_fields"] = json!("schema/object.jsonc");
+    put(dir.path(), "profile/profile.jsonc", &profile.to_string());
+    let world = tilewright_source::load(dir.path()).unwrap();
+    let limits = PreviewLimits::default();
+
+    // An existing producer's catalog, without the key, grants no deletion.
+    let (absent, _) = loader::load(&root, &world, limits).unwrap();
+    let editing = absent.editing();
+    assert!(editing.objects.is_empty());
+    assert!(!absent.can_delete(&world, "marker_1"));
+    assert!(absent.can_move(&world, "marker_1"));
+    assert!(!absent.can_move(&world, "unknown_uid"));
+    assert!(!absent.can_edit_field(&world, "marker_1", "label"));
+    assert!(absent.editable_fields(&world, "marker_1").is_empty());
+
+    let mut granted = original.clone();
+    granted["editing"]["objects"] = json!([{"proto": "marker", "layer": "item", "fields": ["label"]}, {"proto": "grass", "layer": "floor"}]);
+    put(dir.path(), "preview.jsonc", &granted.to_string());
+    let (catalog, _) = loader::load(&root, &world, limits).unwrap();
+    let editing = catalog.editing();
+    assert_eq!(editing.movable_uids, absent.editing().movable_uids);
+    assert_eq!(editing.terrain, absent.editing().terrain);
+    assert_eq!(editing.fields, absent.editing().fields);
+    assert_eq!(
+        editing.objects["marker"],
+        ObjectGrant {
+            layer: "item".into(),
+            fields: ["label".to_owned()].into(),
+        }
+    );
+    assert!(editing.objects["grass"].fields.is_empty());
+    assert!(catalog.in_active_view(&world, "marker_1"));
+    assert!(catalog.can_delete(&world, "marker_1"));
+    assert!(catalog.can_edit_field(&world, "marker_1", "label"));
+    assert!(!catalog.can_edit_field(&world, "marker_1", "note"));
+    assert_eq!(catalog.editable_fields(&world, "marker_1"), ["label"]);
+    assert!(!catalog.can_delete(&world, "unknown_uid"));
+    granted["editing"]["objects"] = json!([]);
+    put(dir.path(), "preview.jsonc", &granted.to_string());
+    assert!(
+        loader::load(&root, &world, limits)
+            .unwrap()
+            .0
+            .editing()
+            .objects
+            .is_empty()
+    );
+
+    for (case, objects) in [
+        json!({}),
+        json!([{"proto": "marker"}]),
+        json!([{"layer": "item"}]),
+        json!([{"proto": "marker", "layer": "item", "extra": true}]),
+        json!([{"proto": "unmapped", "layer": "item"}]),
+        json!([{"proto": "", "layer": "item"}]),
+        json!([{"proto": "marker", "layer": "sky"}]),
+        json!([{"proto": "marker", "layer": 1}]),
+        json!([{"proto": "marker", "layer": "item", "fields": "label"}]),
+        json!([{"proto": "marker", "layer": "item", "fields": ["unknown"]}]),
+        json!([{"proto": "marker", "layer": "item", "fields": ["label", "label"]}]),
+        json!([{"proto": "marker", "layer": "item", "fields": [1]}]),
+        json!([{"proto": "marker", "layer": "item"}, {"proto": "marker", "layer": "floor"}]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut c = original.clone();
+        c["editing"]["objects"] = objects;
+        put(dir.path(), "preview.jsonc", &c.to_string());
+        assert!(loader::load(&root, &world, limits).is_err(), "case {case}");
+    }
+    // Other unknown editing keys stay refused.
+    let mut c = original.clone();
+    c["editing"]["placement"] = json!([]);
+    put(dir.path(), "preview.jsonc", &c.to_string());
+    assert!(loader::load(&root, &world, limits).is_err());
 }

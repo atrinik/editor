@@ -29,7 +29,7 @@ use tilewright_render_wgpu::WgpuRenderer;
 use tilewright_scene::SemanticId;
 use tilewright_source::SourceRoot;
 
-const HELP: &str = "Select / Move / Terrain | drag paints | [ ] brush size | B brush shape | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+const HELP: &str = "Select / Move / Terrain | Delete removes selection | drag paints | [ ] brush size | B brush shape | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
 const STROKE_INTERRUPTED: &str = "Brush stroke ended before release; nothing was prepared.";
 
 type Result<T> = std::result::Result<T, String>;
@@ -37,7 +37,18 @@ type UiRows = Vec<(String, Option<Control>, bool, bool)>;
 const MAXIMUM_REVIEW_BYTES: usize = 64 << 10;
 const REVIEW_CONTEXT_BYTES: usize = 24;
 const REVIEW_ROW_BYTES: usize = 256;
+/// Separate allowance for deletion warnings, which are already bounded.
+const REVIEW_WARNING_BYTES: usize = 16 << 10;
+const REVIEW_WARNINGS_OMITTED: &str = "Further warnings are omitted from this review.";
 const REVIEW_LIMIT_MESSAGE: &str = "Change exceeds the visible review limit. Cancel this edit.";
+
+/// Which granted edit a scripted selection needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Capability {
+    Move,
+    Field,
+    Delete,
+}
 
 struct SourceReview {
     lines: Vec<String>,
@@ -349,11 +360,9 @@ impl Application {
         let field = self
             .session
             .catalog()
-            .editing()
-            .fields
-            .iter()
-            .find(|(object, _)| object == &uid)
-            .map(|(_, field)| field.clone())
+            .editable_fields(self.session.world(), &uid)
+            .first()
+            .map(|field| (*field).to_owned())
             .ok_or("selected object has no field capability")?;
         self.control(Control::Field(field))?;
         while self.tools.draft_text().is_some_and(|text| !text.is_empty()) {
@@ -386,6 +395,47 @@ impl Application {
             )
             .map_err(|error| error.to_string())?;
         self.action(action)
+    }
+
+    /// Delete the selected object through one reviewed `object.remove`.
+    fn delete_selected(&mut self) -> Result<()> {
+        if self.tools.stroke().is_some() {
+            return Err("finish the brush stroke before deleting".into());
+        }
+        let inspected = inspector::inspect(
+            self.session.world(),
+            self.session.catalog(),
+            self.session.selection(),
+            self.session.generation(),
+            self.session.history().document().revision(),
+        );
+        let action = self
+            .tools
+            .remove_action(
+                &inspected,
+                self.blocked.is_some() || !self.session.can_prepare(),
+            )
+            .map_err(|error| error.to_string())?;
+        self.action(action)
+    }
+
+    /// Whether the current selection is an object the catalog lets the
+    /// author delete.
+    fn selection_deletable(&self) -> bool {
+        matches!(
+            inspector::inspect(
+                self.session.world(),
+                self.session.catalog(),
+                self.session.selection(),
+                self.session.generation(),
+                self.session.history().document().revision(),
+            )
+            .selection,
+            Some(SelectionSummary::Object {
+                deletable: true,
+                ..
+            })
+        )
     }
 
     /// Press: select the cell under the pointer through the ordinary exact
@@ -543,6 +593,14 @@ impl Application {
                 ready && self.session.history().depths().1 > 0,
                 false,
             ),
+            (
+                528,
+                80,
+                "Delete",
+                Control::Delete,
+                ready && self.selection_deletable(),
+                false,
+            ),
         ] {
             ui.widget(
                 Rect {
@@ -560,9 +618,9 @@ impl Application {
         if self.unsupported_runs > 0 {
             ui.widget(
                 Rect {
-                    x: 530,
+                    x: 618,
                     y: 8,
-                    width: ui.logical_size().0.saturating_sub(540),
+                    width: ui.logical_size().0.saturating_sub(628),
                     height: 32,
                 },
                 format!(
@@ -597,6 +655,7 @@ impl Application {
                 layer,
                 at,
                 movable,
+                deletable,
             }) => {
                 self.object_rows(
                     &mut rows,
@@ -608,6 +667,7 @@ impl Application {
                         layer,
                         at,
                         movable,
+                        deletable,
                     },
                 );
             }
@@ -703,6 +763,7 @@ impl Application {
             layer,
             at,
             movable,
+            deletable,
         } = summary
         else {
             return;
@@ -722,6 +783,16 @@ impl Application {
             |[x, y]| format!("Position  X {x}  Y {y}"),
         );
         rows.push((position, None, true, false));
+        rows.push((
+            if *deletable {
+                "Delete object  Del".into()
+            } else {
+                "Delete: not allowed for this type".into()
+            },
+            Some(Control::Delete),
+            ready && *deletable,
+            false,
+        ));
         rows.push((
             "Edit position (x,y)".into(),
             Some(Control::Coordinates),
@@ -1020,6 +1091,18 @@ impl Application {
             complete: true,
         };
         let mut remaining = MAXIMUM_REVIEW_BYTES;
+        // Deletion warnings come first, with their own allowance outside the
+        // diff budget: they inform the author and never block Accept.
+        let mut allowance = REVIEW_WARNING_BYTES;
+        for warning in self.session.pending_warnings() {
+            let warning = terminal_field(warning);
+            if warning.len() > allowance {
+                review.lines.push(REVIEW_WARNINGS_OMITTED.into());
+                break;
+            }
+            allowance -= warning.len();
+            review.lines.push(warning);
+        }
         for (index, file) in plan.changed().enumerate() {
             if index >= 32 {
                 review.complete = false;
@@ -1058,6 +1141,7 @@ impl Application {
                 Ok(())
             }
             Control::Clear => self.action(Action::ClearSelection),
+            Control::Delete => self.delete_selected(),
             Control::Accept => self.action(Action::Accept),
             Control::Cancel => self.action(Action::Cancel),
             Control::Undo => self.action(Action::Undo),
@@ -1187,28 +1271,32 @@ impl Application {
         })).map_err(|error| error.to_string())?.as_bytes())
     }
 
-    fn select_visible_object(&mut self, for_field: bool) -> Result<()> {
+    /// Select a visible object with `capability` through the ordinary mask.
+    /// Move and field edits take the first such object; deletion takes the
+    /// last, so a scripted deletion leaves the earlier edited object alone.
+    fn select_visible_object(&mut self, capability: Capability) -> Result<()> {
         let frame = self.frame(false)?;
-        let hit = self
-            .prepared
-            .picks
-            .iter()
-            .find_map(|(id, key)| {
-                let SelectionKey::Object { uid } = key else {
-                    return None;
-                };
-                let capabilities = self.session.catalog().editing();
-                let eligible = if for_field {
-                    capabilities.fields.iter().any(|(object, _)| object == uid)
-                } else {
-                    capabilities.movable_uids.contains(uid)
-                };
-                if !eligible {
-                    return None;
-                }
-                pixel_for(&frame, *id)
-            })
-            .ok_or("no visible object with the requested edit capability in reference mask")?;
+        let eligible = |(id, key): (&SemanticId, &SelectionKey)| {
+            let SelectionKey::Object { uid } = key else {
+                return None;
+            };
+            let (world, catalog) = (self.session.world(), self.session.catalog());
+            let granted = match capability {
+                Capability::Move => catalog.can_move(world, uid),
+                Capability::Field => !catalog.editable_fields(world, uid).is_empty(),
+                Capability::Delete => catalog.can_delete(world, uid),
+            };
+            if !granted {
+                return None;
+            }
+            pixel_for(&frame, *id)
+        };
+        let hit = if capability == Capability::Delete {
+            self.prepared.picks.iter().rev().find_map(eligible)
+        } else {
+            self.prepared.picks.iter().find_map(eligible)
+        }
+        .ok_or("no visible object with the requested edit capability in reference mask")?;
         self.tools.set_mode(ToolMode::Select);
         self.click(hit.0, hit.1)
     }
@@ -1234,7 +1322,7 @@ impl Application {
         match step {
             0 => {
                 self.capture("before")?;
-                self.select_visible_object(false)?;
+                self.select_visible_object(Capability::Move)?;
             }
             1 => {
                 self.tools.set_mode(ToolMode::Move);
@@ -1258,8 +1346,8 @@ impl Application {
                 self.action(Action::Accept)?;
                 self.capture("redo")?;
             }
-            5 if !self.session.catalog().editing().fields.is_empty() => {
-                self.select_visible_object(true)?;
+            5 if grants_fields(self.session.catalog().editing()) => {
+                self.select_visible_object(Capability::Field)?;
                 self.field()?;
                 self.action(Action::Accept)?;
                 self.capture("field")?;
@@ -1280,14 +1368,21 @@ impl Application {
                 self.action(Action::Accept)?;
                 self.capture("terrain")?;
             }
-            7 => return Ok(true),
+            7 if !self.session.catalog().editing().objects.is_empty() => {
+                self.select_visible_object(Capability::Delete)?;
+                self.delete_selected()?;
+                self.capture("delete")?;
+                self.action(Action::Accept)?;
+                self.capture("deleted")?;
+            }
+            8 => return Ok(true),
             _ => {}
         }
         Ok(false)
     }
 
     fn demo_all(&mut self) -> Result<()> {
-        for step in 0..8 {
+        for step in 0..9 {
             if self.demo_step(step)? {
                 break;
             }
@@ -1652,15 +1747,26 @@ fn native(mut app: Application, demo: bool) -> Result<()> {
     Ok(())
 }
 
+/// Whether any field edit is granted, per uid or per prototype.
+fn grants_fields(editing: &tilewright_editor_preview::EditingCapabilities) -> bool {
+    !editing.fields.is_empty()
+        || editing
+            .objects
+            .values()
+            .any(|grant| !grant.fields.is_empty())
+}
+
 /// Labels are logged after successful presentation; this does not own native handles.
 fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
-    if (step == 5 && app.session.catalog().editing().fields.is_empty())
-        || (step == 6 && app.session.catalog().editing().terrain.is_empty())
+    let editing = app.session.catalog().editing();
+    if (step == 5 && !grants_fields(editing))
+        || (step == 6 && editing.terrain.is_empty())
+        || (step == 7 && editing.objects.is_empty())
     {
         None
     } else {
         [
-            "before", "pending", "after", "undo", "redo", "field", "terrain",
+            "before", "pending", "after", "undo", "redo", "field", "terrain", "delete",
         ]
         .get(step)
         .copied()
@@ -2222,6 +2328,7 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
         Keycode::Z => app.action(Action::Undo),
         Keycode::Y => app.action(Action::Redo),
         Keycode::R => app.action(Action::Reopen),
+        Keycode::Delete => app.control(Control::Delete),
         Keycode::Left if app.tools.mode() == ToolMode::Move => app.nudge([-1, 0]),
         Keycode::Right if app.tools.mode() == ToolMode::Move => app.nudge([1, 0]),
         Keycode::Up if app.tools.mode() == ToolMode::Move => app.nudge([0, -1]),

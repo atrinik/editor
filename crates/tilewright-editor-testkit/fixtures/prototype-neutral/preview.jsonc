@@ -307,6 +307,15 @@
         "uid": "marker_1",
         "field": "label"
       }
+    ],
+    "objects": [
+      {
+        "proto": "marker",
+        "layer": "item",
+        "fields": [
+          "label"
+        ]
+      }
     ]
   }
 }

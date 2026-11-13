@@ -139,6 +139,10 @@ fn pending_review_rejects_every_new_preparation_without_replacing_evidence() {
             expected: session.history().document().revision(),
         },
         paint(&session, 6, 4),
+        Action::Remove {
+            uid: "marker_2".into(),
+            expected: session.history().document().revision(),
+        },
         Action::Undo,
         Action::Redo,
     ] {
