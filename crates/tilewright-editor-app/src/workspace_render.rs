@@ -712,8 +712,18 @@ mod tests {
             ui.widget(row(56 + index * 28), "row", None, true, false);
             ui.widgets.last_mut().unwrap().thumbnail = Some(texture(3, 24, 24));
         }
+        ui.widgets[1].enabled = false;
         let quads = thumbnail_quads(&ui, 10).unwrap();
         assert_eq!(quads.len(), MAX_THUMBNAILS);
+        // Disabled rows draw their thumbnail grey and half transparent.
+        assert_eq!(
+            (quads[0].color, quads[0].grayscale),
+            ([1.0, 1.0, 1.0, 1.0], 0.0)
+        );
+        assert_eq!(
+            (quads[1].color, quads[1].grayscale),
+            ([1.0, 1.0, 1.0, 0.5], 1.0)
+        );
         for (index, quad) in quads.iter().enumerate() {
             assert!(!quad.pickable);
             assert_eq!(quad.layer, Layer::Interface);

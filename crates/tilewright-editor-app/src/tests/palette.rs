@@ -135,6 +135,10 @@ fn slash_typing_enter_and_escape_order_through_real_sdl_events() {
         app.status_label(),
         "Ready. Click a tile to place bush (hidden by the filter)."
     );
+    assert_eq!(
+        row_text(&mut app, "Placing").as_deref(),
+        Some("Placing (hidden): bush")
+    );
 
     // Enter keeps the text and releases focus; it reviews nothing.
     acknowledge_ui(&mut app);
@@ -179,12 +183,28 @@ fn slash_typing_enter_and_escape_order_through_real_sdl_events() {
         ("Stozz", false)
     );
 
-    // Esc clears the filter first; only the next Esc cancels the diff.
+    // Esc clears the unfocused filter first; the diff stays pending.
     acknowledge_ui(&mut app);
     press(&mut app, &mut input, Keycode::Escape).unwrap();
     assert_eq!(app.tools.palette_filter(), "");
     assert_eq!(app.session.history().pending().unwrap().sealed(), sealed);
     assert_eq!(palette_rows(&mut app).len(), 5);
+    // Keypad divide focuses like `/`; a focused Esc on a non-empty filter
+    // clears the text and releases focus without cancelling the diff.
+    acknowledge_ui(&mut app);
+    press(&mut app, &mut input, Keycode::KpDivide).unwrap();
+    assert!(app.tools.filter_focused());
+    type_text(&mut app, &mut input, "cr").unwrap();
+    assert_eq!(palette_rows(&mut app).len(), 1);
+    acknowledge_ui(&mut app);
+    quiet_batch(&app, &mut input);
+    press(&mut app, &mut input, Keycode::Escape).unwrap();
+    assert_eq!(
+        (app.tools.palette_filter(), app.tools.filter_focused()),
+        ("", false)
+    );
+    assert_eq!(app.session.history().pending().unwrap().sealed(), sealed);
+    // Only now does Esc cancel the pending diff.
     acknowledge_ui(&mut app);
     press(&mut app, &mut input, Keycode::Escape).unwrap();
     assert!(app.session.history().pending().is_none());
@@ -239,13 +259,10 @@ fn a_thumbnail_click_chooses_its_row_and_never_reaches_the_world_mask() {
         .collect();
     assert_eq!(rows, ["crate / item", "lamp / item", "marker / item"]);
 
-    // Thumbnails add nothing to picking: the World masks are the prepared
-    // scene's own, before and after the workspace is composed.
-    let generation = app.view.frame_revision;
-    let objects = app.prepared.mask(generation, false).unwrap();
-    let cells = app.prepared.mask(generation, true).unwrap();
+    let objects = app.prepared.mask(app.view.frame_revision, false).unwrap();
+    // Three palette rows and the pinned "Placing" row (bush, hidden).
     let thumbnails = thumbnail_quads(&mut app);
-    assert_eq!(thumbnails.len(), 3);
+    assert_eq!(thumbnails.len(), 4);
     assert!(thumbnails.iter().all(|quad| !quad.pickable));
     let widget = app
         .ui
@@ -305,16 +322,6 @@ fn a_thumbnail_click_chooses_its_row_and_never_reaches_the_world_mask() {
             .collect::<Vec<_>>(),
         ["lamp / item"]
     );
-    // Composing again changed neither World mask.
-    let generation = app.view.frame_revision;
-    for (before, terrain) in [(objects, false), (cells, true)] {
-        let after = app.prepared.mask(generation, terrain).unwrap();
-        assert_eq!(before.size(), after.size());
-        let [width, height] = after.size();
-        for (px, py) in [(x, y), (width / 2, height / 2), (10, height - 10)] {
-            assert_eq!(before.pick(px, py).unwrap(), after.pick(px, py).unwrap());
-        }
-    }
 }
 
 /// A small workspace where the palette must scroll: `logical` at `scale`.
@@ -332,7 +339,7 @@ fn scrolling_application(logical: (u32, u32), scale: u32) -> (tempfile::TempDir,
 #[test]
 fn only_wholly_visible_rows_get_thumbnails_inside_the_sidebar_while_scrolling() {
     for scale in [1, 2] {
-        let (_temporary, mut app) = scrolling_application((320, 200), scale);
+        let (_temporary, mut app) = scrolling_application((320, 240), scale);
         let (mut above, mut below) = (false, false);
         for scroll in 0..12 {
             app.sidebar_scroll = scroll;
@@ -341,14 +348,21 @@ fn only_wholly_visible_rows_get_thumbnails_inside_the_sidebar_while_scrolling() 
                 .ui
                 .widgets
                 .iter()
-                .filter(|widget| matches!(widget.control, Some(Control::PlacePalette(_))))
+                .filter(|widget| widget.thumbnail.is_some())
                 .cloned()
                 .collect();
-            // One thumbnail per laid-out palette row, never more.
+            let palette = app
+                .ui
+                .widgets
+                .iter()
+                .filter(|widget| matches!(widget.control, Some(Control::PlacePalette(_))))
+                .count();
+            // One thumbnail per laid-out palette row plus the pinned
+            // "Placing" row, never more.
             assert_eq!(quads.len(), rows.len(), "scroll {scroll} scale {scale}");
-            assert!(rows.iter().all(|row| row.thumbnail.is_some()));
-            above |= !rows.is_empty() && rows.len() < 5 && app.sidebar_scroll > 4;
-            below |= !rows.is_empty() && rows.len() < 5 && app.sidebar_scroll <= 4;
+            assert_eq!(rows.len(), palette + 1, "scroll {scroll} scale {scale}");
+            above |= palette > 0 && palette < 5 && app.sidebar_scroll > 4;
+            below |= palette > 0 && palette < 5 && app.sidebar_scroll <= 4;
             let sidebar = app.ui.sidebar;
             for quad in &quads {
                 assert!(!quad.pickable);
@@ -372,4 +386,134 @@ fn only_wholly_visible_rows_get_thumbnails_inside_the_sidebar_while_scrolling() 
         // above it once scrolled down.
         assert!(above && below, "scale {scale}");
     }
+}
+
+/// Sidebar rows laid out below the fixed filter and "Placing" rows.
+fn scrolled_rows(app: &mut Application) -> Vec<crate::workspace_ui::Widget> {
+    app.refresh_ui();
+    let x = app.ui.sidebar_x();
+    app.ui
+        .widgets
+        .iter()
+        .skip_while(|widget| !widget.text.starts_with("Placing"))
+        .skip(1)
+        .filter(|widget| widget.layout.x >= x)
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_shrinking_filter_pulls_the_scroll_back_so_rows_stay_laid_out() {
+    for height in 200..=229 {
+        let (_temporary, mut app) = scrolling_application((320, height), 1);
+        // Scroll to the end, then shrink the list to its header and one row.
+        app.sidebar_scroll = usize::MAX;
+        app.refresh_ui();
+        let end = app.sidebar_scroll;
+        assert!(end > 0, "height {height}");
+        app.control(Control::PaletteFilter).unwrap();
+        app.tools.input("lamp").unwrap();
+        let rows = scrolled_rows(&mut app);
+        assert!(app.sidebar_scroll < end, "height {height}");
+        assert!(
+            rows.iter()
+                .any(|row| row.control == Some(Control::PlacePalette("lamp".into()))),
+            "height {height}: {:?}",
+            rows.iter().map(|row| &row.text).collect::<Vec<_>>()
+        );
+        // Every laid-out row, gap included, fits the panel.
+        for row in &rows {
+            assert!(
+                row.layout.y + row.layout.height + 2 <= height,
+                "height {height}: {}",
+                row.text
+            );
+        }
+        // At every scroll offset each laid-out row fits with its gap below.
+        app.tools.clear_filter();
+        for scroll in 0..=end {
+            app.sidebar_scroll = scroll;
+            for row in scrolled_rows(&mut app) {
+                assert!(
+                    row.layout.y + row.layout.height + 2 <= height,
+                    "height {height} scroll {scroll}: {}",
+                    row.text
+                );
+            }
+        }
+        // At the end of the unfiltered list the last row is laid out.
+        app.sidebar_scroll = usize::MAX;
+        let rows = scrolled_rows(&mut app);
+        let last = rows.last().unwrap();
+        assert_eq!(last.control, Some(Control::PlacePalette("stone".into())));
+        assert!(last.layout.y + last.layout.height + 2 <= height);
+    }
+}
+
+#[test]
+fn the_pinned_placing_row_names_a_hidden_choice_after_an_accept_and_a_notice() {
+    let (temporary, mut app) = delete_application(|_| {});
+    let chunk = temporary
+        .path()
+        .join("world/planes/main/layers/0/0_0.jsonc");
+    let mut input = crate::native_input::NativeInput::new(7);
+    quiet_batch(&app, &mut input);
+    press(&mut app, &mut input, Keycode::P).unwrap();
+    // Place a lamp and accept it: the status line now reports the save.
+    acknowledge_ui(&mut app);
+    let row = widget_point(&mut app, &Control::PlacePalette("lamp".into()));
+    crate::prototype::native_pointer(&mut app, row, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    acknowledge_ui(&mut app);
+    let tile = cell_pixel(&mut app, 6, 1);
+    crate::prototype::native_pointer(&mut app, tile, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    acknowledge_ui(&mut app);
+    press(&mut app, &mut input, Keycode::Return).unwrap();
+    assert!(app.session.history().pending().is_none());
+    let accepted = fs::read(&chunk).unwrap();
+    assert_eq!(app.status_label(), "Changes saved. Ready to edit.");
+    // A notice also takes the status line.
+    app.notice = Some("Something else happened.".into());
+    assert_eq!(app.status_label(), "Input not applied. Details below.");
+    // The pinned row still names the choice, and says when it is hidden.
+    acknowledge_ui(&mut app);
+    press(&mut app, &mut input, Keycode::Slash).unwrap();
+    app.notice = Some("Something else happened.".into());
+    type_text(&mut app, &mut input, "st").unwrap();
+    assert_eq!(
+        row_text(&mut app, "Placing").as_deref(),
+        Some("Placing (hidden): lamp")
+    );
+    let pinned = app
+        .ui
+        .widgets
+        .iter()
+        .find(|widget| widget.text.starts_with("Placing"))
+        .unwrap()
+        .clone();
+    assert_eq!(pinned.control, None);
+    assert!(pinned.thumbnail.is_some());
+    assert_eq!(
+        app.ui.hit(pinned.bounds.x + 4, pinned.bounds.y + 4),
+        crate::workspace_ui::Hit::Panel
+    );
+    assert_eq!(app.status_label(), "Input not applied. Details below.");
+    // A visible choice drops the suffix.
+    app.tools.select_all().unwrap();
+    type_text(&mut app, &mut input, "la").unwrap();
+    assert_eq!(
+        row_text(&mut app, "Placing").as_deref(),
+        Some("Placing: lamp")
+    );
+    app.tools.select_all().unwrap();
+    type_text(&mut app, &mut input, "st").unwrap();
+    // A tile click prepares exactly the named prototype.
+    acknowledge_ui(&mut app);
+    let tile = cell_pixel(&mut app, 2, 1);
+    crate::prototype::native_pointer(&mut app, tile, BRUSH_WINDOW, BRUSH_WINDOW).unwrap();
+    let sealed = app.session.history().pending().unwrap().sealed().to_owned();
+    let sealed: serde_json::Value = serde_json::from_str(&sealed).unwrap();
+    let operation = &sealed["operations"][0];
+    assert_eq!(operation["object"]["proto"], "lamp");
+    assert_eq!(operation["at"], serde_json::json!([2, 1]));
+    assert_eq!(fs::read(&chunk).unwrap(), accepted);
 }

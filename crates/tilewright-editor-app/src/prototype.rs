@@ -990,6 +990,7 @@ impl Application {
             && !tools::object_palette(self.session.catalog()).is_empty()
         {
             y = self.filter_field(ui, y);
+            y = self.placing_row(ui, y);
         }
         if let Some(snapshot) = self
             .tools
@@ -1180,6 +1181,49 @@ impl Application {
             !filter.is_empty(),
         );
         y + 34
+    }
+
+    /// The pinned, unclickable row under the filter that always names the
+    /// prototype a tile click places, with its thumbnail, and says when the
+    /// filter hides its palette row. It never scrolls. Returns the next free
+    /// row.
+    fn placing_row(&self, ui: &mut WorkspaceUi, y: u32) -> u32 {
+        let catalog = self.session.catalog();
+        let (text, thumbnail) = match self.tools.placement_choice() {
+            Some(proto) => (
+                if self.tools.filtered_palette(catalog).contains(&proto) {
+                    format!("Placing: {proto}")
+                } else {
+                    format!("Placing (hidden): {proto}")
+                },
+                self.session.resources().prototype_texture(catalog, proto),
+            ),
+            None => ("Placing: choose a type below".into(), None),
+        };
+        let height = if thumbnail.is_some() {
+            PALETTE_ROW_HEIGHT
+        } else {
+            TEXT_ROW_HEIGHT
+        };
+        let before = ui.widgets.len();
+        ui.widget(
+            Rect {
+                x: ui.sidebar_x(),
+                y,
+                width: ui.sidebar_width(),
+                height,
+            },
+            text,
+            None,
+            true,
+            false,
+        );
+        if ui.widgets.len() > before
+            && let Some(widget) = ui.widgets.last_mut()
+        {
+            widget.thumbnail = thumbnail;
+        }
+        y + height + ROW_GAP
     }
 
     fn review(&mut self, ui: &mut WorkspaceUi) {
@@ -2698,7 +2742,7 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
         Keycode::Down if app.tools.mode() == ToolMode::Move => app.nudge([0, 1]),
         Keycode::T => app.control(Control::Terrain),
         Keycode::P => app.control(Control::Place),
-        Keycode::Slash if app.tools.mode() == ToolMode::Place => {
+        Keycode::Slash | Keycode::KpDivide if app.tools.mode() == ToolMode::Place => {
             app.control(Control::PaletteFilter)
         }
         Keycode::LeftBracket if app.tools.mode() == ToolMode::Terrain => {

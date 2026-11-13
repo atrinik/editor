@@ -183,7 +183,9 @@ nothing, when the defaults do not satisfy the schema. Nothing can be placed
 while a change is pending.
 
 A filter field sits at the top of the sidebar in Place mode, above the
-scrolled rows. Click it or press `/` to focus it, then type: the palette
+scrolled rows. Click it, or press `/` (or keypad divide) in Place mode, to
+focus it, then type; clicking always works, while `/` was only tested on
+layouts where it needs no modifier. the palette
 keeps the prototypes whose id contains the text, ignoring case, and its
 header counts the matches. Case is folded one character at a time with
 Unicode's full lowercase mapping, without locale tailoring or context
@@ -194,13 +196,17 @@ takes the single-line rules of other inputs (control characters and U+2028
 and U+2029 are refused) and holds at most 64 bytes of UTF-8. While it is
 focused every key is text: P, Q, Delete and the pan and tool keys type
 or edit, they do not act. Enter, or a click anywhere else, releases focus
-and keeps the filter; Esc clears it and releases focus. With the field
+and keeps the filter; the click also does what it normally does (a tile
+click in Place mode places, a row click chooses, a toolbar click acts). Esc
+clears the filter and releases focus. With the field
 unfocused, Esc first clears a non-empty filter, and only the next Esc
 cancels a pending change as before. The filter is view state only: it is
 bound to no selection or World revision, never creates a transaction, and
-never changes what may be placed. A chosen prototype stays chosen when the
-filter hides its row (the status line says so, and a tile click still places
-it); its row is marked only while shown. When nothing matches, one neutral
+never changes what may be placed. Under the filter field a pinned row, which
+never scrolls and is not clickable, always names the chosen prototype with
+its thumbnail: `Placing: crate`, or `Placing (hidden): crate` when the filter
+hides its row. A hidden choice stays chosen and a tile click still places
+it; its palette row is marked only while shown. When nothing matches, one neutral
 "No prototype matches the filter." row stands in for the list. The filter
 stays editable while a change is pending, when the rows are disabled as
 before. Re-entering Place keeps the filter; switching to another tool clears
