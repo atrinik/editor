@@ -144,14 +144,18 @@ an earlier cell's), in isometric and top-down views alike. Because the cells
 come before the placed objects, an object on the grid's own ground render
 layer, which shares its tile's order key, is still drawn after the mark. A
 cell before every World draw draws first. If that combined ordering scene
-cannot be compiled (it may use twice the scene limits), no mark is drawn and
+cannot be compiled (a defensive case that the default limits do not reach),
+no mark is drawn and
 the status line adds "Preview unavailable for this view."; the release still
 prepares the whole stroke. Anything the World draws later covers the mark as
 it covers the terrain: an object standing on the
 cell, a nearer raised tile or a higher ground layer hides the mark there.
 Where a terrain art's outline differs from the reference cell shape, the
 mark can reach a thin edge of a farther tile that the click mask gives to the
-changed cell, and two neighbouring marks can overlap along it. The white tint
+changed cell, and two neighbouring marks can overlap along it. For the same
+reason a nearer cell's mark or tint can cover part of a farther object that
+the nearer tile's art does not actually cover; ground art that fills the
+tile's reference shape does not show this. The white tint
 has little contrast on very light terrain; this is not addressed yet. The
 copies are unpickable: they never reach a semantic, depth or coverage plane,
 so what a click picks is unchanged. Each pointer sample
@@ -227,7 +231,7 @@ object hides shows no tint. A tile without ground keeps its own place in
 that order, so a zoned but unpainted area stays visible and is covered only
 by what is on it or nearer, exactly as ground there would be. Objects on the
 grid's own ground render layer (a placed object may use any granted render
-layer) are drawn after their tile's tint too. A nearer tile's tint does draw
+layer, on sub-layer 0 or above) are drawn after their tile's tint too. A nearer tile's tint does draw
 over the part of a farther object that overhangs that nearer tile, as the
 nearer tile's ground would, including where the tile has no ground. When the
 cells' places in the draw order cannot be computed for a view (see the

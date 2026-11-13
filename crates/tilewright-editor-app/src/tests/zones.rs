@@ -811,7 +811,9 @@ fn tints_of_tiles_without_ground_keep_their_own_place_in_the_draw_order() {
         let in_run =
             matches!(cell, Some(SelectionKey::Cell { x, y, .. }) if empty.contains(&[*x, *y]));
         match owner {
-            // No run tint ever lands on an object...
+            // In this fixture no object overhangs a nearer run tile, so no
+            // run tint may land on an object. (A nearer tile's tint can cover
+            // the overhang of a farther object; another test pins that.)
             Some(SelectionKey::Object { .. }) => {
                 assert!(!changed, "a run tint covers an object at {index}");
                 guarded += 1;
