@@ -93,8 +93,20 @@ pub fn tile_zone(plane: &Plane, layer: i32, x: i64, y: i64) -> Option<TileZone<'
     })
 }
 
+/// Whether the chunk holding plane tile `x, y` on `layer` exists. The zone
+/// brush and the overlay leave tiles of missing chunks alone: painting one
+/// would create a chunk document that holds only a zone grid.
+pub fn chunk_exists(plane: &Plane, layer: i32, x: i64, y: i64) -> bool {
+    let size = i64::from(plane.chunk_size);
+    size > 0
+        && plane
+            .chunks
+            .contains_key(&(layer, x.div_euclid(size), y.div_euclid(size)))
+}
+
 /// The zone id of every tile of the active view that has one, in row-major
-/// order. The view holds at most the preview's cell budget (4,096 tiles).
+/// order; tiles of chunks that do not exist are left out. The view holds at
+/// most the preview's cell budget (4,096 tiles).
 pub fn view_zones<'w>(world: &'w World, catalog: &PreviewCatalog) -> Vec<([i64; 2], &'w str)> {
     let (plane, layer, [min_x, min_y, width, height]) = catalog.view();
     let Some(plane) = world.planes().get(plane) else {
@@ -103,6 +115,9 @@ pub fn view_zones<'w>(world: &'w World, catalog: &PreviewCatalog) -> Vec<([i64; 
     let mut zones = Vec::new();
     for y in min_y..min_y.saturating_add(height) {
         for x in min_x..min_x.saturating_add(width) {
+            if !chunk_exists(plane, layer, x, y) {
+                continue;
+            }
             let zone = cell_zone(plane, layer, x, y).or(plane.default_zone.as_deref());
             if let Some(zone) = zone {
                 zones.push(([x, y], zone));
@@ -114,9 +129,7 @@ pub fn view_zones<'w>(world: &'w World, catalog: &PreviewCatalog) -> Vec<([i64; 
 
 /// The overlay tints: eight saturated colours that stay distinguishable
 /// from each other (they follow the Okabe–Ito colour-blind-safe set, with
-/// black replaced by indigo), drawn at [`TINT_ALPHA`] over the tile. None is
-/// white or grey, so the brush preview's white lightening stays visible on
-/// top of every tint.
+/// black replaced by indigo), drawn at [`TINT_ALPHA`] over the tile.
 pub const TINTS: [[f32; 3]; 8] = [
     [0.90, 0.62, 0.00], // orange
     [0.34, 0.71, 0.91], // sky blue
@@ -162,10 +175,30 @@ pub fn assign_tints<'z>(zones: impl IntoIterator<Item = &'z str>) -> BTreeMap<&'
     tints
 }
 
+/// The tint of every zone the plane defines: [`assign_tints`] over all its
+/// zone definitions, sorted by id. Callers pass the committed World's plane,
+/// so a zone's colour changes only when zone definitions change, never
+/// because of a stroke, a pending diff or what is in view. Two zones share a
+/// tint only when the plane defines more zones than there are tints.
+pub fn plane_tints(plane: &Plane) -> BTreeMap<&str, usize> {
+    assign_tints(plane.zones.keys().map(String::as_str))
+}
+
 /// The RGBA colour of tint `index` drawn over a tile.
 pub fn tint_color(index: usize) -> [f32; 4] {
     let [r, g, b] = TINTS[index % TINTS.len()];
     [r, g, b, TINT_ALPHA]
+}
+
+/// Opacity of a zone stroke's preview of its result: twice the resting
+/// [`TINT_ALPHA`], so previewed cells stand out from both their old tint and
+/// resting tiles of the target zone.
+pub const PREVIEW_ALPHA: f32 = 0.8;
+
+/// The RGBA colour of tint `index` in a zone stroke's preview.
+pub fn preview_color(index: usize) -> [f32; 4] {
+    let [r, g, b] = TINTS[index % TINTS.len()];
+    [r, g, b, PREVIEW_ALPHA]
 }
 
 /// The RGBA colour of tint `index` as an opaque legend swatch.
@@ -199,8 +232,9 @@ pub(crate) fn notes(committed: &World, sealed: &str) -> Vec<String> {
             .and_then(tilewright_jsonc::Value::as_str)
             .map(str::to_owned)
     };
-    // Tile counts per (plane, target zone); `None` empties the cell.
-    let mut moves: BTreeMap<(String, Option<String>), usize> = BTreeMap::new();
+    // Tile counts per (plane, target zone, whether an empty cell is written
+    // its plane's default zone explicitly); `None` empties the cell.
+    let mut moves: BTreeMap<(String, Option<String>, bool), usize> = BTreeMap::new();
     for operation in operations {
         if text(operation, "op").as_deref() != Some("terrain.set")
             || text(operation, "grid").as_deref() != Some("zone")
@@ -220,33 +254,62 @@ pub(crate) fn notes(committed: &World, sealed: &str) -> Vec<String> {
             let zone = cell
                 .get("value")
                 .and_then(|value| value.as_str().map(str::to_owned));
-            *moves.entry((plane.clone(), zone)).or_default() += 1;
+            let was_empty = cell
+                .get("expect")
+                .is_none_or(|expect| matches!(expect, tilewright_jsonc::Value::Null { .. }));
+            let default = committed
+                .planes()
+                .get(&plane)
+                .and_then(|plane| plane.default_zone.as_deref());
+            let explicit = was_empty && zone.is_some() && zone.as_deref() == default;
+            *moves.entry((plane.clone(), zone, explicit)).or_default() += 1;
         }
     }
     let mut lines = Vec::new();
-    for (index, ((plane, zone), count)) in moves.into_iter().enumerate() {
+    for (index, ((plane, zone, explicit), count)) in moves.into_iter().enumerate() {
         if index == MAXIMUM_DESCRIBED {
             lines.push("Further zone changes are not described here.".into());
             break;
         }
-        let tiles = if count == 1 { "tile" } else { "tiles" };
+        let one = count == 1;
+        let tiles = if one {
+            "1 tile".to_owned()
+        } else {
+            format!("{count} tiles")
+        };
+        let verb =
+            |singular: &'static str, plural: &'static str| if one { singular } else { plural };
         let plane = committed.planes().get(&plane);
         let named = |id: &str| match plane.and_then(|plane| display_name(plane, id)) {
             Some(name) => format!("{} ({})", short(id), short(name)),
             None => format!("{} (no display name)", short(id)),
         };
-        lines.push(
-            match (zone, plane.and_then(|p| p.default_zone.as_deref())) {
-                (Some(zone), _) => format!("Zones: {count} {tiles} move to {}.", named(&zone)),
-                (None, Some(default)) => format!(
-                    "Zones: {count} {tiles} return to the default zone, {}.",
-                    named(default)
-                ),
-                (None, None) => format!(
-                    "Zones: {count} {tiles} lose their zone; the plane has no default zone."
-                ),
-            },
-        );
+        let default = plane.and_then(|p| p.default_zone.as_deref());
+        lines.push(match (zone, default) {
+            // An empty cell shows the default zone already; writing it only
+            // makes it explicit.
+            (Some(zone), Some(_)) if explicit => format!(
+                "Zones: {tiles} now {} {} explicitly ({} showed it as the plane default).",
+                verb("holds", "hold"),
+                named(&zone),
+                verb("it", "they")
+            ),
+            (Some(zone), _) => format!(
+                "Zones: {tiles} {} to {}.",
+                verb("moves", "move"),
+                named(&zone)
+            ),
+            (None, Some(default)) => format!(
+                "Zones: {tiles} {} to the default zone, {}.",
+                verb("returns", "return"),
+                named(default)
+            ),
+            (None, None) => format!(
+                "Zones: {tiles} {} {} zone; the plane has no default zone.",
+                verb("loses", "lose"),
+                verb("its", "their")
+            ),
+        });
     }
     lines
 }

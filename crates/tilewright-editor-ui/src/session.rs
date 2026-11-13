@@ -474,7 +474,9 @@ impl Session {
     /// order. Dispatch of [`Action::PaintZones`] and
     /// [`Session::stroke_changes`] both use this. Cells are compared by their
     /// own value, not the zone they display: painting the default zone into
-    /// an empty cell writes it explicitly, and so is a change.
+    /// an empty cell writes it explicitly, and so is a change. Cells of
+    /// chunks that do not exist are skipped; a stroke left with no change is
+    /// refused.
     fn zone_plan<'w>(
         &'w self,
         plane: &str,
@@ -506,6 +508,10 @@ impl Session {
         }
         let changes: Vec<TerrainChange<'w>> = cells
             .iter()
+            // A tile whose chunk does not exist is left out like a tile
+            // outside the view: painting it would create a chunk document
+            // that holds only a zone grid.
+            .filter(|&&[x, y]| crate::zones::chunk_exists(plane, layer, x, y))
             .filter_map(|&[x, y]| {
                 let before = crate::zones::cell_zone(plane, layer, x, y);
                 (before != zone).then_some(([x, y], before))

@@ -52,6 +52,74 @@ fn texture(
         .ok_or_else(|| failure("missing ready resource"))?;
     Ok((texture, *anchor))
 }
+/// Where each cell of the cell scene falls in the World scene's draw order,
+/// as the shared renderer orders it: the World objects and the cell
+/// reference objects are compiled together into one scene that is only
+/// read, never drawn, with every cell after the World objects of its own
+/// order key. A cell's slot is then the `(depth, painter order)` of the last
+/// drawn World quad before it, or `None` when no World quad comes before
+/// it. Empty cells get a real slot too. Nothing is projected or ordered
+/// here; the renderer's own compile does both. When the combined scene
+/// exceeds twice the scene limits the map is empty and callers fall back.
+fn cell_slots(
+    world: &tilewright_scene::SceneBundle,
+    world_objects: &[WorldObject],
+    cell_view: &WorldView,
+    limits: tilewright_scene::SceneLimits,
+) -> BTreeMap<SemanticId, Option<(i16, u32)>> {
+    let offset = world_objects
+        .iter()
+        .map(|object| object.semantic_id.0)
+        .max()
+        .unwrap_or(0);
+    let mut objects = world_objects.to_vec();
+    for cell in &cell_view.objects {
+        let Some(id) = offset.checked_add(cell.semantic_id.0) else {
+            return BTreeMap::new();
+        };
+        objects.push(WorldObject {
+            semantic_id: SemanticId(id),
+            ..cell.clone()
+        });
+    }
+    let combined = WorldView {
+        objects,
+        ..cell_view.clone()
+    };
+    let doubled = tilewright_scene::SceneLimits {
+        maximum_quads: limits.maximum_quads.saturating_mul(2),
+        maximum_raster_samples: limits.maximum_raster_samples.saturating_mul(2),
+        ..limits
+    };
+    let Ok(ordered) = tilewright_render_world::compile(&combined, doubled) else {
+        return BTreeMap::new();
+    };
+    // A World quad is the same (identity, part) in both scenes.
+    let in_world: BTreeMap<(SemanticId, u16), (i16, u32)> = world
+        .quads()
+        .iter()
+        .map(|quad| {
+            (
+                (quad.semantic_id, quad.part),
+                (quad.depth, quad.painter_order),
+            )
+        })
+        .collect();
+    // Scene quads are stored in draw order.
+    let mut last = None;
+    let mut slots = BTreeMap::new();
+    for quad in ordered.quads() {
+        if quad.semantic_id.0 > offset {
+            slots
+                .entry(SemanticId(quad.semantic_id.0 - offset))
+                .or_insert(last);
+        } else if let Some(slot) = in_world.get(&(quad.semantic_id, quad.part)) {
+            last = Some(*slot);
+        }
+    }
+    slots
+}
+
 fn identified(
     objects: SceneObjects,
 ) -> Result<(Vec<WorldObject>, BTreeMap<SemanticId, SelectionKey>), PreviewError> {
@@ -138,6 +206,7 @@ pub fn prepare(
     adapter.terrain(&mut objects)?;
     let inventory = adapter.objects(&mut objects)?;
     let (objects, picks) = identified(objects)?;
+    let world_view_objects = objects.clone();
     let world_view = WorldView {
         revision: view.frame_revision,
         clock_millis: 0,
@@ -158,6 +227,7 @@ pub fn prepare(
     };
     let cell_scene = tilewright_render_world::compile(&cell_view, limits.scene)
         .map_err(|e| failure(e.to_string()))?;
+    let cell_slots = cell_slots(&scene, &world_view_objects, &cell_view, limits.scene);
     let mut diagnostics=vec![PreviewDiagnostic{code:"preview.effects-neutral",message:"Preview v1 uses neutral effects and one-tile footprints; profile fields are retained without inferred rendering behavior.".into()}];
     if inventory > 0 {
         diagnostics.push(PreviewDiagnostic {
@@ -170,6 +240,7 @@ pub fn prepare(
     Ok(PreparedPreview {
         scene,
         cell_scene,
+        cell_slots,
         resources: Arc::new(memory),
         picks,
         cell_picks,

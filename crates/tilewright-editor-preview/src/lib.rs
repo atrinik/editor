@@ -124,6 +124,12 @@ pub(crate) fn hash(bytes: &[u8]) -> [u8; 32] {
 pub struct PreparedPreview {
     pub scene: SceneBundle,
     pub cell_scene: SceneBundle,
+    /// For each cell-scene identity, where that cell falls in `scene`'s
+    /// draw order: the `(depth, painter order)` of the last World quad drawn
+    /// before it, or `None` before the whole World. Computed once per
+    /// prepared scene from the shared renderer's own ordering; empty if the
+    /// combined ordering scene exceeded its limits.
+    pub cell_slots: BTreeMap<SemanticId, Option<(i16, u32)>>,
     pub resources: Arc<dyn ResourceProvider>,
     pub picks: BTreeMap<SemanticId, SelectionKey>,
     pub cell_picks: BTreeMap<SemanticId, SelectionKey>,

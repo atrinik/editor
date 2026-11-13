@@ -71,6 +71,26 @@ const DEMO_STROKE: [[i64; 2]; 2] = [[1, 2], [5, 2]];
 /// the neutral sample's path row.
 const DEMO_ZONE_STROKE: [[i64; 2]; 2] = [[5, 0], [5, 5]];
 
+/// The zones of the in-view tiles for one World revision and frame.
+struct ZoneView {
+    key: ([u8; 32], u64),
+    tiles: Vec<([i64; 2], String)>,
+}
+
+/// A sidebar row whose text names a zone id that must stay
+/// distinguishable however narrow the sidebar is: fitted when the sidebar is
+/// laid out (see `workspace_render::fit_id`).
+enum IdText {
+    /// The first `(prefix, suffix)` around `id` that fits; else the last
+    /// one's prefix with the id elided in the middle.
+    Id {
+        id: String,
+        variants: Vec<(String, String)>,
+    },
+    /// `Path: ` and the zone chain, its last zone kept whole.
+    Path(Vec<String>),
+}
+
 /// Which granted edit a scripted selection needs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Capability {
@@ -110,7 +130,13 @@ struct Application {
     /// Whether the last composed frame left out the stroke preview because
     /// World, preview and interface together exceeded the scene limits.
     preview_omitted: bool,
-    /// The scene limits every composed frame must meet: the renderer's.
+    /// The zone of every in-view tile, computed once per redraw for the
+    /// legend and the overlay, keyed by the World source revision and the
+    /// frame it was computed for.
+    zone_view: Option<ZoneView>,
+    /// The scene limits every composed frame must meet: the scene library's
+    /// defaults (`SceneLimits::default()`), never queried from the renderer;
+    /// tests lower them.
     frame_limits: tilewright_scene::SceneLimits,
 }
 
@@ -186,6 +212,7 @@ pub fn run(arguments: &[String]) -> Result<()> {
         stroke_mask: None,
         prepared_scenes: 1,
         preview_omitted: false,
+        zone_view: None,
         frame_limits: tilewright_scene::SceneLimits::default(),
     };
     println!(
@@ -629,6 +656,14 @@ impl Application {
     }
 
     fn refresh_ui(&mut self) {
+        let key = self.zone_view_key();
+        if self.zone_view.as_ref().is_none_or(|view| view.key != key) {
+            let tiles = zones::view_zones(self.session.world(), self.session.catalog())
+                .into_iter()
+                .map(|(at, zone)| (at, zone.to_owned()))
+                .collect();
+            self.zone_view = Some(ZoneView { key, tiles });
+        }
         let mut ui = WorkspaceUi::new(self.ui.logical_size(), self.ui.size);
         self.toolbar(&mut ui);
         self.sidebar(&mut ui);
@@ -746,10 +781,11 @@ impl Application {
         }
     }
 
-    fn inspector_rows(&self) -> UiRows {
+    fn inspector_rows(&self) -> (UiRows, Vec<(usize, IdText)>) {
         let ready = self.blocked.is_none() && self.session.can_prepare();
         let mode = self.tools.mode();
         let mut rows = Vec::new();
+        let mut fits = Vec::new();
         let inspected = inspector::inspect(
             self.session.world(),
             self.session.catalog(),
@@ -799,7 +835,7 @@ impl Application {
                     true,
                     false,
                 ));
-                self.cell_zone_rows(&mut rows, plane, layer, [x, y]);
+                self.cell_zone_rows(&mut rows, &mut fits, plane, layer, [x, y]);
             }
             None => rows.push((
                 inspected
@@ -832,9 +868,9 @@ impl Application {
             self.place_rows(&mut rows, ready);
         }
         if mode == ToolMode::Zone {
-            self.zone_rows(&mut rows, ready);
+            self.zone_rows(&mut rows, &mut fits, ready);
         }
-        rows
+        (rows, fits)
     }
 
     /// Outside Zone mode, the zone overlay toggle sits between the
@@ -858,8 +894,16 @@ impl Application {
     }
 
     /// The selected tile's zone: its id (and whether it is the plane's
-    /// default), the parent chain and the display name.
-    fn cell_zone_rows(&self, rows: &mut UiRows, plane: &str, layer: i32, [x, y]: [i64; 2]) {
+    /// default), the parent chain and the display name. The id and chain
+    /// rows are fitted later so long ids keep their distinguishing tail.
+    fn cell_zone_rows(
+        &self,
+        rows: &mut UiRows,
+        fits: &mut Vec<(usize, IdText)>,
+        plane: &str,
+        layer: i32,
+        [x, y]: [i64; 2],
+    ) {
         let Some(plane) = self.session.world().planes().get(plane) else {
             return;
         };
@@ -867,22 +911,32 @@ impl Application {
             rows.push(("Zone: none".into(), None, true, false));
             return;
         };
-        rows.push((
-            if zone.from_default {
-                format!("Zone: {} (plane default)", zone.id)
-            } else {
-                format!("Zone: {}", zone.id)
+        let mut variants = Vec::new();
+        if zone.from_default {
+            variants.push(("Zone: ".into(), " (plane default)".into()));
+        }
+        variants.push(("Zone: ".into(), String::new()));
+        fits.push((
+            rows.len(),
+            IdText::Id {
+                id: zone.id.into(),
+                variants,
             },
-            None,
-            true,
-            false,
         ));
-        rows.push((
-            format!("Path: {}", zone.path.join(" > ")),
-            None,
-            true,
-            false,
+        rows.push((format!("Zone: {}", zone.id), None, true, false));
+        fits.push((
+            rows.len(),
+            IdText::Path(
+                zone.path
+                    .iter()
+                    .rev()
+                    .map(|zone| (*zone).to_owned())
+                    .collect(),
+            ),
         ));
+        // Outermost first, so the tile's own zone ends the line.
+        let outward: Vec<&str> = zone.path.iter().rev().copied().collect();
+        rows.push((format!("Path: {}", outward.join(" > ")), None, true, false));
         rows.push((
             format!("Zone name: {}", zone.name.unwrap_or("none")),
             None,
@@ -891,33 +945,65 @@ impl Application {
         ));
     }
 
-    /// The tint index of every zone shown in the view, as the overlay
-    /// draws it.
-    fn view_tints(&self) -> std::collections::BTreeMap<String, usize> {
-        let in_view = zones::view_zones(self.session.world(), self.session.catalog());
-        zones::assign_tints(in_view.iter().map(|(_, zone)| *zone))
-            .into_iter()
-            .map(|(zone, tint)| (zone.to_owned(), tint))
-            .collect()
+    fn zone_view_key(&self) -> ([u8; 32], u64) {
+        (
+            self.session.world().source_digest(),
+            self.view.frame_revision,
+        )
+    }
+
+    /// The zones of the in-view tiles: this redraw's computation when it is
+    /// current, else computed now.
+    fn view_zone_tiles(&self) -> std::borrow::Cow<'_, [([i64; 2], String)]> {
+        match &self.zone_view {
+            Some(view) if view.key == self.zone_view_key() => {
+                std::borrow::Cow::Borrowed(&view.tiles)
+            }
+            _ => std::borrow::Cow::Owned(
+                zones::view_zones(self.session.world(), self.session.catalog())
+                    .into_iter()
+                    .map(|(at, zone)| (at, zone.to_owned()))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// The tint of every zone the view's plane defines in the committed
+    /// World: a zone's colour changes only when zone definitions do, never
+    /// because of a stroke, a pending diff or what is in view.
+    fn zone_tints(&self) -> std::collections::BTreeMap<String, usize> {
+        let committed = self.session.history().document().world();
+        committed
+            .planes()
+            .get(self.session.catalog().view().0)
+            .map(|plane| {
+                zones::plane_tints(plane)
+                    .into_iter()
+                    .map(|(zone, tint)| (zone.to_owned(), tint))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Zone mode: the brush, then the zone legend and palette in one list.
     /// Each zone of the plane is a row, sorted by id, with its display name
-    /// and how many tiles of the view it holds; zones in the view carry their
-    /// overlay tint as a swatch. With the paint grant a row chooses the zone
-    /// to paint; the last row paints the default zone (empties the cells).
-    fn zone_rows(&self, rows: &mut UiRows, ready: bool) {
+    /// and how many tiles of the view it holds, and its overlay tint as a
+    /// swatch. With the paint grant a row chooses the zone to paint; the
+    /// last row paints the default zone (empties the cells). At most 256
+    /// zones are listed.
+    fn zone_rows(&self, rows: &mut UiRows, fits: &mut Vec<(usize, IdText)>, ready: bool) {
         let world = self.session.world();
         let catalog = self.session.catalog();
         let paint = catalog.editing().zones.paint;
         if paint {
             self.brush_rows(rows);
         }
+        let tiles = self.view_zone_tiles();
         let mut counts = std::collections::BTreeMap::<&str, usize>::new();
-        for (_, zone) in zones::view_zones(world, catalog) {
-            *counts.entry(zone).or_default() += 1;
+        for (_, zone) in tiles.iter() {
+            *counts.entry(zone.as_str()).or_default() += 1;
         }
-        let tints = zones::assign_tints(counts.keys().copied());
+        let tints = self.zone_tints();
         let (plane, _, _) = catalog.view();
         let plane = world.planes().get(plane);
         let palette = tools::zone_palette(world, catalog);
@@ -935,26 +1021,53 @@ impl Application {
             let name = plane
                 .and_then(|plane| zones::display_name(plane, zone))
                 .unwrap_or("no display name");
-            let mut text = match counts.get(zone) {
-                Some(count) => format!("{zone} = {name} ({count})"),
-                None => format!("{zone} = {name}, not in view"),
-            };
-            if tints
+            let shared = tints
                 .get(zone)
-                .is_some_and(|tint| tints.values().filter(|other| *other == tint).count() > 1)
-            {
-                text.push_str(", shared tint");
-            }
+                .is_some_and(|tint| tints.values().filter(|other| *other == tint).count() > 1);
+            let shared = if shared { ", shared tint" } else { "" };
+            let (long, count) = match counts.get(zone) {
+                Some(count) => (
+                    format!(" = {name} ({count}){shared}"),
+                    format!(" ({count})"),
+                ),
+                None => (
+                    format!(" = {name}, not in view{shared}"),
+                    ", not in view".into(),
+                ),
+            };
+            fits.push((
+                rows.len(),
+                IdText::Id {
+                    id: zone.into(),
+                    variants: vec![
+                        (String::new(), long.clone()),
+                        (String::new(), count),
+                        (String::new(), String::new()),
+                    ],
+                },
+            ));
             let choice = ZoneChoice::Zone(zone.to_owned());
             let active = paint && self.tools.zone_choice() == Some(&choice);
             rows.push((
-                text,
+                format!("{zone}{long}"),
                 Some(Control::ZonePalette(choice)),
                 ready && paint,
                 active,
             ));
         }
         let default = plane.and_then(|plane| plane.default_zone.as_deref());
+        if let Some(zone) = default {
+            fits.push((
+                rows.len(),
+                IdText::Id {
+                    id: zone.into(),
+                    variants: vec![
+                        ("Default zone (clear): ".into(), String::new()),
+                        ("Default: ".into(), String::new()),
+                    ],
+                },
+            ));
+        }
         rows.push((
             default.map_or_else(
                 || "No zone (clear cells)".into(),
@@ -1151,7 +1264,36 @@ impl Application {
         let ready = self.blocked.is_none() && self.session.can_prepare();
         let x = ui.sidebar_x();
         let width = ui.sidebar_width();
-        let rows = self.inspector_rows();
+        let (mut rows, fits) = self.inspector_rows();
+        // Rows naming a zone id are fitted so the id's distinguishing tail
+        // survives a narrow sidebar: they then fit whole and are not cut
+        // at the end again when laid out.
+        for (index, text) in fits {
+            let Some(row) = rows.get_mut(index) else {
+                continue;
+            };
+            let (height, indent) = if matches!(row.1, Some(Control::ZonePalette(_))) {
+                (
+                    ZONE_ROW_HEIGHT,
+                    crate::workspace_render::thumbnail_indent(ZONE_ROW_HEIGHT),
+                )
+            } else {
+                (TEXT_ROW_HEIGHT, 0)
+            };
+            let available = width.saturating_sub(indent);
+            row.0 = match text {
+                IdText::Id { id, variants } => crate::workspace_render::fit_id(
+                    &mut self.text,
+                    &id,
+                    &variants,
+                    available,
+                    height,
+                ),
+                IdText::Path(path) => {
+                    crate::workspace_render::fit_path(&mut self.text, &path, available, height)
+                }
+            };
+        }
         let mut y = 56;
         if self.tools.mode() == ToolMode::Place
             && !tools::object_palette(self.session.catalog()).is_empty()
@@ -1234,7 +1376,7 @@ impl Application {
         let width = ui.sidebar_width();
         let bottom = ui.logical_height();
         let tints = if self.tools.mode() == ToolMode::Zone {
-            self.view_tints()
+            self.zone_tints()
         } else {
             std::collections::BTreeMap::new()
         };
@@ -1951,8 +2093,8 @@ impl Application {
 
     /// Zone mode: capture the overlay and legend, then paint the last zone
     /// of the palette down a column with a one-cell brush through the
-    /// ordinary press, drag and release, capture the pending review, accept
-    /// it and capture the result.
+    /// ordinary press, drag and release, capturing the live preview
+    /// mid-gesture and the pending review, accept it and capture the result.
     fn zone_demo(&mut self) -> Result<()> {
         self.control(Control::Zone)?;
         self.capture("zones")?;
@@ -1979,6 +2121,7 @@ impl Application {
         let result = self
             .begin_stroke(start.0, start.1)
             .and_then(|()| self.stroke_sample(end.0, end.1))
+            .and_then(|()| self.capture("zone-stroke-preview"))
             .and_then(|()| self.finish_stroke());
         self.tools.set_brush(brush);
         result?;
@@ -3173,22 +3316,54 @@ fn native_present(
     }
 }
 
-/// The live preview of the running brush stroke: the cells its release
-/// would change, from the same Session computation that prepares the
-/// release, drawn on the cached prepared cell scene of the stroke's own
-/// frame. Empty without a stroke, or when the release would be refused.
-fn stroke_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
-    let Some(stroke) = app.tools.stroke() else {
-        return Vec::new();
-    };
+/// The cells a running stroke's release would change, from the same
+/// Session computation that prepares the release, when the stroke belongs
+/// to the current frame. `None` without a stroke, or when the release would
+/// be refused.
+fn stroke_changes(app: &Application) -> Option<Vec<[i64; 2]>> {
+    let stroke = app.tools.stroke()?;
     if stroke.generation() != app.view.frame_revision
         || app.prepared.frame_revision != app.view.frame_revision
     {
-        return Vec::new();
+        return None;
     }
-    let Ok(changes) = app.session.stroke_changes(stroke) else {
+    app.session.stroke_changes(stroke).ok()
+}
+
+/// The live preview of the running brush stroke, drawn on the cached
+/// prepared cell scene of the stroke's own frame. A terrain stroke marks
+/// the cells its release would change in white. A zone stroke previews its
+/// result instead: those cells in the target zone's tint at
+/// [`zones::PREVIEW_ALPHA`], twice the resting overlay's opacity (the
+/// default-zone row shows the plane default's tint, or no tint without a
+/// default), and [`zone_overlay`] leaves those cells out, so the preview
+/// replaces their resting tint rather than stacking on it.
+fn stroke_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
+    let (Some(stroke), Some(changes)) = (app.tools.stroke(), stroke_changes(app)) else {
         return Vec::new();
     };
+    if let StrokeTarget::Zone(zone) = stroke.target() {
+        let default = app
+            .session
+            .history()
+            .document()
+            .world()
+            .planes()
+            .get(stroke.plane())
+            .and_then(|plane| plane.default_zone.clone());
+        let Some(shown) = zone.clone().or(default) else {
+            return Vec::new();
+        };
+        let tints = app.zone_tints();
+        let color = zones::preview_color(
+            tints
+                .get(&shown)
+                .copied()
+                .unwrap_or_else(|| zones::preferred_tint(&shown)),
+        );
+        let cells = changes.into_iter().map(|at| (at, color)).collect();
+        return crate::workspace_render::zone_overlay(&app.prepared, &cells);
+    }
     let cells = changes
         .into_iter()
         .map(|[x, y]| SelectionKey::Cell {
@@ -3204,16 +3379,32 @@ fn stroke_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
 
 /// The zone overlay: every in-view tile that has a zone, tinted with its
 /// zone's tint, over the cached prepared cell scene. Empty unless zones are
-/// shown (always in Zone mode; after O elsewhere).
+/// shown (always in Zone mode; after O elsewhere). Cells a running zone
+/// stroke previews are left to [`stroke_overlay`].
 fn zone_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
     if !app.tools.zones_visible() || app.prepared.frame_revision != app.view.frame_revision {
         return Vec::new();
     }
-    let in_view = zones::view_zones(app.session.world(), app.session.catalog());
-    let tints = zones::assign_tints(in_view.iter().map(|(_, zone)| *zone));
-    let cells = in_view
+    let previewed: std::collections::BTreeSet<[i64; 2]> = app
+        .tools
+        .stroke()
+        .filter(|stroke| matches!(stroke.target(), StrokeTarget::Zone(_)))
+        .and_then(|_| stroke_changes(app))
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let tints = app.zone_tints();
+    let cells = app
+        .view_zone_tiles()
         .iter()
-        .map(|(at, zone)| (*at, zones::tint_color(tints[zone])))
+        .filter(|(at, _)| !previewed.contains(at))
+        .map(|(at, zone)| {
+            let tint = tints
+                .get(zone)
+                .copied()
+                .unwrap_or_else(|| zones::preferred_tint(zone));
+            (*at, zones::tint_color(tint))
+        })
         .collect();
     crate::workspace_render::zone_overlay(&app.prepared, &cells)
 }
@@ -3251,7 +3442,10 @@ fn compose_with_preview(
 }
 
 fn workspace_presentation(app: &mut Application) -> Result<crate::workspace_render::Presentation> {
-    // Zone tints first, so the stroke preview draws over them.
+    // Zone tints first, so the stroke preview draws over them: copies of two
+    // overlays in the same (depth, painter order) slot are ordered only by
+    // the order they are passed here, the first getting the lower semantic
+    // identities and drawing first.
     let mut overlay = zone_overlay(app);
     overlay.extend(stroke_overlay(app));
     let (mut presentation, mut omitted) = compose_with_preview(

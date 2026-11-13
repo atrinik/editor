@@ -87,6 +87,7 @@ fn application_with_source(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, A
         stroke_mask: None,
         prepared_scenes: 1,
         preview_omitted: false,
+        zone_view: None,
         frame_limits: tilewright_scene::SceneLimits::default(),
     };
     (temporary, app)
@@ -174,6 +175,7 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         "search-placed",
         "stroke-preview",
         "zones",
+        "zone-stroke-preview",
         "zone-stroke",
         "zone-painted",
     ] {
@@ -241,11 +243,18 @@ fn focused_text_consumes_global_shortcuts_without_invalidating_world_generation(
         Keycode::S,
         Keycode::D,
         Keycode::Left,
+        Keycode::N,
+        Keycode::O,
     ] {
         super::native_key(&mut app, key).unwrap();
     }
     app.refresh_ui();
     assert_eq!(app.tools.draft_text(), Some(draft.as_str()));
+    assert_ne!(
+        app.tools.mode(),
+        tilewright_editor_ui::tools::ToolMode::Zone
+    );
+    assert!(!app.tools.zones_visible());
     assert_eq!(app.session.generation(), generation);
     assert_eq!(
         app.view.camera.center.map(f64::to_bits),

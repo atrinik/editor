@@ -653,3 +653,94 @@ fn zone_mode_needs_a_choice_and_the_overlay_toggle_is_per_mode() {
         &StrokeTarget::Terrain("sand".into())
     );
 }
+
+#[test]
+fn review_notes_agree_in_number_and_name_explicit_default_writes() {
+    let (_dir, mut session) = fixture();
+    let mut records = Records::default();
+    let mut note = |cells: Vec<[i64; 2]>, zone: Option<&str>| {
+        session
+            .dispatch(zone_action(&session, cells, zone), &mut records)
+            .unwrap();
+        let notes = session.pending_warnings().to_vec();
+        session.dispatch(Action::Cancel, &mut records).unwrap();
+        notes
+    };
+    assert_eq!(
+        note(vec![[6, 0]], Some("path")),
+        ["Zones: 1 tile moves to path (Stone path)."]
+    );
+    assert_eq!(
+        note(vec![[6, 0], [7, 0]], Some("meadow.pond")),
+        ["Zones: 2 tiles move to meadow.pond (Quiet meadow)."]
+    );
+    assert_eq!(
+        note(vec![[0, 5]], None),
+        ["Zones: 1 tile returns to the default zone, meadow (Quiet meadow)."]
+    );
+    // Writing the plane default into empty cells changes nothing visible.
+    assert_eq!(
+        note(vec![[6, 0]], Some("meadow")),
+        [
+            "Zones: 1 tile now holds meadow (Quiet meadow) explicitly (it showed it as the plane default)."
+        ]
+    );
+    // A mixed stroke reports each part: two empty cells made explicit and
+    // one pond cell and one path cell that really move.
+    assert_eq!(
+        note(vec![[1, 1], [1, 5], [6, 0], [7, 0]], Some("meadow")),
+        [
+            "Zones: 2 tiles move to meadow (Quiet meadow).",
+            "Zones: 2 tiles now hold meadow (Quiet meadow) explicitly (they showed it as the plane default).",
+        ]
+    );
+}
+
+/// A view that reaches east past the visible chunk into chunk `[1, 0]`,
+/// which does not exist.
+fn reach_missing_chunk(root: &Path) {
+    edit_catalog(root, |catalog| {
+        catalog["view"]["bounds"] = serde_json::json!([28, 0, 8, 6]);
+    });
+}
+
+#[test]
+fn zone_strokes_and_the_overlay_leave_tiles_of_missing_chunks_alone() {
+    let (dir, mut session) = fixture_with(reach_missing_chunk);
+    let missing = dir.path().join("planes/main/layers/0/1_0.jsonc");
+    assert!(!missing.exists());
+    let mut records = Records::default();
+    // The overlay has no tile of the missing chunk.
+    let view = zones::view_zones(session.world(), session.catalog());
+    assert_eq!(view.len(), 4 * 6);
+    assert!(view.iter().all(|([x, _], _)| *x < 32));
+    // A stroke across the boundary prepares only the existing chunk's cells
+    // and its preview says the same.
+    let mut tools = zone_tools(&session, ZoneChoice::Zone("path".into()), 0);
+    press(&mut session, &mut tools, &mut records, [30, 0]).unwrap();
+    tools
+        .extend_stroke(&cell(34, 0), session.generation())
+        .unwrap();
+    assert_eq!(tools.stroke().unwrap().len(), 5);
+    let preview = session.stroke_changes(tools.stroke().unwrap()).unwrap();
+    assert_eq!(preview, [[30, 0], [31, 0]]);
+    let action = tools
+        .finish_stroke(session.generation(), false)
+        .unwrap()
+        .unwrap();
+    session.dispatch(action, &mut records).unwrap();
+    assert_eq!(prepared_cells(&session), preview);
+    assert_eq!(session.history().pending().unwrap().changed().count(), 1);
+    session.dispatch(Action::Accept, &mut records).unwrap();
+    assert!(!missing.exists(), "no chunk document holding only zones");
+    // A stroke entirely in the missing chunk changes nothing.
+    let refused = session
+        .dispatch(
+            zone_action(&session, vec![[32, 0], [33, 0]], Some("path")),
+            &mut records,
+        )
+        .unwrap_err()
+        .0;
+    assert!(refused.contains("changes no cell"), "{refused}");
+    assert!(!missing.exists());
+}
