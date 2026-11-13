@@ -94,85 +94,261 @@ fn each_class_shows_one_marker_at_start_middle_end_and_side_by_side() {
     }
 }
 
+/// Pieces that exercise every grapheme rule a marker could disturb: stored
+/// breaks and controls of each class, prepended, combining, spacing and
+/// joining marks, Hangul jamo, an Indic consonant and virama, emoji
+/// modifiers and selectors, regional indicators, a stored zero-width space
+/// and the marker symbols themselves typed as ordinary text.
+const PARTS: [&str; 34] = [
+    "\n",
+    "\r\n",
+    "\r",
+    "\u{2028}",
+    "\u{2029}",
+    "\t",
+    "\u{85}",
+    "\u{1}",
+    "\u{9f}",
+    "a",
+    "\u{301}",
+    "\u{600}",
+    "\u{110bd}",
+    "\u{94d}",
+    "\u{93f}",
+    "\u{903}",
+    "\u{915}\u{94d}",
+    "\u{915}",
+    "\u{1100}",
+    "\u{1161}",
+    "\u{11a8}",
+    "\u{ac00}",
+    "👍",
+    "\u{1f3fd}",
+    "\u{fe0f}",
+    "👍\u{200d}",
+    "\u{200d}",
+    "🇺",
+    "\u{200b}",
+    "⏎",
+    "¶",
+    "→",
+    "⬚",
+    "e\u{301}",
+];
+
+/// A tiny deterministic generator, so the sample is the same on every run.
+struct Seeded(u64);
+impl Seeded {
+    fn below(&mut self, bound: usize) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(self.0 >> 33).unwrap() % bound
+    }
+}
+
+/// Every committed boundary is shown and maps back exactly; the only extra
+/// display positions are inside marker units and map to the stored
+/// character's edge on the glyph's side; each glyph is its own grapheme.
+fn check_round_trip(value: &str) {
+    let input = TextInput::new(value.into()).unwrap();
+    let snapshot = input.snapshot();
+    let display = boundaries(&snapshot.display_text);
+    let committed = boundaries(value);
+    let mut mapped = BTreeSet::new();
+    for &byte in &committed {
+        let mut probe = input.clone();
+        caret(&mut probe, byte);
+        let shown = probe.snapshot().display_selection.focus.byte;
+        assert!(display.contains(&shown), "{value:?} {byte} -> {shown}");
+        assert_eq!(
+            snapshot
+                .committed_cursor(TextCursor::new(shown))
+                .unwrap()
+                .byte,
+            byte,
+            "{value:?}"
+        );
+        mapped.insert(shown);
+    }
+    for &byte in display.difference(&mapped) {
+        let unit = snapshot
+            .markers
+            .iter()
+            .find(|unit| unit.display.start < byte && byte < unit.display.end)
+            .unwrap_or_else(|| panic!("{value:?}: stray boundary {byte}"));
+        let back = snapshot
+            .committed_cursor(TextCursor::new(byte))
+            .unwrap()
+            .byte;
+        let expected = if byte <= unit.glyph.start {
+            unit.source.start
+        } else {
+            unit.source.end
+        };
+        assert_eq!(back, expected, "{value:?}");
+    }
+    for unit in &snapshot.markers {
+        assert!(display.contains(&unit.glyph.start), "{value:?}");
+        assert!(display.contains(&unit.glyph.end), "{value:?}");
+    }
+}
+
 #[test]
 fn display_boundaries_match_committed_boundaries_exactly() {
-    // Neighbours that would join a visible marker's grapheme, but never the
-    // stored control's: a prepended mark, a combining mark, a spacing mark,
-    // a zero-width joiner after an emoji, and regional indicators.
-    let parts = [
-        "\n",
-        "\r\n",
-        "\r",
-        "\u{2028}",
-        "\u{2029}",
-        "\t",
-        "\u{85}",
-        "a",
-        "\u{301}",
-        "\u{600}",
-        "\u{94d}",
-        "\u{93f}",
-        "👍\u{200d}",
-        "\u{200d}",
-        "🇺",
-        "\u{200b}",
-    ];
-    let mut checked = 0;
+    // Every value of up to three pieces, then a seeded sample of longer ones.
     let mut values = vec![String::new()];
-    for _ in 0..4 {
+    let mut checked = 0;
+    for _ in 0..3 {
         values = values
             .iter()
-            .flat_map(|value| parts.iter().map(move |part| format!("{value}{part}")))
+            .flat_map(|value| PARTS.iter().map(move |part| format!("{value}{part}")))
             .collect();
         for value in &values {
-            let input = TextInput::new(value.clone()).unwrap();
-            let snapshot = input.snapshot();
-            let display = boundaries(&snapshot.display_text);
-            let committed = boundaries(value);
-            // Every committed boundary is shown; positions inside a marker
-            // unit (beside a zero-width guard) are its only extra positions.
-            let mut mapped = BTreeSet::new();
-            for &byte in &committed {
-                let mut probe = input.clone();
-                caret(&mut probe, byte);
-                let shown = probe.snapshot().display_selection.focus.byte;
-                assert!(display.contains(&shown), "{value:?} {byte} -> {shown}");
-                assert_eq!(
-                    snapshot
-                        .committed_cursor(TextCursor::new(shown))
-                        .unwrap()
-                        .byte,
-                    byte,
-                    "{value:?}"
-                );
-                mapped.insert(shown);
-            }
-            for &byte in display.difference(&mapped) {
-                let unit = snapshot
-                    .markers
-                    .iter()
-                    .find(|unit| unit.display.start < byte && byte < unit.display.end)
-                    .unwrap_or_else(|| panic!("{value:?}: stray boundary {byte}"));
-                let back = snapshot
-                    .committed_cursor(TextCursor::new(byte))
-                    .unwrap()
-                    .byte;
-                let expected = if byte <= unit.glyph.start {
-                    unit.source.start
-                } else {
-                    unit.source.end
-                };
-                assert_eq!(back, expected, "{value:?}");
-            }
-            // Each marker glyph is a grapheme of its own.
-            for unit in &snapshot.markers {
-                assert!(display.contains(&unit.glyph.start), "{value:?}");
-                assert!(display.contains(&unit.glyph.end), "{value:?}");
-            }
+            check_round_trip(value);
             checked += 1;
         }
     }
+    let mut random = Seeded(0x5eed);
+    for _ in 0..20_000 {
+        let length = 4 + random.below(5);
+        let value: String = (0..length)
+            .map(|_| PARTS[random.below(PARTS.len())])
+            .collect();
+        check_round_trip(&value);
+        checked += 1;
+    }
     assert!(checked > 60_000);
+}
+
+/// The committed position of a display position outside the preedit,
+/// computed independently of `committed_cursor`: markers shift positions,
+/// and the preedit stands in for the replaced selection.
+fn expected_committed(
+    snapshot: &tilewright_editor_ui::text_input::TextInputSnapshot,
+    shown: usize,
+) -> usize {
+    let composition = snapshot.composition.as_ref().unwrap();
+    let raw = snapshot
+        .markers
+        .iter()
+        .rev()
+        .find(|unit| unit.display.end <= shown)
+        .map_or(shown, |unit| unit.source.end + (shown - unit.display.end));
+    let preedit =
+        composition.replacement.start..composition.replacement.start + composition.text.len();
+    if raw <= preedit.start {
+        raw
+    } else {
+        assert!(raw >= preedit.end);
+        composition.replacement.end + (raw - preedit.end)
+    }
+}
+
+#[test]
+fn positions_around_a_preedit_map_back_exactly_with_markers_on_either_side() {
+    // The reviewed case: four markers before a preedit at a caret.
+    let mut input = TextInput::new("\n\n\n\nbc".into()).unwrap();
+    caret(&mut input, 4);
+    input.update_preedit("a", 1, 0).unwrap();
+    let snapshot = input.snapshot();
+    let markers = LINE_BREAK_MARKER.to_string().repeat(4);
+    assert_eq!(snapshot.display_text, format!("{markers}abc"));
+    let range = snapshot.composition.as_ref().unwrap().display_range.clone();
+    assert_eq!(range, 12..13);
+    for (shown, committed) in [(0, 0), (3, 1), (12, 4), (13, 4), (14, 5), (15, 6)] {
+        assert_eq!(
+            snapshot
+                .committed_cursor(TextCursor::new(shown))
+                .unwrap()
+                .byte,
+            committed,
+            "display {shown}"
+        );
+    }
+    // A non-empty replaced selection, with markers before and after it.
+    let mut input = TextInput::new("x\ny\u{2029}z\tw".into()).unwrap();
+    input
+        .set_selection(
+            TextSelection {
+                anchor: TextCursor::new(2),
+                focus: TextCursor::new(6),
+            },
+            input.revision(),
+        )
+        .unwrap();
+    input.update_preedit("QR", 2, 0).unwrap();
+    let snapshot = input.snapshot();
+    assert_eq!(
+        snapshot.display_text,
+        format!("x{LINE_BREAK_MARKER}QRz{TAB_MARKER}w")
+    );
+    for (shown, committed) in [(1, 1), (4, 2), (6, 6), (7, 7), (10, 8), (11, 9)] {
+        assert_eq!(
+            snapshot
+                .committed_cursor(TextCursor::new(shown))
+                .unwrap()
+                .byte,
+            committed,
+            "display {shown}"
+        );
+    }
+    assert!(snapshot.committed_cursor(TextCursor::new(5)).is_err());
+    // A seeded sample: stored values from the pieces, a selection on
+    // committed boundaries and a plain preedit, every display boundary
+    // outside the preedit checked against the independent mapping.
+    let mut random = Seeded(0xc0de);
+    let mut checked = 0;
+    while checked < 5_000 {
+        let length = 1 + random.below(6);
+        let value: String = (0..length)
+            .map(|_| PARTS[random.below(PARTS.len())])
+            .collect();
+        let committed: Vec<_> = boundaries(&value).into_iter().collect();
+        let a = committed[random.below(committed.len())];
+        let b = committed[random.below(committed.len())];
+        let mut input = TextInput::new(value.clone()).unwrap();
+        input
+            .set_selection(
+                TextSelection {
+                    anchor: TextCursor::new(a),
+                    focus: TextCursor::new(b),
+                },
+                input.revision(),
+            )
+            .unwrap();
+        let preedit = ["a", "青", "QR"][random.below(3)];
+        input.update_preedit(preedit, 0, 0).unwrap();
+        let snapshot = input.snapshot();
+        let range = snapshot.composition.as_ref().unwrap().display_range.clone();
+        for shown in boundaries(&snapshot.display_text) {
+            if range.start < shown && shown < range.end {
+                continue;
+            }
+            // Positions beside a guard are covered by the round-trip test.
+            if snapshot
+                .markers
+                .iter()
+                .any(|unit| unit.display.start < shown && shown < unit.display.end)
+            {
+                continue;
+            }
+            let expected = if shown == range.start {
+                snapshot.composition.as_ref().unwrap().replacement.start
+            } else {
+                expected_committed(&snapshot, shown)
+            };
+            assert_eq!(
+                snapshot
+                    .committed_cursor(TextCursor::new(shown))
+                    .map(|cursor| cursor.byte),
+                Ok(expected),
+                "{value:?} {a}..{b} {preedit:?} display {shown}"
+            );
+        }
+        checked += 1;
+    }
 }
 
 #[test]

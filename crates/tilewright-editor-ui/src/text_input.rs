@@ -109,7 +109,9 @@ impl TextInputSnapshot {
             ..cursor
         };
         let byte = if let Some(composition) = &self.composition {
-            let display = &composition.display_range;
+            // Compare in unmarked coordinates, as the cursor now is.
+            let display = unmarked_byte(&self.markers, composition.display_range.start)
+                ..unmarked_byte(&self.markers, composition.display_range.end);
             if cursor.byte < display.start {
                 cursor.byte
             } else if cursor.byte == display.start {

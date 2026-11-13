@@ -92,7 +92,12 @@ exactly that stored character (both characters of a CR LF pair). A draft that
 still contains one can be reviewed as it is. When a prepended or combining
 character next to the stored break would otherwise join the marker, a
 zero-width space is drawn between them; it is part of the marker and never
-stored.
+stored. A stored character that is itself one of the marker symbols (`⏎`, `¶`,
+`→`, `⬚`) is ordinary text and looks the same as a marker. The count row
+describes the stored value and counts only real stored breaks and controls; it
+does not change while a draft is edited. Invisible format characters, such as
+bidirectional controls and joiners, are not control characters and are not
+marked.
 Text focus consumes world shortcuts. The shared renderer shapes text using the
 explicit Unicode font pack; missing-glyph diagnostics preserve the complete
 original value and prevent a lossy visual replacement. Exact native input,

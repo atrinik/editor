@@ -287,3 +287,39 @@ fn a_guarded_marker_is_never_tofu_and_arrows_cross_it_both_ways() {
         );
     }
 }
+
+#[test]
+fn every_marker_class_lays_out_on_one_line_with_the_real_font_pack() {
+    let (_temporary, mut app) = stored_application();
+    let single = app.text.layout("Trail", 18.0, None).unwrap().size()[1];
+    for stored in [
+        // Tab, NUL, ESC, DEL and a C1 control: `→` and `⬚`.
+        "a\tb\u{0}c\u{1b}d\u{7f}e\u{9f}f",
+        // Guarded: a combining and a spacing mark after a break.
+        "A\n\u{301}B",
+        "A\n\u{93f}B",
+        // Right-to-left text with a line feed and a tab.
+        "\u{5e2}\u{5d1}\n\u{5e8}\u{5d9}\t\u{5ea}",
+        // An Indic conjunct broken by a stored line separator.
+        "\u{915}\u{94d}\u{2028}\u{937}",
+        "\r\n\u{2029}\u{85}\u{b}\u{c}",
+    ] {
+        let display = tilewright_editor_ui::text_input::TextInput::new(stored.into())
+            .unwrap()
+            .snapshot()
+            .display_text;
+        assert!(
+            !display
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')),
+            "{stored:?}"
+        );
+        let layout = app.text.layout(&display, 18.0, None).unwrap();
+        assert!(layout.missing_glyphs().is_empty(), "{stored:?} {display:?}");
+        assert_eq!(
+            layout.size()[1].to_bits(),
+            single.to_bits(),
+            "{stored:?} stays one line"
+        );
+    }
+}
