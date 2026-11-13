@@ -243,7 +243,11 @@ fn the_filter_narrows_rows_only_and_never_what_session_allows() {
     tools.select_all().unwrap();
     tools.input("zzz").unwrap();
     assert!(tools.filtered_palette(catalog).is_empty());
-    assert_eq!(object_palette(catalog).len(), 6, "bush, crate, gate, lamp, marker, stone");
+    assert_eq!(
+        object_palette(catalog).len(),
+        6,
+        "bush, crate, gate, lamp, marker, stone"
+    );
     // Placing the hidden choice works and goes through the session's own
     // grant, view and revision checks.
     tools.release_filter();

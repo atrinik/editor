@@ -869,7 +869,10 @@ impl ToolState {
     ) -> Result<Action, ToolError> {
         available(pending)?;
         let uid = portal_object(world, catalog, selection)?;
-        if world.object(uid).is_none_or(|object| object.portal.is_none()) {
+        if world
+            .object(uid)
+            .is_none_or(|object| object.portal.is_none())
+        {
             return Err(ToolError("The object has no portal to clear"));
         }
         Ok(Action::SetPortal {
@@ -966,12 +969,21 @@ impl ToolState {
                     "x and y must be whole numbers within plus or minus 9007199254740991",
                 ))
         };
+        let at = [coordinate(numbers[1])?, coordinate(numbers[2])?];
+        // Leading where it already leads is refused here too, so the
+        // draft stays open to fix it.
+        let current = world
+            .object(uid)
+            .and_then(|object| Some(crate::anchors::resolve(own, object.portal.as_ref()?)));
+        if current == Some(crate::anchors::Target::Location { plane, layer, at }) {
+            return Err(ToolError("The portal already leads there"));
+        }
         Ok(Action::SetPortal {
             uid: uid.clone(),
             target: Some(crate::PortalTarget::Location {
                 plane: plane.into(),
                 layer,
-                at: [coordinate(numbers[1])?, coordinate(numbers[2])?],
+                at,
             }),
             expected: *expected,
         })

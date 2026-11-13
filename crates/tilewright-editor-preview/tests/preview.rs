@@ -545,7 +545,10 @@ fn optional_object_grants_parse_strictly_and_their_absence_changes_nothing() {
             portal: false,
         }
     );
-    assert!(!catalog.can_edit_portal(&world, "marker_1"), "no portal member");
+    assert!(
+        !catalog.can_edit_portal(&world, "marker_1"),
+        "no portal member"
+    );
     assert!(editing.objects["grass"].fields.is_empty());
     assert!(catalog.in_active_view(&world, "marker_1"));
     assert!(catalog.can_delete(&world, "marker_1"));

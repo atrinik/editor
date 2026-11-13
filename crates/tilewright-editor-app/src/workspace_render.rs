@@ -326,6 +326,7 @@ pub fn badge_overlay(
     prepared: &PreparedPreview,
     anchors: &BTreeSet<[i64; 2]>,
     portals: &BTreeSet<[i64; 2]>,
+    shape: CellShape,
 ) -> Vec<Quad> {
     let (depth, painter_order) = prepared
         .scene
@@ -364,25 +365,50 @@ pub fn badge_overlay(
         for quads in cells.into_values() {
             let badge = shrink(quads, corner);
             // The outline first: copies in one slot draw in the order passed.
-            badges.extend(grow(&badge, BADGE_OUTLINE).into_iter().map(|quad| Quad {
-                color: outline,
-                ..quad
-            }));
+            badges.extend(
+                grow(&badge, BADGE_OUTLINE, shape)
+                    .into_iter()
+                    .map(|quad| Quad {
+                        color: outline,
+                        ..quad
+                    }),
+            );
             badges.extend(badge);
         }
     }
     badges
 }
 
+/// What a cell quad shows: its reference art fills the whole quad in a
+/// top-down view, and is the diamond whose corners are the midpoints of the
+/// quad's edges in an isometric one (the rest of the quad is transparent).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellShape {
+    Square,
+    Diamond,
+}
+
+/// The visible outline of `quad`, in order, for a cell of `shape`.
+fn visible(quad: &Quad, shape: CellShape) -> [[f32; 2]; 4] {
+    match shape {
+        CellShape::Square => quad.positions,
+        CellShape::Diamond => std::array::from_fn(|index| {
+            let (a, b) = (quad.positions[index], quad.positions[(index + 1) % 4]);
+            [f32::midpoint(a[0], b[0]), f32::midpoint(a[1], b[1])]
+        }),
+    }
+}
+
 /// `quads` scaled uniformly about the centre of their bounds so that every
-/// edge moves at least `width` outward, measured perpendicular to the edge.
-/// An edge at distance `d` from the centre moves `(f - 1) d` for a factor
-/// `f`; taking `f = 1 + width / d_min` over the nearest edge line moves the
-/// nearest edge exactly `width` and every other one further. On a square
-/// top-down tile every edge is equally near, so the outline is `width` on
-/// all sides; on a slanted isometric diamond it is `width` perpendicular to
-/// each edge, not along the axes (where it is wider).
-fn grow(quads: &[Quad], width: f32) -> Vec<Quad> {
+/// edge of what they show (see [`CellShape`]) moves at least `width`
+/// outward, measured perpendicular to the edge. An edge at distance `d`
+/// from the centre moves `(f - 1) d` for a factor `f`; taking
+/// `f = 1 + width / d_min` over the nearest edge line moves the nearest edge
+/// exactly `width` and every other one further. On a square top-down tile
+/// every edge is equally near, so the outline is `width` on all sides; on a
+/// slanted isometric diamond it is `width` perpendicular to each of its
+/// four edges. The shapes are convex and hold the centre, as a cell's are.
+fn grow(quads: &[Quad], width: f32, shape: CellShape) -> Vec<Quad> {
     let points = || quads.iter().flat_map(|quad| quad.positions);
     let (Some(left), Some(right), Some(top), Some(bottom)) = (
         points().map(|p| p[0]).reduce(f32::min),
@@ -393,18 +419,18 @@ fn grow(quads: &[Quad], width: f32) -> Vec<Quad> {
         return Vec::new();
     };
     let centre = [f32::midpoint(left, right), f32::midpoint(top, bottom)];
-    // The distance from the centre to the line through each quad edge; an
-    // edge of no length has no line.
+    // The distance from the centre to the line through each visible edge;
+    // an edge of no length has no line.
     let nearest = quads
         .iter()
         .flat_map(|quad| {
-            (0..4).filter_map(|index| {
-                let (a, b) = (quad.positions[index], quad.positions[(index + 1) % 4]);
+            let corners = visible(quad, shape);
+            (0..4).filter_map(move |index| {
+                let (a, b) = (corners[index], corners[(index + 1) % 4]);
                 let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
                 let length = dx.hypot(dy);
-                (length > f32::EPSILON).then(|| {
-                    ((centre[0] - a[0]) * dy - (centre[1] - a[1]) * dx).abs() / length
-                })
+                (length > f32::EPSILON)
+                    .then(|| ((centre[0] - a[0]) * dy - (centre[1] - a[1]) * dx).abs() / length)
             })
         })
         .filter(|distance| *distance > f32::EPSILON)

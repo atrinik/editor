@@ -36,14 +36,14 @@ fn render(
     .unwrap()
 }
 /// Press and release on tile `(x, y)` of the view.
-fn click_tile(app: &mut Application, x: i64, y: i64) {
+pub(super) fn click_tile(app: &mut Application, x: i64, y: i64) {
     acknowledge_ui(app);
     let at = super::cell_pixel(app, x, y);
     route(app, &button(true, at)).unwrap();
     route(app, &button(false, at)).unwrap();
 }
 /// Press and release on a pixel of the placed object `uid`.
-fn click_object(app: &mut Application, uid: &str) {
+pub(super) fn click_object(app: &mut Application, uid: &str) {
     acknowledge_ui(app);
     let frame = app.frame(false).unwrap();
     let id = app
@@ -173,7 +173,7 @@ fn badges_show_in_anchor_mode_over_the_world_and_never_reach_the_semantic_plane(
 
 /// Whether `texts` holds `line` whole. On failure the texts are printed
 /// once, not per scroll position.
-fn has(texts: &[String], line: &str) -> bool {
+pub(super) fn has(texts: &[String], line: &str) -> bool {
     let found = texts.iter().any(|text| text == line);
     if !found {
         let distinct: BTreeSet<&String> = texts.iter().collect();
@@ -183,7 +183,7 @@ fn has(texts: &[String], line: &str) -> bool {
 }
 
 /// The smallest and largest corner of `positions`.
-fn bounds(positions: [[f32; 2]; 4]) -> [[f32; 2]; 2] {
+pub(super) fn bounds(positions: [[f32; 2]; 4]) -> [[f32; 2]; 2] {
     let mut min = positions[0];
     let mut max = positions[0];
     for [x, y] in positions {
@@ -273,22 +273,20 @@ fn the_list_inspector_and_legend_name_anchors_portals_and_their_targets() {
     }
     assert_eq!(row_enabled(&mut app, &Control::AnchorMove), Some(false));
     assert_eq!(row_enabled(&mut app, &Control::AnchorDelete), Some(true));
-    // In Select mode a click picks the gate; its portal target shows,
-    // read-only.
+    // In Select mode a click picks the gate; its portal target shows.
     app.control(Control::Select).unwrap();
     click_object(&mut app, "gate_east");
     let texts = sidebar_texts(&mut app);
-    for line in [
-        "Portal target (read-only):",
-        "Anchor arrival",
-        "at main, layer 0, (7, 3)",
-    ] {
+    for line in ["Portal: to anchor arrival", "at main, layer 0, (7, 3)"] {
         assert!(has(&texts, line), "{line}");
     }
     click_object(&mut app, "gate_west");
-    assert!(has(&sidebar_texts(&mut app), "main, layer 0, (-2, 2)"));
-    // A gate is not granted to any edit.
-    assert!(!app.selection_deletable());
+    assert!(has(
+        &sidebar_texts(&mut app),
+        "Portal: to main, layer 0, (-2, 2)"
+    ));
+    // The gate's grant reaches it like any editing.objects entry.
+    assert!(app.selection_deletable());
 }
 
 #[test]

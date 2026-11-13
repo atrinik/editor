@@ -205,7 +205,10 @@ fn editing_needs_the_portal_member_of_the_objects_grant() {
         to_anchor(&session, "no_such_object", "main", "arrival"),
         "unknown UID"
     );
-    pending!(&mut session, to_anchor(&session, "gate_east", "main", "lookout"));
+    pending!(
+        &mut session,
+        to_anchor(&session, "gate_east", "main", "lookout")
+    );
 }
 
 #[test]
@@ -215,7 +218,8 @@ fn only_top_level_objects_of_the_active_view_are_edited_but_targets_may_be_anywh
             let objects = chunk["objects"].as_array_mut().unwrap();
             // Out of the view's bounds, on another layer's chunk, and
             // carried by a marker.
-            objects.push(json!({"uid": "far_gate", "at": [12, 1], "proto": "gate", "layer": "item"}));
+            objects
+                .push(json!({"uid": "far_gate", "at": [12, 1], "proto": "gate", "layer": "item"}));
             objects[0]["inventory"] = json!([{"uid": "carried_gate", "proto": "gate"}]);
         });
         let directory = root.join("planes/main/layers/1");
@@ -241,14 +245,20 @@ fn only_top_level_objects_of_the_active_view_are_edited_but_targets_may_be_anywh
         "not objects carried in an inventory"
     );
     // A target out of view, on another layer, is allowed.
-    pending!(&mut session, to_tile(&session, "gate_east", "main", 1, [2, 2]));
+    pending!(
+        &mut session,
+        to_tile(&session, "gate_east", "main", 1, [2, 2])
+    );
 }
 
 #[test]
 fn a_pending_change_fences_portal_edits_and_a_stale_revision_is_refused() {
     let (_dir, mut session) = fixture();
     let mut records = Records::default();
-    pending!(&mut session, to_anchor(&session, "gate_east", "main", "lookout"));
+    pending!(
+        &mut session,
+        to_anchor(&session, "gate_east", "main", "lookout")
+    );
     let sealed = session.history().pending().unwrap().sealed().to_owned();
     for action in [
         clear(&session, "gate_west"),
@@ -297,10 +307,17 @@ fn planes_anchors_and_no_op_changes_are_refused_before_world_sees_them() {
     // Nothing to clear on a gate without a portal.
     let (_dir, mut session) = fixture_with(|root| {
         edit_json(root, CHUNK, |chunk| {
-            chunk["objects"][2].as_object_mut().unwrap().remove("portal");
+            chunk["objects"][2]
+                .as_object_mut()
+                .unwrap()
+                .remove("portal");
         });
     });
-    refused!(&mut session, clear(&session, "gate_east"), "no portal to clear");
+    refused!(
+        &mut session,
+        clear(&session, "gate_east"),
+        "no portal to clear"
+    );
 }
 
 #[test]
@@ -309,24 +326,34 @@ fn each_edit_is_one_guarded_operation_on_the_portal_member() {
     let mut records = Records::default();
     // Change: one `set` expecting the committed portal; the own plane is
     // left out.
-    pending!(&mut session, to_tile(&session, "gate_east", "main", 0, [3, 4]));
+    pending!(
+        &mut session,
+        to_tile(&session, "gate_east", "main", 0, [3, 4])
+    );
     assert_eq!(
         operations(&session),
-        [json!({"op": "set", "object": {"uid": "gate_east"}, "pointer": ["portal"],
-            "expect": {"anchor": "arrival"}, "value": {"layer": 0, "at": [3, 4]}})]
+        [
+            json!({"op": "set", "object": {"uid": "gate_east"}, "pointer": ["portal"],
+            "expect": {"anchor": "arrival"}, "value": {"layer": 0, "at": [3, 4]}})
+        ]
     );
     session.dispatch(Action::Cancel, &mut records).unwrap();
     // Clear: one `remove` expecting it.
     pending!(&mut session, clear(&session, "gate_west"));
     assert_eq!(
         operations(&session),
-        [json!({"op": "remove", "object": {"uid": "gate_west"}, "pointer": ["portal"],
-            "expect": {"layer": 0, "at": [-2, 2]}})]
+        [
+            json!({"op": "remove", "object": {"uid": "gate_west"}, "pointer": ["portal"],
+            "expect": {"layer": 0, "at": [-2, 2]}})
+        ]
     );
     session.dispatch(Action::Cancel, &mut records).unwrap();
     // Another plane is named explicitly.
     let (_other, mut session) = fixture_with(|root| with_other_plane(root, "far_anchor"));
-    pending!(&mut session, to_anchor(&session, "gate_east", "other", "far_anchor"));
+    pending!(
+        &mut session,
+        to_anchor(&session, "gate_east", "other", "far_anchor")
+    );
     assert_eq!(
         operations(&session)[0]["value"],
         json!({"plane": "other", "anchor": "far_anchor"})
@@ -335,10 +362,16 @@ fn each_edit_is_one_guarded_operation_on_the_portal_member() {
     // Add: an absent test, then a `set` that adds the member.
     let (_added, mut session) = fixture_with(|root| {
         edit_json(root, CHUNK, |chunk| {
-            chunk["objects"][2].as_object_mut().unwrap().remove("portal");
+            chunk["objects"][2]
+                .as_object_mut()
+                .unwrap()
+                .remove("portal");
         });
     });
-    pending!(&mut session, to_anchor(&session, "gate_east", "main", "lookout"));
+    pending!(
+        &mut session,
+        to_anchor(&session, "gate_east", "main", "lookout")
+    );
     assert_eq!(
         operations(&session),
         [
@@ -412,7 +445,11 @@ fn accept_undo_redo(root: &Path, session: &mut Session, action: Action) -> Strin
     let read = || fs::read(root.join(CHUNK)).unwrap();
     let original = read();
     session.dispatch(action, &mut records).unwrap();
-    assert!(session.history().pending().is_some(), "{}", session.status());
+    assert!(
+        session.history().pending().is_some(),
+        "{}",
+        session.status()
+    );
     session.dispatch(Action::Accept, &mut records).unwrap();
     assert_eq!(records.0.len(), 1, "one change retains one inverse");
     let changed = read();
@@ -454,7 +491,10 @@ fn set_change_and_clear_publish_once_and_undo_byte_for_byte() {
     assert_eq!(portal(&session, "gate_west"), None);
     let action = to_tile(&session, "gate_west", "main", 0, [4, 3]);
     let text = accept_undo_redo(&root, &mut session, action);
-    assert!(text.contains("\"portal\": {\"layer\": 0, \"at\": [4, 3]}"), "{text}");
+    assert!(
+        text.contains("\"portal\": {\"layer\": 0, \"at\": [4, 3]}"),
+        "{text}"
+    );
     session
         .dispatch(
             Action::DeleteAnchor {
@@ -497,10 +537,15 @@ fn crlf_comments_and_compact_spacing_survive_every_edit_byte_for_byte() {
 fn review_notes_describe_each_change_and_warn_without_blocking() {
     let (_dir, mut session) = fixture();
     let mut records = Records::default();
-    pending!(&mut session, to_anchor(&session, "gate_west", "main", "arrival"));
+    pending!(
+        &mut session,
+        to_anchor(&session, "gate_west", "main", "arrival")
+    );
     assert_eq!(
         warnings(&session),
-        ["gate_west now leads to anchor arrival (main, layer 0, (7, 3)); it led to main, layer 0, (-2, 2)."]
+        [
+            "gate_west now leads to anchor arrival (main, layer 0, (7, 3)); it led to main, layer 0, (-2, 2)."
+        ]
     );
     session.dispatch(Action::Cancel, &mut records).unwrap();
     pending!(&mut session, clear(&session, "gate_east"));
@@ -523,8 +568,10 @@ fn review_notes_describe_each_change_and_warn_without_blocking() {
         pending!(&mut session, to_tile(&session, "gate_east", "main", 0, at));
         let lines = warnings(&session);
         assert!(
-            lines.iter().any(|line| line.starts_with("Warning: gate_east's portal")
-                && line.contains(warning)),
+            lines
+                .iter()
+                .any(|line| line.starts_with("Warning: gate_east's portal")
+                    && line.contains(warning)),
             "{lines:?}"
         );
         #[cfg(target_os = "linux")]
@@ -546,13 +593,29 @@ fn review_notes_describe_each_change_and_warn_without_blocking() {
     }
     // A target with ground and a chunk: no warning. A tile on another
     // layer is checked in the loaded world and said to be out of sight.
-    pending!(&mut session, to_tile(&session, "gate_east", "main", 0, [-1, 1]));
+    pending!(
+        &mut session,
+        to_tile(&session, "gate_east", "main", 0, [-1, 1])
+    );
     assert_eq!(warnings(&session).len(), 1, "{:?}", warnings(&session));
     session.dispatch(Action::Cancel, &mut records).unwrap();
-    pending!(&mut session, to_tile(&session, "gate_east", "main", 3, [1, 1]));
+    pending!(
+        &mut session,
+        to_tile(&session, "gate_east", "main", 3, [1, 1])
+    );
     let lines = warnings(&session);
-    assert!(lines.iter().any(|line| line.contains("map chunk that does not exist")), "{lines:?}");
-    assert!(lines.iter().any(|line| line.contains("the view cannot show it")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("map chunk that does not exist")),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("the view cannot show it")),
+        "{lines:?}"
+    );
 }
 
 #[test]
@@ -561,11 +624,17 @@ fn anchor_reference_counts_and_deletion_follow_a_portal_change() {
     let mut records = Records::default();
     let counts = |session: &Session| {
         let counts = anchors::reference_counts(session.world(), "main");
-        (counts.get("arrival").copied(), counts.get("lookout").copied())
+        (
+            counts.get("arrival").copied(),
+            counts.get("lookout").copied(),
+        )
     };
     assert_eq!(counts(&session), (Some(1), None));
     // The pending World is what the sidebar shows: the counts move with it.
-    pending!(&mut session, to_anchor(&session, "gate_east", "main", "lookout"));
+    pending!(
+        &mut session,
+        to_anchor(&session, "gate_east", "main", "lookout")
+    );
     assert_eq!(counts(&session), (None, Some(1)));
     session.dispatch(Action::Cancel, &mut records).unwrap();
     assert_eq!(counts(&session), (Some(1), None));
@@ -578,7 +647,10 @@ fn anchor_reference_counts_and_deletion_follow_a_portal_change() {
         };
         refused!(&mut session, delete(&session), "cannot be deleted");
         session
-            .dispatch(to_anchor(&session, "gate_east", "main", "lookout"), &mut records)
+            .dispatch(
+                to_anchor(&session, "gate_east", "main", "lookout"),
+                &mut records,
+            )
             .unwrap();
         session.dispatch(Action::Accept, &mut records).unwrap();
         assert_eq!(counts(&session), (None, Some(1)));
@@ -614,7 +686,10 @@ fn the_anchor_list_puts_the_view_plane_first_and_counts_every_anchor() {
     let (listed, total) = portals::target_anchors(session.world(), session.catalog());
     assert_eq!(total, 303);
     assert_eq!(listed.len(), portals::MAXIMUM_TARGET_ANCHORS);
-    assert!(listed.iter().all(|anchor| anchor.plane == "main"), "the view's plane first");
+    assert!(
+        listed.iter().all(|anchor| anchor.plane == "main"),
+        "the view's plane first"
+    );
     assert_eq!((listed[0].anchor, listed[1].anchor), ("arrival", "lookout"));
     let (listed, _) = {
         let (_dir, session) = fixture_with(|root| with_other_plane(root, "aaa"));
@@ -641,9 +716,14 @@ fn a_target_in_the_west_chunk_with_ground_is_not_warned() {
     // [-1, 0]: retargeting gate_east there warns about nothing.
     let (dir, mut session) = fixture();
     assert!(dir.path().join(WEST_CHUNK).is_file());
-    pending!(&mut session, to_tile(&session, "gate_east", "main", 0, [-2, 2]));
+    pending!(
+        &mut session,
+        to_tile(&session, "gate_east", "main", 0, [-2, 2])
+    );
     assert!(
-        warnings(&session).iter().all(|line| !line.starts_with("Warning:")),
+        warnings(&session)
+            .iter()
+            .all(|line| !line.starts_with("Warning:")),
         "{:?}",
         warnings(&session)
     );

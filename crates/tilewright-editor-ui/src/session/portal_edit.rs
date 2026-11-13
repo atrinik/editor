@@ -106,7 +106,8 @@ impl Session {
         let address = format!("{{\"uid\": {}}}", string(uid));
         let operations = match target {
             None => {
-                let canonical = committed.ok_or_else(|| refuse("the object has no portal to clear"))?;
+                let canonical =
+                    committed.ok_or_else(|| refuse("the object has no portal to clear"))?;
                 vec![format!(
                     "{{\"op\": \"remove\", \"object\": {address}, \"pointer\": [\"portal\"], \"expect\": {canonical}}}"
                 )]
@@ -124,7 +125,10 @@ impl Session {
                         "unknown anchor: it is not in the target plane's anchors.jsonc",
                     ));
                 }
-                if current.as_ref().is_some_and(|current| same(current, target)) {
+                if current
+                    .as_ref()
+                    .is_some_and(|current| same(current, target))
+                {
                     return Err(refuse("the portal already leads there"));
                 }
                 let value = portal_text(own, target);

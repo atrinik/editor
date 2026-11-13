@@ -50,6 +50,20 @@ pub enum Control {
     AnchorMove,
     /// Delete the chosen anchor, when no portal names it.
     AnchorDelete,
+    /// Show or hide the anchors the selected object's portal may target.
+    PortalAnchors,
+    /// Target this anchor with the selected object's portal.
+    PortalAnchor {
+        plane: String,
+        anchor: String,
+    },
+    /// Begin or end the step where the next click on a tile of the view
+    /// becomes the selected object's portal target.
+    PortalPick,
+    /// Type the selected object's portal target as plane, layer and tile.
+    PortalLocation,
+    /// Clear the selected object's portal.
+    PortalClear,
     Clear,
     Delete,
     Undo,
