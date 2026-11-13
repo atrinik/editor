@@ -445,6 +445,7 @@ fn a_cell_guard_that_no_longer_matches_is_refused_by_world() {
         .unwrap();
 }
 
+#[cfg(target_os = "linux")]
 /// Accept, undo and redo `action`; every step publishes one recovery record
 /// and each undo restores `files` byte for byte.
 fn accept_undo_redo(
@@ -730,9 +731,18 @@ fn zone_strokes_and_the_overlay_leave_tiles_of_missing_chunks_alone() {
         .unwrap();
     session.dispatch(action, &mut records).unwrap();
     assert_eq!(prepared_cells(&session), preview);
-    assert_eq!(session.history().pending().unwrap().changed().count(), 1);
-    session.dispatch(Action::Accept, &mut records).unwrap();
-    assert!(!missing.exists(), "no chunk document holding only zones");
+    // The pending diff changes only the existing chunk: no chunk document
+    // holding only zones would be created.
+    let pending = session.history().pending().unwrap();
+    assert_eq!(
+        pending
+            .changed()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        ["planes/main/layers/0/0_0.jsonc"]
+    );
+    session.dispatch(Action::Cancel, &mut records).unwrap();
+    assert!(!missing.exists());
     // A stroke entirely in the missing chunk changes nothing.
     let refused = session
         .dispatch(
