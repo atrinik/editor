@@ -25,6 +25,11 @@ pub struct EditingCapabilities {
 pub struct ObjectGrant {
     pub layer: String,
     pub fields: BTreeSet<String>,
+    /// Optional `defaults`: field values written into a newly placed object
+    /// of this prototype, as `(name, canonical JSON)` in catalog order. The
+    /// names are profile object fields; World validates the values again
+    /// when the placement is prepared.
+    pub defaults: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -80,16 +85,22 @@ impl PreviewCatalog {
         let size = i64::from(plane.chunk_size);
         let global =
             |chunk: i64, local: u16| chunk.checked_mul(size)?.checked_add(i64::from(local));
-        let [min_x, min_y, width, height] = self.bounds;
+        let (Some(x), Some(y)) = (global(location.chunk.1, x), global(location.chunk.2, y)) else {
+            return false;
+        };
         location.path.len() == 1
-            && location.plane == self.plane
-            && location.chunk.0 == self.layer
-            && global(location.chunk.1, x)
-                .and_then(|x| x.checked_sub(min_x))
-                .is_some_and(|x| x >= 0 && x < width)
-            && global(location.chunk.2, y)
-                .and_then(|y| y.checked_sub(min_y))
-                .is_some_and(|y| y >= 0 && y < height)
+            && self.tile_in_active_view(&location.plane, location.chunk.0, x, y)
+    }
+    /// Whether plane tile `x, y` of spatial `layer` in `plane` is inside the
+    /// active view: the catalog's plane and spatial layer, with the tile in
+    /// the half-open view bounds. Placement uses the same scope as the
+    /// per-prototype grants of [`Self::in_active_view`].
+    pub fn tile_in_active_view(&self, plane: &str, layer: i32, x: i64, y: i64) -> bool {
+        let [min_x, min_y, width, height] = self.bounds;
+        plane == self.plane
+            && layer == self.layer
+            && x.checked_sub(min_x).is_some_and(|x| x >= 0 && x < width)
+            && y.checked_sub(min_y).is_some_and(|y| y >= 0 && y < height)
     }
     /// The `editing.objects` grant for `uid`'s prototype, when the object
     /// is in the active view.
@@ -344,7 +355,7 @@ pub(crate) fn decode(
     }
     let resources = resource_specs(member(root, "resources")?, limits)?;
     let prototypes = prototype_specs(member(root, "prototypes")?, world, &resources)?;
-    let editing = editing_specs(member(root, "editing")?, world, &prototypes)?;
+    let editing = editing_specs(&document, member(root, "editing")?, world, &prototypes)?;
     Ok(PreviewCatalog {
         revision: crate::hash(document.source().as_bytes()),
         profile,
@@ -424,6 +435,7 @@ fn prototype_specs(
 }
 
 fn editing_specs(
+    document: &Document,
     e: &Value,
     world: &World,
     prototypes: &BTreeMap<String, (String, Anchor)>,
@@ -469,20 +481,22 @@ fn editing_specs(
         }
     }
     if let Some(objects) = e.get("objects") {
-        editing.objects = object_grants(objects, world, prototypes)?;
+        editing.objects = object_grants(document, objects, world, prototypes)?;
     }
     Ok(editing)
 }
 
-/// `editing.objects`: `[{proto, layer, fields?}]`, one entry per prototype.
+/// `editing.objects`: `[{proto, layer, fields?, defaults?}]`, one entry per
+/// prototype.
 fn object_grants(
+    document: &Document,
     value: &Value,
     world: &World,
     prototypes: &BTreeMap<String, (String, Anchor)>,
 ) -> Result<BTreeMap<String, ObjectGrant>, PreviewError> {
     let mut grants = BTreeMap::new();
     for entry in array(value)? {
-        closed_optional(entry, &["proto", "layer"], &["fields"])?;
+        closed_optional(entry, &["proto", "layer"], &["fields", "defaults"])?;
         let proto = identifier(member(entry, "proto")?)?;
         if !prototypes.contains_key(&proto) {
             return Err(failure("object capability names an unmapped prototype"));
@@ -500,12 +514,100 @@ fn object_grants(
                 }
             }
         }
+        let defaults = match entry.get("defaults") {
+            Some(values) => object_defaults(document, values, world)?,
+            None => Vec::new(),
+        };
         if grants
-            .insert(proto, ObjectGrant { layer, fields })
+            .insert(
+                proto,
+                ObjectGrant {
+                    layer,
+                    fields,
+                    defaults,
+                },
+            )
             .is_some()
         {
             return Err(failure("duplicate object capability prototype"));
         }
     }
     Ok(grants)
+}
+
+/// Size limit of one entry's `defaults`: the canonical JSON bytes of its
+/// values, names not counted, like a field edit's value.
+const MAXIMUM_DEFAULTS_BYTES: usize = 65536;
+
+/// `defaults`: `{field: value}` for profile object fields. Each value is
+/// checked against its field's type here; the contents of structured
+/// (`json`, `list`, `object`) values are left to World, which validates the
+/// whole object again when a placement is prepared and refuses it there.
+fn object_defaults(
+    document: &Document,
+    value: &Value,
+    world: &World,
+) -> Result<Vec<(String, String)>, PreviewError> {
+    let members = value
+        .as_object()
+        .ok_or_else(|| failure("object defaults must be an object"))?;
+    let mut defaults: Vec<(String, String)> = Vec::new();
+    let mut bytes = 0usize;
+    for member in members {
+        let name = &member.key;
+        let spec = world
+            .profile()
+            .object_fields
+            .field(name)
+            .ok_or_else(|| failure("object defaults name an unknown object field"))?;
+        if defaults.iter().any(|(existing, _)| existing == name) {
+            return Err(failure("duplicate object default field"));
+        }
+        default_value(&spec.field_type, &member.value, world)
+            .map_err(|reason| failure(format!("object default {name}: {reason}")))?;
+        let canonical = document.canonical(&member.value);
+        bytes = bytes
+            .checked_add(canonical.len())
+            .filter(|total| *total <= MAXIMUM_DEFAULTS_BYTES)
+            .ok_or_else(|| failure("object defaults exceed their byte budget"))?;
+        defaults.push((name.clone(), canonical));
+    }
+    Ok(defaults)
+}
+
+/// The type check a placement relies on before World sees the object.
+fn default_value(
+    kind: &tilewright_source::FieldType,
+    value: &Value,
+    world: &World,
+) -> Result<(), &'static str> {
+    use tilewright_source::FieldType;
+    let valid = match kind {
+        FieldType::Boolean => value.as_bool().is_some(),
+        FieldType::Integer { minimum, maximum } => value
+            .as_i64()
+            .is_some_and(|v| (*minimum..=*maximum).contains(&v)),
+        FieldType::Number { minimum, maximum } => value
+            .as_f64()
+            .is_some_and(|v| v.is_finite() && *minimum <= v && v <= *maximum),
+        FieldType::String {
+            maximum_length,
+            values,
+        } => value.as_str().is_some_and(|text| {
+            text.chars().count() <= *maximum_length && (values.is_empty() || values.contains(text))
+        }),
+        FieldType::Reference { target } => value.as_str().is_some_and(|id| {
+            world
+                .definitions()
+                .contains_key(&(target.clone(), id.to_owned()))
+        }),
+        FieldType::List { .. } => value.as_array().is_some(),
+        FieldType::Object { .. } => value.as_object().is_some(),
+        FieldType::Json => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("value does not match the profile field type")
+    }
 }

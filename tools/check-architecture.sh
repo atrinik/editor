@@ -10,7 +10,7 @@ jq -e '
   deps("tilewright-editor-project") == [] and
   deps("tilewright-editor-document") == ["tilewright-editor-testkit","tilewright-source"] and
   deps("tilewright-editor-commands") == ["tempfile","tilewright-edit","tilewright-editor-document","tilewright-editor-testkit","tilewright-source"] and
-  deps("tilewright-editor-ui") == ["serde_json","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-preview","tilewright-editor-project","tilewright-editor-testkit","tilewright-jsonc","tilewright-source","unicode-segmentation"] and
+  deps("tilewright-editor-ui") == ["getrandom","serde_json","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-preview","tilewright-editor-project","tilewright-editor-testkit","tilewright-jsonc","tilewright-source","unicode-segmentation"] and
   deps("tilewright-editor-preview") == ["serde_json","sha2","tempfile","tilewright-jsonc","tilewright-render-api","tilewright-render-resources","tilewright-render-testkit","tilewright-render-world","tilewright-scene","tilewright-source"] and
   deps("tilewright-editor-testkit") == ["serde_json","sha2","tilewright-editor-project","tilewright-source"] and
   deps("tilewright-editor-recovery") == ["sha2","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-testkit","tilewright-source"] and

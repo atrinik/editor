@@ -29,7 +29,7 @@ use tilewright_render_wgpu::WgpuRenderer;
 use tilewright_scene::SemanticId;
 use tilewright_source::SourceRoot;
 
-const HELP: &str = "Select / Move / Terrain | Delete removes selection | drag paints | [ ] brush size | B brush shape | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+const HELP: &str = "Select / Move / Terrain / Place (P) | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
 const STROKE_INTERRUPTED: &str = "Brush stroke ended before release; nothing was prepared.";
 
 type Result<T> = std::result::Result<T, String>;
@@ -41,6 +41,11 @@ const REVIEW_ROW_BYTES: usize = 256;
 const REVIEW_WARNING_BYTES: usize = 16 << 10;
 const REVIEW_WARNINGS_OMITTED: &str = "Further warnings are omitted from this review.";
 const REVIEW_LIMIT_MESSAGE: &str = "Change exceeds the visible review limit. Cancel this edit.";
+const NOTHING_TO_PLACE: &str = "Place is unavailable: the catalog grants no prototype to place.";
+/// Seed of the deterministic uids the scripted demonstration places with.
+const DEMO_UID_SEED: u64 = 0x5eed_0b1e_c7ed_0001;
+/// The empty tile of the neutral sample the scripted demonstration places on.
+const DEMO_PLACE_TILE: (i64, i64) = (6, 1);
 
 /// Which granted edit a scripted selection needs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,7 +120,14 @@ pub fn run(arguments: &[String]) -> Result<()> {
         PreviewLimits::default(),
     )
     .map_err(|error| error.to_string())?;
-    let session = Session::new(History::new(document), catalog, resources);
+    let mut session = Session::new(History::new(document), catalog, resources);
+    if demo {
+        // Scripted evidence is reproducible: its placements get the same uids
+        // on every run. Interactive placement uses the OS random source.
+        session.set_uid_source(Box::new(tilewright_editor_ui::uid::SeededUidSource::new(
+            DEMO_UID_SEED,
+        )));
+    }
     let recovery = DurableRecovery::from_provisioned_session_root(
         SourceRoot::new(&recovery),
         RecoveryLimits::default(),
@@ -419,6 +431,51 @@ impl Application {
         self.action(action)
     }
 
+    /// Place mode: the tile under physical world pixel `x, y` in the exact
+    /// cell mask (empty tiles included) receives one new object of the
+    /// chosen prototype, through one reviewed `object.insert`.
+    fn place_at(&mut self, x: u32, y: u32) -> Result<()> {
+        loader::revalidate(
+            self.session.history().document().source(),
+            self.session.catalog(),
+            self.session.resources(),
+            PreviewLimits::default(),
+        )
+        .map_err(|error| error.to_string())?;
+        let cell = self
+            .prepared
+            .pick(self.view.frame_revision, x, y, true)
+            .map_err(|error| error.to_string())?
+            .ok_or("no tile under the pointer")?;
+        let action = self
+            .tools
+            .place_action(
+                self.session.catalog(),
+                &cell,
+                self.session.history().document().revision(),
+                self.blocked.is_some() || !self.session.can_prepare(),
+            )
+            .map_err(|error| error.to_string())?;
+        self.action(action)
+    }
+
+    /// Enter Place mode, choosing the first palette prototype when none is
+    /// chosen yet. Refused, with a plain reason, when nothing is placeable.
+    fn enter_place_mode(&mut self) -> Result<()> {
+        let palette = tools::object_palette(self.session.catalog());
+        let Some(first) = palette.first().map(|proto| (*proto).to_owned()) else {
+            return Err(NOTHING_TO_PLACE.into());
+        };
+        self.tools.set_mode(ToolMode::Place);
+        if self.tools.placement_choice().is_none() {
+            self.tools
+                .choose_placement(self.session.catalog(), &first)
+                .map_err(|error| error.to_string())?;
+        }
+        self.sidebar_scroll = 0;
+        Ok(())
+    }
+
     /// Whether the current selection is an object the catalog lets the
     /// author delete.
     fn selection_deletable(&self) -> bool {
@@ -572,13 +629,21 @@ impl Application {
             (
                 282,
                 76,
+                "Place",
+                Control::Place,
+                !tools::object_palette(self.session.catalog()).is_empty(),
+                mode == ToolMode::Place,
+            ),
+            (
+                364,
+                76,
                 "Clear",
                 Control::Clear,
                 self.session.selection().is_some(),
                 false,
             ),
             (
-                368,
+                446,
                 72,
                 "Undo",
                 Control::Undo,
@@ -586,7 +651,7 @@ impl Application {
                 false,
             ),
             (
-                446,
+                524,
                 72,
                 "Redo",
                 Control::Redo,
@@ -594,7 +659,7 @@ impl Application {
                 false,
             ),
             (
-                528,
+                602,
                 80,
                 "Delete",
                 Control::Delete,
@@ -618,9 +683,9 @@ impl Application {
         if self.unsupported_runs > 0 {
             ui.widget(
                 Rect {
-                    x: 618,
+                    x: 692,
                     y: 8,
-                    width: ui.logical_size().0.saturating_sub(628),
+                    width: ui.logical_size().0.saturating_sub(702),
                     height: 32,
                 },
                 format!(
@@ -714,7 +779,35 @@ impl Application {
                 ));
             }
         }
+        if mode == ToolMode::Place {
+            self.place_rows(&mut rows, ready);
+        }
         rows
+    }
+
+    /// The Place palette: one plain row per placeable prototype, sorted by
+    /// prototype id, the chosen one marked.
+    fn place_rows(&self, rows: &mut UiRows, ready: bool) {
+        let catalog = self.session.catalog();
+        let palette = tools::object_palette(catalog);
+        if palette.is_empty() {
+            rows.push((NOTHING_TO_PLACE.into(), None, false, false));
+            return;
+        }
+        rows.push(("Place palette: click a tile".into(), None, true, false));
+        for proto in palette {
+            let layer = catalog
+                .editing()
+                .objects
+                .get(proto)
+                .map_or("", |grant| grant.layer.as_str());
+            rows.push((
+                format!("{proto} / {layer}"),
+                Some(Control::PlacePalette(proto.to_owned())),
+                ready,
+                self.tools.placement_choice() == Some(proto),
+            ));
+        }
     }
 
     fn brush_rows(&self, rows: &mut UiRows) {
@@ -1033,6 +1126,12 @@ impl Application {
             SessionPhase::Ready if self.session.status().applied == Some(true) => {
                 "Changes saved. Ready to edit."
             }
+            SessionPhase::Ready if self.tools.mode() == ToolMode::Place => {
+                return self.tools.placement_choice().map_or_else(
+                    || "Choose a type to place in the sidebar.".into(),
+                    |proto| format!("Ready. Click a tile to place {proto}."),
+                );
+            }
             SessionPhase::Ready => "Ready. Select an object or choose Terrain.",
             SessionPhase::Pending => "Review changes, then Accept or Cancel.",
             SessionPhase::Retaining => "Saving recovery information...",
@@ -1140,6 +1239,11 @@ impl Application {
                 self.sidebar_scroll = 0;
                 Ok(())
             }
+            Control::Place => self.enter_place_mode(),
+            Control::PlacePalette(prototype) => self
+                .tools
+                .choose_placement(self.session.catalog(), &prototype)
+                .map_err(|error| error.to_string()),
             Control::Clear => self.action(Action::ClearSelection),
             Control::Delete => self.delete_selected(),
             Control::Accept => self.action(Action::Accept),
@@ -1318,6 +1422,32 @@ impl Application {
         self.click(hit.0, hit.1)
     }
 
+    /// Enter Place mode, choose the last palette prototype through its row
+    /// control, and click the neutral sample's empty demonstration tile
+    /// through the exact cell mask.
+    fn place_demo(&mut self) -> Result<()> {
+        self.control(Control::Place)?;
+        let proto = tools::object_palette(self.session.catalog())
+            .last()
+            .map(|proto| (*proto).to_owned())
+            .ok_or(NOTHING_TO_PLACE)?;
+        self.control(Control::PlacePalette(proto))?;
+        let frame = self.frame(true)?;
+        let (x, y) = DEMO_PLACE_TILE;
+        let hit = self
+            .prepared
+            .cell_picks
+            .iter()
+            .find_map(|(id, key)| match key {
+                SelectionKey::Cell { x: cx, y: cy, .. } if (*cx, *cy) == (x, y) => {
+                    pixel_for(&frame, *id)
+                }
+                _ => None,
+            })
+            .ok_or("neutral demonstration tile is not in the cell mask")?;
+        self.place_at(hit.0, hit.1)
+    }
+
     fn demo_step(&mut self, step: usize) -> Result<bool> {
         match step {
             0 => {
@@ -1375,14 +1505,20 @@ impl Application {
                 self.action(Action::Accept)?;
                 self.capture("deleted")?;
             }
-            8 => return Ok(true),
+            8 if !tools::object_palette(self.session.catalog()).is_empty() => {
+                self.place_demo()?;
+                self.capture("place")?;
+                self.action(Action::Accept)?;
+                self.capture("placed")?;
+            }
+            9 => return Ok(true),
             _ => {}
         }
         Ok(false)
     }
 
     fn demo_all(&mut self) -> Result<()> {
-        for step in 0..9 {
+        for step in 0..10 {
             if self.demo_step(step)? {
                 break;
             }
@@ -1761,12 +1897,12 @@ fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
     let editing = app.session.catalog().editing();
     if (step == 5 && !grants_fields(editing))
         || (step == 6 && editing.terrain.is_empty())
-        || (step == 7 && editing.objects.is_empty())
+        || ((step == 7 || step == 8) && editing.objects.is_empty())
     {
         None
     } else {
         [
-            "before", "pending", "after", "undo", "redo", "field", "terrain", "delete",
+            "before", "pending", "after", "undo", "redo", "field", "terrain", "delete", "place",
         ]
         .get(step)
         .copied()
@@ -2244,6 +2380,8 @@ fn native_pointer_selection(
             app.tools.cancel();
             if app.tools.mode() == ToolMode::Terrain {
                 app.begin_stroke(x, y)
+            } else if app.tools.mode() == ToolMode::Place {
+                app.place_at(x, y)
             } else {
                 app.click(x, y)
             }
@@ -2334,6 +2472,7 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
         Keycode::Up if app.tools.mode() == ToolMode::Move => app.nudge([0, -1]),
         Keycode::Down if app.tools.mode() == ToolMode::Move => app.nudge([0, 1]),
         Keycode::T => app.control(Control::Terrain),
+        Keycode::P => app.control(Control::Place),
         Keycode::LeftBracket if app.tools.mode() == ToolMode::Terrain => {
             app.control(Control::BrushSize(-1))
         }

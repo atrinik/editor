@@ -1537,6 +1537,7 @@ dependencies = [
 name = "tilewright-editor-ui"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
  "serde_json",
  "tempfile",
  "tilewright-edit",

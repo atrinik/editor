@@ -67,8 +67,8 @@ outside this private-directory/advisory-lock model.
 
 The native window presents the prepared scene through the shared wgpu/SDL3
 adapter and remains open until the user closes it. A toolbar selects Select,
-Move or Terrain mode and exposes Clear, Undo, Redo and Delete. Terrain mode
-paints with the drag brush described below; deletion is described after it. The inspector shows
+Move, Terrain or Place mode and exposes Clear, Undo, Redo and Delete. Terrain mode
+paints with the drag brush described below; deletion and placement are described after it. The inspector shows
 the selected object's identity, position and schema fields, or the selected
 cell and explicit terrain choices. Only profile-authorized scalar fields are
 editable; structured values remain read-only.
@@ -163,8 +163,39 @@ emptied a chunk, its file is deleted and Undo restores it.
 The same `editing.objects` entry also grants movement and edits of the fields
 whose names its `fields` member lists, with the same active-view scope. The
 entry carries no field values. The per-uid `movable_uids` and `fields` grants
-keep their own reach and combine with it. Placing new objects is not offered
-yet.
+keep their own reach and combine with it.
+
+### Placing objects
+
+Choose Place in the toolbar or press P (a focused text draft keeps P for
+itself). The sidebar lists the prototypes the catalog's `editing.objects`
+entries grant, one plain row each, sorted by prototype id, with the chosen
+one marked; entering Place mode chooses the first row when none is chosen,
+and clicking a row chooses it. Without any entry, Place is disabled and P
+reports why. Click a tile, empty or not: the exact cell-reference mask
+picks it, as in Terrain mode. One click is one World transaction with one
+`object.insert` on that tile of the active view (the catalog's plane and
+spatial layer, inside the view bounds), appended on top of the tile's
+stack. The new object carries a new uid, the entry's render `layer` and the
+field values of the entry's optional `defaults`; World validates it against
+the profile schema before the diff is shown, and refuses it, writing
+nothing, when the defaults do not satisfy the schema. Nothing can be placed
+while a change is pending.
+
+The uid is `o.` followed by 128 random bits from the operating system in
+lowercase base32 (26 characters), as the World format recommends, so uids
+placed on different branches do not collide. One that already names an
+object in the World is drawn again, a bounded number of times. The scripted
+demonstration uses a fixed, seeded sequence instead, so its evidence is
+reproducible.
+
+The review panel names the prototype, the tile and the new uid above the
+diff, and warns, without refusing, when an object of the same prototype
+already stands on the tile. Accept retains one inverse recovery record and
+selects the new object. It is then an ordinary object of its prototype:
+the same entry lets the author select, move, relabel and delete it. Undo
+removes it with byte-exact source, and a placement that created a chunk
+file is undone by deleting that file.
 
 Planned edits are visible before acceptance. Accept retains the exact inverse
 before World publication; Cancel publishes nothing. Undo and redo prepare World
@@ -193,7 +224,7 @@ for its manifest/stale-source/unsupported-edit rejection contract.
 ## Evidence and limits
 
 `--demo-script` drives the same session actions, command history and scene
-preparation as interactive input. It is a deterministic scripted demonstration,
+preparation as interactive input, including a placement with seeded uids. It is a deterministic scripted demonstration,
 not a claim of human input. `--reference` produces composed workspace CPU
 reference evidence and
 must be reported separately from an actual visible native window run. Native

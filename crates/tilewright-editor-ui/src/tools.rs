@@ -21,6 +21,8 @@ pub enum ToolMode {
     Select,
     Move,
     Terrain,
+    /// Click a tile to place the chosen prototype there.
+    Place,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,6 +47,18 @@ pub fn terrain_palette(catalog: &PreviewCatalog) -> Vec<TerrainChoice> {
         .collect()
 }
 
+/// The prototypes `editing.objects` lets the author place, sorted by
+/// prototype id. Only explicit grants appear.
+pub fn object_palette(catalog: &PreviewCatalog) -> Vec<&str> {
+    catalog
+        .editing()
+        .objects
+        .keys()
+        .map(String::as_str)
+        .take(MAX_CHOICES)
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 enum DraftKind {
     Field(String),
@@ -61,6 +75,7 @@ struct Draft {
 pub struct ToolState {
     mode: ToolMode,
     terrain: Option<TerrainChoice>,
+    placement: Option<String>,
     draft: Option<Draft>,
     next_draft: u64,
     brush: Brush,
@@ -111,6 +126,56 @@ impl ToolState {
             prototype: prototype.into(),
         });
         Ok(())
+    }
+    pub fn placement_choice(&self) -> Option<&str> {
+        self.placement.as_deref()
+    }
+    /// Choose the prototype Place mode puts down; it must be in the palette.
+    pub fn choose_placement(
+        &mut self,
+        catalog: &PreviewCatalog,
+        prototype: &str,
+    ) -> Result<(), ToolError> {
+        if !object_palette(catalog).contains(&prototype) {
+            return Err(ToolError(
+                "The catalog does not allow placing this prototype",
+            ));
+        }
+        self.placement = Some(prototype.into());
+        Ok(())
+    }
+    /// One placement on the exact cell `cell` picked from the current
+    /// frame. The session checks the grant, view and revision again.
+    pub fn place_action(
+        &self,
+        catalog: &PreviewCatalog,
+        cell: &SelectionKey,
+        expected: [u8; 32],
+        pending: bool,
+    ) -> Result<Action, ToolError> {
+        available(pending)?;
+        if self.mode != ToolMode::Place {
+            return Err(ToolError("Place tool is not active"));
+        }
+        let proto = self
+            .placement
+            .as_ref()
+            .filter(|proto| object_palette(catalog).contains(&proto.as_str()))
+            .ok_or(ToolError("Choose a prototype to place in the palette"))?;
+        let SelectionKey::Cell {
+            plane, layer, x, y, ..
+        } = cell
+        else {
+            return Err(ToolError("Place requires a tile"));
+        };
+        Ok(Action::Place {
+            plane: plane.clone(),
+            layer: *layer,
+            x: *x,
+            y: *y,
+            proto: proto.clone(),
+            expected,
+        })
     }
     pub fn begin_field(
         &mut self,

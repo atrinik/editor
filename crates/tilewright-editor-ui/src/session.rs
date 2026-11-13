@@ -10,6 +10,8 @@ use tilewright_editor_preview::{
 };
 use tilewright_source::{FieldValue, World};
 
+use crate::uid::{OsUidSource, UidSource};
+
 #[derive(Clone, Debug)]
 pub enum Action {
     Select {
@@ -51,6 +53,17 @@ pub enum Action {
     /// one reviewed `object.remove`.
     Remove {
         uid: String,
+        expected: [u8; 32],
+    },
+    /// Place one new object of a granted prototype on plane tile `x, y` of
+    /// the active view, as one reviewed `object.insert` on top of the tile's
+    /// stack, with a new uid and the grant's render layer and defaults.
+    Place {
+        plane: String,
+        layer: i32,
+        x: i64,
+        y: i64,
+        proto: String,
         expected: [u8; 32],
     },
     Accept,
@@ -154,9 +167,13 @@ pub struct Session {
     selection: Option<SelectionKey>,
     generation: u64,
     status: SessionStatus,
-    /// Review warnings for the pending transaction, refreshed after every
-    /// dispatch; only dispatch changes the pending transaction.
+    /// Review notes and warnings for the pending transaction, refreshed
+    /// after every dispatch; only dispatch changes the pending transaction.
     warnings: Vec<String>,
+    /// Material for the uids of placed objects.
+    uids: Box<dyn UidSource>,
+    /// The uid a pending placement adds; selected when it is accepted.
+    placing: Option<String>,
 }
 impl Session {
     pub fn new(history: History, catalog: PreviewCatalog, resources: ReadyResources) -> Self {
@@ -175,7 +192,14 @@ impl Session {
                 recovery_descriptor: None,
             },
             warnings: Vec::new(),
+            uids: Box::new(OsUidSource),
+            placing: None,
         }
+    }
+    /// Replace the uid source, for example with a deterministic one in tests
+    /// and the scripted demonstration.
+    pub fn set_uid_source(&mut self, source: Box<dyn UidSource>) {
+        self.uids = source;
     }
     pub fn history(&self) -> &History {
         &self.history
@@ -223,8 +247,9 @@ impl Session {
             .ok_or_else(|| refuse("frame generation exhausted"))?;
         Ok(())
     }
-    /// Review warnings for every object the pending transaction removes,
-    /// judged against the committed World. They never block Accept.
+    /// Review notes for every object the pending transaction adds and
+    /// warnings for every object it removes, judged against the committed
+    /// World. They never block Accept.
     pub fn pending_warnings(&self) -> &[String] {
         &self.warnings
     }
@@ -450,8 +475,14 @@ impl Session {
     ) -> Result<(), SessionError> {
         let result = self.dispatch_inner(action, recovery);
         self.warnings = self.history.pending().map_or_else(Vec::new, |pending| {
-            crate::removal::warnings(self.history.document().world(), pending.sealed())
+            let committed = self.history.document().world();
+            let mut lines = crate::insertion::notes(committed, pending.sealed());
+            lines.extend(crate::removal::warnings(committed, pending.sealed()));
+            lines
         });
+        if self.history.pending().is_none() {
+            self.placing = None;
+        }
         if let Err(error) = &result {
             self.status.message = error.to_string();
             if self.status.phase != SessionPhase::Blocked {
@@ -491,6 +522,7 @@ impl Session {
                     | Action::Paint { .. }
                     | Action::PaintStroke { .. }
                     | Action::Remove { .. }
+                    | Action::Place { .. }
                     | Action::Undo
                     | Action::Redo
             )
@@ -666,6 +698,14 @@ impl Session {
                     &json!({"op":"object.remove","uid":uid,"expect":{"proto":object.proto}}),
                 )
             }
+            Action::Place {
+                plane,
+                layer,
+                x,
+                y,
+                proto,
+                expected,
+            } => self.place(&plane, layer, [x, y], &proto, expected),
             Action::Accept => self.accept(recovery),
             Action::Cancel => {
                 self.history.cancel();
@@ -688,6 +728,71 @@ impl Session {
             }
             Action::Reopen => unreachable!(),
         }
+    }
+    /// One `object.insert` of a granted prototype on a tile of the active
+    /// view, appended on top of the tile's stack, with a new unused uid,
+    /// the grant's render layer and its defaults.
+    fn place(
+        &mut self,
+        plane: &str,
+        layer: i32,
+        [x, y]: [i64; 2],
+        proto: &str,
+        expected: [u8; 32],
+    ) -> Result<(), SessionError> {
+        let grant = self.catalog.editing().objects.get(proto).ok_or_else(|| {
+            refuse("placement capability refused: the catalog does not grant this prototype")
+        })?;
+        if !self.catalog.tile_in_active_view(plane, layer, x, y) {
+            return Err(refuse(
+                "objects can only be placed on tiles of the active view",
+            ));
+        }
+        self.verify_revision(expected)?;
+        let world = self.history.document().world();
+        let uid = crate::uid::unused_uid(self.uids.as_mut(), |uid| {
+            world.object_location(uid).is_some()
+        })
+        .map_err(|error| SessionError(error.to_string()))?;
+        // Written as text so the placed object keeps this member order in
+        // source: uid, prototype, render layer, then the defaults in catalog
+        // order. Every value is JSON-encoded; defaults are canonical JSON.
+        let encode = |text: &str| Value::String(text.into()).to_string();
+        let mut object = format!(
+            "{{\"uid\":{},\"proto\":{},\"layer\":{}",
+            encode(&uid),
+            encode(proto),
+            encode(&grant.layer)
+        );
+        if !grant.defaults.is_empty() {
+            object.push_str(",\"fields\":{");
+            for (index, (name, value)) in grant.defaults.iter().enumerate() {
+                if index > 0 {
+                    object.push(',');
+                }
+                object.push_str(&encode(name));
+                object.push(':');
+                object.push_str(value);
+            }
+            object.push('}');
+        }
+        object.push('}');
+        let operation = format!(
+            "{{\"op\":\"object.insert\",\"plane\":{},\"layer\":{layer},\"at\":[{x},{y}],\"object\":{object}}}",
+            encode(plane)
+        );
+        let text = format!(
+            "{{\"format\":\"tilewright.transaction/1\",\"title\":\"Editor semantic action\",\"actor\":\"editor:prototype\",\"operations\":[{operation}]}}"
+        );
+        // History seals the complete consulted file base and enforces full
+        // World revision; World validates the new object, defaults included.
+        self.history
+            .prepare(expected, "editor:action", &text)
+            .map_err(|error| SessionError(format!("placement refused: {error}")))?;
+        self.placing = Some(uid);
+        self.status.phase = SessionPhase::Pending;
+        self.status.message = "Pending World diff; Accept publishes, Cancel writes nothing".into();
+        self.invalidate_frame()
     }
     fn accept(&mut self, recovery: &mut impl RecoveryStore) -> Result<(), SessionError> {
         self.verify_revision(self.history.document().revision())?;
@@ -716,6 +821,11 @@ impl Session {
                 self.status.cleaned = Some(true);
                 self.status.message =
                     "Published World workspace and reloaded verified result".into();
+                // An accepted placement selects the new object by its uid,
+                // the same semantic key a click on it would give.
+                if let Some(uid) = self.placing.take() {
+                    self.selection = Some(SelectionKey::Object { uid });
+                }
                 self.revalidate_selection();
                 self.invalidate_frame()
             }
