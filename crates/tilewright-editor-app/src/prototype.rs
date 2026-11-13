@@ -1463,7 +1463,7 @@ impl Application {
             let value = row.current.map_or_else(
                 || "<absent>".into(),
                 |value| match value {
-                    tilewright_source::FieldValue::String(text) => text.clone(),
+                    tilewright_source::FieldValue::String(text) => stored_breaks_marked(text),
                     tilewright_source::FieldValue::Json(_) => "Grouped values".into(),
                     _ => inspector::scalar_text(value),
                 },
@@ -1481,6 +1481,7 @@ impl Application {
                 "Read-only: unsupported text".into()
             };
             rows.push((detail, None, row.editable, false));
+            rows.extend(stored_breaks_row(row));
             let choices = tools::field_choices(inspected, row.name);
             if !choices.is_empty() {
                 rows.push((
@@ -2706,6 +2707,22 @@ fn append_change_review(
         }
     }
     true
+}
+
+/// A stored text value on one line, its line breaks and controls as markers.
+fn stored_breaks_marked(text: &str) -> String {
+    tilewright_editor_ui::text_input::mark_stored_breaks(text).0
+}
+
+/// A row counting the markers in a stored text value, when it has any.
+fn stored_breaks_row(
+    row: &inspector::FieldRow<'_>,
+) -> Option<(String, Option<Control>, bool, bool)> {
+    let Some(tilewright_source::FieldValue::String(text)) = row.current else {
+        return None;
+    };
+    tilewright_editor_ui::text_input::stored_break_hint(text)
+        .map(|hint| (hint, None, row.editable, false))
 }
 
 fn field_description(row: &inspector::FieldRow<'_>) -> String {

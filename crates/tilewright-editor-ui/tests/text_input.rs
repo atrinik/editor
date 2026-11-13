@@ -226,7 +226,9 @@ fn loaded_line_and_paragraph_separators_are_kept_until_the_user_removes_them() {
     let loaded = "A\u{2028}B\u{2029}C";
     let mut input = TextInput::new(loaded.into()).unwrap();
     assert_eq!(input.text(), loaded);
-    assert_eq!(input.snapshot().display_text, loaded);
+    // Shown as markers on one line; the draft keeps the real characters.
+    assert_eq!(input.snapshot().display_text, "A\u{23ce}B\u{b6}C");
+    assert_eq!(input.snapshot().committed, loaded);
     // Editing elsewhere preserves the stored separators byte for byte.
     select(&mut input, 0, 0);
     input.input("<").unwrap();
