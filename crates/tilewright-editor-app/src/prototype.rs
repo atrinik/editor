@@ -31,7 +31,7 @@ use tilewright_render_wgpu::WgpuRenderer;
 use tilewright_scene::SemanticId;
 use tilewright_source::SourceRoot;
 
-const HELP: &str = "Select / Move / Terrain / Place (P) / Zone (N) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | O shows zones | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+const HELP: &str = "Select / Move / Terrain / Place (P) / Zone (N) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | O shows zones | Zone list: name, parent, new, delete | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
 /// Status when an overlay is wanted but the cells' places in the World's
 /// draw order could not be computed for this view.
 const OVERLAY_UNAVAILABLE: &str = "Zone overlay and stroke preview unavailable for this view.";
@@ -1169,8 +1169,11 @@ impl Application {
             false,
         );
         let name = match (&zone.name, zones::display_name(plane, id)) {
-            (Some(name), _) => format!("Name: {name}"),
-            (None, Some(inherited)) => format!("Name: none (shows {inherited})"),
+            (Some(name), _) => format!("Name: {}", stored_breaks_marked(name)),
+            (None, Some(inherited)) => {
+                rows.push(("Name: none".into(), None, true, false));
+                format!("Inherits: {}", stored_breaks_marked(inherited))
+            }
             (None, None) => "Name: none".into(),
         };
         rows.push((name, None, true, false));
@@ -2178,6 +2181,10 @@ impl Application {
                 .map(|_| ()),
             Control::ZoneParent(parent) => {
                 let zone = chosen.ok_or("choose a zone in the zone list first")?;
+                // A choice closes the list, as a menu would.
+                if self.tools.parent_choices_open() {
+                    let _ = self.tools.toggle_parent_choices(self.session.catalog());
+                }
                 return self.action(Action::SetZoneParent {
                     plane,
                     zone,

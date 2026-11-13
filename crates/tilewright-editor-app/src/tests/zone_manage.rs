@@ -114,7 +114,7 @@ fn a_display_name_edit_through_sdl_events_is_one_reviewed_change() {
         "Zone meadow (id is fixed)",
         "Name: Quiet meadow",
         "Parent: none (change)",
-        "Shown on 31 tiles in view",
+        "Shown on 36 tiles in view",
         "Holds no tile in the plane",
         "Child zone: meadow.pond",
         "It is the plane's default zone",
@@ -126,7 +126,14 @@ fn a_display_name_edit_through_sdl_events_is_one_reviewed_change() {
     assert_eq!(row_enabled(&mut app, &Control::ZoneDelete), Some(false));
     // The child shows the name it inherits.
     choose(&mut app, "meadow.pond");
-    assert!(all_texts(&mut app).contains(&"Name: none (shows Quiet meadow)".to_owned()));
+    let names: Vec<String> = all_texts(&mut app)
+        .into_iter()
+        .filter(|t| t.starts_with("Inherits"))
+        .collect();
+    assert!(
+        names.contains(&"Inherits: Quiet meadow".to_owned()),
+        "{names:?}"
+    );
     choose(&mut app, "meadow");
     // The display name row opens a draft holding the current name.
     press(&mut app, &Control::ZoneName);
@@ -232,6 +239,7 @@ fn the_parent_list_leaves_out_the_zone_and_its_descendants() {
         Some(false)
     );
     press(&mut app, &Control::ZoneParent(Some("path".into())));
+    assert!(!app.tools.parent_choices_open(), "a choice closes the list");
     assert!(review_has(&mut app, "Moves zone meadow.pond under path."));
     enter(&mut app);
     let text = fs::read_to_string(&path).unwrap();
@@ -435,4 +443,41 @@ fn a_focused_zone_draft_consumes_global_shortcuts() {
     acknowledge_ui(&mut app);
     route(&mut app, &key(Keycode::Escape)).unwrap();
     assert!(app.tools.draft_text().is_none());
+}
+
+#[test]
+fn a_stored_line_break_in_a_zone_name_shows_as_a_marker_and_stays_exact() {
+    use tilewright_editor_ui::text_input::LINE_BREAK_MARKER;
+    let (temporary, mut app) = zone_application(|world| {
+        let path = world.join("planes/main/zones.jsonc");
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, text.replace("\"Stone path\"", "\"Stone\\npath\"")).unwrap();
+    });
+    let path = temporary.path().join(ZONES);
+    route(&mut app, &key(Keycode::N)).unwrap();
+    choose(&mut app, "path");
+    let shown = format!("Name: Stone{LINE_BREAK_MARKER}path");
+    assert!(all_texts(&mut app).contains(&shown), "{shown}");
+    // The draft holds the stored text exactly and displays the marker.
+    press(&mut app, &Control::ZoneName);
+    assert_eq!(app.tools.draft_text(), Some("Stone\npath"));
+    let snapshot = app.tools.draft_snapshot().unwrap();
+    assert!(snapshot.display_text.contains(LINE_BREAK_MARKER));
+    assert!(!snapshot.display_text.contains('\n'));
+    // Appending keeps the stored break; the review shows the exact edit.
+    acknowledge_ui(&mut app);
+    type_text(&mut app, " way");
+    enter(&mut app);
+    enter(&mut app);
+    assert_eq!(
+        app.session.world().planes()["main"].zones["path"]
+            .name
+            .as_deref(),
+        Some("Stone\npath way")
+    );
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("\"Stone\\npath way\"")
+    );
 }
