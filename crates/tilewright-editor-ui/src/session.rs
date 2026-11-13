@@ -12,6 +12,8 @@ use tilewright_source::{FieldValue, World};
 
 use crate::uid::{OsUidSource, UidSource};
 
+mod zone_edit;
+
 #[derive(Clone, Debug)]
 pub enum Action {
     Select {
@@ -74,6 +76,46 @@ pub enum Action {
         x: i64,
         y: i64,
         proto: String,
+        expected: [u8; 32],
+    },
+    /// Set or clear the display name of zone `zone` of the active view's
+    /// plane: one `set` (or `remove` when `name` is `None` or empty) on its
+    /// `name` in `zones.jsonc`. Needs `editing.zones.manage`. Zone ids are
+    /// fixed: this never changes `zone` itself.
+    RenameZone {
+        plane: String,
+        zone: String,
+        name: Option<String>,
+        expected: [u8; 32],
+    },
+    /// Make `parent` the parent of zone `zone`, or make it a top-level zone
+    /// (`None`). Refused for an unknown parent and for `zone` itself or one
+    /// of its descendants, which would make a cycle. Needs
+    /// `editing.zones.manage`.
+    SetZoneParent {
+        plane: String,
+        zone: String,
+        parent: Option<String>,
+        expected: [u8; 32],
+    },
+    /// Add zone `zone`, with an optional display name and parent, at the end
+    /// of the plane's `zones.jsonc`, creating the document when the plane
+    /// has none. `zone` must be a World identifier the plane does not use
+    /// yet. Needs `editing.zones.manage`.
+    CreateZone {
+        plane: String,
+        zone: String,
+        name: Option<String>,
+        parent: Option<String>,
+        expected: [u8; 32],
+    },
+    /// Delete zone `zone` from the plane's `zones.jsonc`. Refused, with the
+    /// reasons, while any tile of any layer holds it, a chunk's zone palette
+    /// lists it, a zone has it as parent or it is the plane's default zone.
+    /// Needs `editing.zones.manage`.
+    DeleteZone {
+        plane: String,
+        zone: String,
         expected: [u8; 32],
     },
     Accept,
@@ -619,6 +661,7 @@ impl Session {
             let committed = self.history.document().world();
             let mut lines = crate::insertion::notes(committed, pending.sealed());
             lines.extend(crate::zones::notes(committed, pending.sealed()));
+            lines.extend(crate::zones::definition_notes(committed, pending.world()));
             lines.extend(crate::removal::warnings(committed, pending.sealed()));
             lines
         });
@@ -666,6 +709,10 @@ impl Session {
                     | Action::PaintZones { .. }
                     | Action::Remove { .. }
                     | Action::Place { .. }
+                    | Action::RenameZone { .. }
+                    | Action::SetZoneParent { .. }
+                    | Action::CreateZone { .. }
+                    | Action::DeleteZone { .. }
                     | Action::Undo
                     | Action::Redo
             )
@@ -859,6 +906,10 @@ impl Session {
                 proto,
                 expected,
             } => self.place(&plane, layer, [x, y], &proto, expected),
+            action @ (Action::RenameZone { .. }
+            | Action::SetZoneParent { .. }
+            | Action::CreateZone { .. }
+            | Action::DeleteZone { .. }) => self.manage_zones(&action),
             Action::Accept => self.accept(recovery),
             Action::Cancel => {
                 self.history.cancel();
