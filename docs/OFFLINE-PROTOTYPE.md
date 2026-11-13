@@ -130,13 +130,18 @@ same stroke, so covered cells that already hold the chosen value stay
 unmarked, cells outside the view are never covered, and a stroke that would
 change nothing marks nothing. The tint is drawn on copies of the prepared
 exact cell-reference quads, the quads the cell mask itself is rasterised
-from, so it follows each cell's projected shape exactly, including
-isometric diamonds and tiles that terrain heights bend or stretch. The
-copies are unpickable and sit on the renderer's effect layer: above all
-World content, objects included, so the author sees every cell that would
-change, even one an object stands on or a nearer raised tile partly hides;
-interface panels still cover it. They never reach a semantic, depth or
-coverage plane, so what a click picks is unchanged. Each pointer sample
+from, so it has each cell's projected shape, including isometric diamonds
+and tiles that terrain heights bend or stretch. The copies are placed in the
+World's own draw order, directly after each cell's terrain (an empty cell
+follows the terrain of the cell drawn before it), so anything the World draws
+later covers the mark as it covers the terrain: an object standing on the
+cell, a nearer raised tile or a higher ground layer hides the mark there.
+Where a terrain art's outline differs from the reference cell shape, the
+mark can reach a thin edge of a farther tile that the click mask gives to the
+changed cell, and two neighbouring marks can overlap along it. The white tint
+has little contrast on very light terrain; this is not addressed yet. The
+copies are unpickable: they never reach a semantic, depth or coverage plane,
+so what a click picks is unchanged. Each pointer sample
 reuses the cached prepared World scene; only the overlay and the interface
 are composed again, and no World scene is prepared. The overlay is bounded by
 the stroke's 4,096-cell cap and is a subset of a scene that already met the
@@ -200,10 +205,10 @@ a repeated zone or 64 zones, although World already refuses cycles.
 
 The overlay tints each tile of the view that has a zone; tiles without a zone
 get no tint. Tints are copies of the prepared exact cell-reference quads
-(the quads the cell mask is rasterised from), unpickable and on the World
-layer with the cell quads' own depth and painter order, so each sorts right
-after its tile's terrain and before the objects on it and any nearer raised
-tile: a tint never covers an object, and the part of a tile an object hides
+(the quads the cell mask is rasterised from), unpickable and placed in the
+World scene's draw order exactly like the stroke preview's marks, so each
+draws right after its tile's terrain and before the objects on it, any
+nearer raised tile and higher ground layers: a tint never covers an object, and the part of a tile an object hides
 shows no tint. The semantic, depth and coverage planes, and so every pick,
 are unchanged. Colours come from eight fixed tints (the Okabe-Ito
 colour-blind-safe set with black replaced by indigo) at 40 % opacity. Each

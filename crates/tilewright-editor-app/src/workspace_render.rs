@@ -5,7 +5,8 @@
 //! shared renderer. Palette thumbnails are whole, unclipped, unpickable quads
 //! that sample ready World textures; rows that are not wholly visible get
 //! none. A running brush stroke's live preview is unpickable copies of the
-//! prepared exact cell quads, drawn on the effect layer. The World scene and
+//! prepared exact cell quads, placed in the World's own draw order. The
+//! World scene and
 //! its exact picking masks remain untouched.
 use crate::workspace_ui::{Rect, Widget, WorkspaceUi};
 use std::{
@@ -13,7 +14,7 @@ use std::{
     fmt,
     sync::Arc,
 };
-use tilewright_editor_preview::SelectionKey;
+use tilewright_editor_preview::{PreparedPreview, SelectionKey};
 use tilewright_editor_ui::text_input::{TextInputSnapshot, TextRevision};
 use tilewright_render_resources::{
     Error as ResourceError, ResourceBlob, ResourceProvider, ResourceRequest,
@@ -214,72 +215,90 @@ fn thumbnail_quads(ui: &WorkspaceUi, identity: u32) -> Result<Vec<Quad>> {
 
 /// Tint of the live brush-stroke preview: neutral white at 45 % opacity,
 /// multiplied with the opaque cell reference art, so each marked cell is
-/// lightened evenly whatever its terrain.
+/// lightened evenly whatever its terrain. It has little contrast on very
+/// light terrain.
 pub const STROKE_PREVIEW_TINT: [f32; 4] = [1.0, 1.0, 1.0, 0.45];
 
 /// The live brush-stroke preview: a copy of every quad of the prepared
 /// exact cell scene whose cell is in `cells`, tinted with
-/// [`STROKE_PREVIEW_TINT`], unpickable and on the effect layer, so it draws
-/// above all World content and below the interface. The cell scene is
-/// what the exact cell mask is rasterised from, compiled by the shared
-/// renderer with the same camera and height field as the terrain, so the
-/// overlay covers exactly the pixels a click would pick for those cells,
-/// including height-bent and stretched tiles split into several quads.
-/// Nothing is projected here. It is a subset of a scene that already met
-/// the scene limits; semantic identities are assigned when composed.
-pub fn stroke_overlay(
-    cell_scene: &SceneBundle,
-    cell_picks: &BTreeMap<SemanticId, SelectionKey>,
-    cells: &BTreeSet<SelectionKey>,
+/// [`STROKE_PREVIEW_TINT`] and unpickable. The cell scene is what the exact
+/// cell mask is rasterised from, compiled by the shared renderer with the
+/// same camera and height field as the terrain, so the copies have each
+/// cell's projected shape, including height-bent and stretched tiles split
+/// into several quads. Nothing is projected here.
+///
+/// The copies are World-layer quads placed in the prepared World scene's
+/// own draw order: each takes the painter order and depth of that cell's
+/// terrain draw in the World scene, and composition gives it a semantic
+/// identity above every World quad, so it draws directly after that
+/// terrain and before anything the World draws later (nearer tiles, higher
+/// ground layers, objects), which cover it as they cover the terrain. A
+/// cell the World draws no terrain for on this grid follows the World
+/// terrain draw of the nearest earlier cell in the cell scene's order, or
+/// draws before the whole World when there is none. The copies are a
+/// subset of a scene that already met the scene limits; semantic
+/// identities are assigned when composed.
+pub fn stroke_overlay(prepared: &PreparedPreview, cells: &BTreeSet<SelectionKey>) -> Vec<Quad> {
+    world_ordered_copies(prepared, |key| {
+        cells.contains(key).then_some(STROKE_PREVIEW_TINT)
+    })
+}
+
+/// Unpickable copies of the prepared cell quads of every cell `tint` gives
+/// a colour, in that colour, placed in the World scene's draw order as
+/// [`stroke_overlay`] describes.
+fn world_ordered_copies(
+    prepared: &PreparedPreview,
+    tint: impl Fn(&SelectionKey) -> Option<[f32; 4]>,
 ) -> Vec<Quad> {
-    cell_scene
-        .quads()
-        .iter()
-        .filter(|quad| {
-            cell_picks
-                .get(&quad.semantic_id)
-                .is_some_and(|key| cells.contains(key))
-        })
-        .map(|quad| Quad {
-            color: STROKE_PREVIEW_TINT,
+    // Where the World draws each terrain cell: its last quad's order.
+    let mut world: BTreeMap<&SelectionKey, (i16, u32)> = BTreeMap::new();
+    for quad in prepared.scene.quads() {
+        if let Some(key @ SelectionKey::Cell { .. }) = prepared.picks.get(&quad.semantic_id) {
+            world.insert(key, (quad.depth, quad.painter_order));
+        }
+    }
+    // Scene quads are stored in draw order.
+    let mut slot = None;
+    let mut overlay = Vec::new();
+    for quad in prepared.cell_scene.quads() {
+        let Some(key) = prepared.cell_picks.get(&quad.semantic_id) else {
+            continue;
+        };
+        if let Some(found) = world.get(key) {
+            slot = Some(*found);
+        }
+        let Some(color) = tint(key) else {
+            continue;
+        };
+        let (depth, painter_order) = slot.unwrap_or((quad.depth.saturating_sub(1), 0));
+        overlay.push(Quad {
+            color,
             grayscale: 0.0,
             glow: None,
             pickable: false,
-            layer: Layer::Effect,
+            layer: Layer::World,
+            depth,
+            painter_order,
             ..*quad
-        })
-        .collect()
+        });
+    }
+    overlay
 }
 
-/// The zone overlay: a copy of every quad of the prepared exact cell scene
-/// whose cell has a tint in `tints` (keyed by plane tile), in that tint and
-/// unpickable. The copies stay on the World layer with the cell quads' own
-/// depth and painter order, so each sorts right after its tile's terrain
-/// and before the objects on it or any nearer raised tile: a tint never
-/// covers an object, and the part of a tile an object hides shows no tint.
-/// Tiles without a tint get no quad.
-pub fn zone_overlay(
-    cell_scene: &SceneBundle,
-    cell_picks: &BTreeMap<SemanticId, SelectionKey>,
-    tints: &BTreeMap<[i64; 2], [f32; 4]>,
-) -> Vec<Quad> {
-    cell_scene
-        .quads()
-        .iter()
-        .filter_map(|quad| {
-            let Some(SelectionKey::Cell { x, y, .. }) = cell_picks.get(&quad.semantic_id) else {
-                return None;
-            };
-            let color = *tints.get(&[*x, *y])?;
-            Some(Quad {
-                color,
-                grayscale: 0.0,
-                glow: None,
-                pickable: false,
-                ..*quad
-            })
-        })
-        .collect()
+/// The zone overlay: unpickable copies of the prepared cell quads of every
+/// tile that has a tint in `tints` (keyed by plane tile), in that tint,
+/// placed in the World scene's draw order exactly like the stroke preview
+/// ([`stroke_overlay`]): each draws directly after its tile's terrain and
+/// before anything the World draws later, so a tint never covers an object
+/// or a nearer tile, and the part of a tile an object hides shows no tint.
+/// Composed before the stroke preview, a preview mark of the same cell
+/// draws over the tint. Tiles without a tint get no quad.
+pub fn zone_overlay(prepared: &PreparedPreview, tints: &BTreeMap<[i64; 2], [f32; 4]>) -> Vec<Quad> {
+    world_ordered_copies(prepared, |key| match key {
+        SelectionKey::Cell { x, y, .. } => tints.get(&[*x, *y]).copied(),
+        SelectionKey::Object { .. } => None,
+    })
 }
 
 /// Logical rectangle of a row's colour swatch: the thumbnail box.
@@ -589,25 +608,29 @@ fn display_list<'a>(
     Ok((primitives, editable))
 }
 
+/// [`compose_with_overlay`] with no overlay and the renderer's scene limits.
+#[cfg(test)]
 pub fn compose(
     system: &mut TextSystem,
     ui: &WorkspaceUi,
     world: &SceneBundle,
     resources: Arc<dyn ResourceProvider>,
 ) -> Result<Presentation> {
-    compose_with_overlay(system, ui, world, resources, &[])
+    compose_with_overlay(system, ui, world, resources, &[], SceneLimits::default())
 }
 
-/// [`compose`] with `overlay` quads (see [`stroke_overlay`]) drawn over the
-/// World. The overlay keeps its geometry, resource and painter order; it
-/// gets fresh semantic identities above the World's and must sample
-/// textures `resources` serves. The World quads are copied unchanged.
+/// [`compose`] with `overlay` quads (see [`stroke_overlay`]), within
+/// `limits`. The overlay keeps its geometry, resource, layer, depth and
+/// painter order; it gets fresh semantic identities above the World's, so
+/// it sorts after World quads of the same order, and must sample textures
+/// `resources` serves. The World quads are copied unchanged.
 pub fn compose_with_overlay(
     system: &mut TextSystem,
     ui: &WorkspaceUi,
     world: &SceneBundle,
     resources: Arc<dyn ResourceProvider>,
     overlay: &[Quad],
+    limits: SceneLimits,
 ) -> Result<Presentation> {
     if (world.viewport().width, world.viewport().height) != ui.size {
         return Err(CompositionError::TargetMismatch);
@@ -696,7 +719,7 @@ pub fn compose_with_overlay(
             .chain(overlay)
             .chain(thumbnails)
             .chain(compiled.quads),
-        SceneLimits::default(),
+        limits,
     )
     .map_err(CompositionError::Scene)?;
     Ok(Presentation {

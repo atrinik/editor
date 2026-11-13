@@ -177,8 +177,8 @@ fn zone_tints_sit_under_objects_and_never_reach_the_semantic_plane() {
     let (_temporary, mut app) = zone_application(|_| {});
     app.control(Control::Zone).unwrap();
     let overlay = crate::prototype::zone_overlay(&app);
-    // One unpickable World-layer copy of each tile's cell quad, with the
-    // cell quad's own corners, depth and painter order, in its zone's tint.
+    // One unpickable World-layer copy of each tile's cell quad, in the
+    // World's draw order like the stroke preview, in its zone's tint.
     let tints = zones::assign_tints(["meadow", "meadow.pond", "path"]);
     let distinct: BTreeSet<usize> = tints.values().copied().collect();
     assert_eq!(distinct.len(), 3, "three zones, three tints");
@@ -191,15 +191,16 @@ fn zone_tints_sit_under_objects_and_never_reach_the_semantic_plane() {
             .iter()
             .find(|quad| quad.positions == copy.positions)
             .unwrap();
-        assert_eq!(
-            (copy.depth, copy.painter_order),
-            (source.depth, source.painter_order)
-        );
-        let Some(SelectionKey::Cell { x, y, .. }) =
-            app.prepared.cell_picks.get(&source.semantic_id)
-        else {
+        let key = &app.prepared.cell_picks[&source.semantic_id];
+        let SelectionKey::Cell { x, y, .. } = key else {
             panic!("not a cell quad");
         };
+        // The same World draw slot as the stroke preview's mark of that cell,
+        // so a mark composed after the tint draws over it.
+        let mark =
+            crate::workspace_render::stroke_overlay(&app.prepared, &BTreeSet::from([key.clone()]));
+        assert!(mark.iter().any(|m| m.positions == copy.positions
+            && (m.depth, m.painter_order) == (copy.depth, copy.painter_order)));
         let zone = zones::tile_zone(&app.session.world().planes()["main"], 0, *x, *y).unwrap();
         assert_eq!(copy.color, zones::tint_color(tints[zone.id]));
     }

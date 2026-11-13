@@ -87,6 +87,7 @@ fn application_with_source(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, A
         stroke_mask: None,
         prepared_scenes: 1,
         preview_omitted: false,
+        frame_limits: tilewright_scene::SceneLimits::default(),
     };
     (temporary, app)
 }
