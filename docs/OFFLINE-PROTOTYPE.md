@@ -67,7 +67,7 @@ outside this private-directory/advisory-lock model.
 
 The native window presents the prepared scene through the shared wgpu/SDL3
 adapter and remains open until the user closes it. A toolbar selects Select,
-Move, Terrain or Place mode and exposes Clear, Undo, Redo and Delete. Terrain mode
+Move, Terrain, Place or Zone mode and exposes Clear, Undo, Redo and Delete. Terrain mode
 paints with the drag brush described below; deletion and placement are described after it. The inspector shows
 the selected object's identity, position and schema fields, or the selected
 cell and explicit terrain choices. Only profile-authorized scalar fields are
@@ -188,6 +188,66 @@ whose names its `fields` member lists, with the same active-view scope. The
 entry carries no field values. The per-uid `movable_uids` and `fields` grants
 keep their own reach and combine with it.
 
+### Zones
+
+Zone mode (the toolbar's Zone, or N) shows which zone every tile of the view
+is in. World keeps a zone per tile and layer in each chunk's `zone` grid; an
+empty cell, or a chunk without a zone grid, is in the plane's default zone,
+and a tile with neither has no zone. A tile's display name is the first zone
+walking up its parent chain that has a `name` (an unnamed child shows its
+parent's name). The editor computes this walk; it stops at an unknown parent,
+a repeated zone or 64 zones, although World already refuses cycles.
+
+The overlay tints each tile of the view that has a zone; tiles without a zone
+get no tint. Tints are copies of the prepared exact cell-reference quads
+(the quads the cell mask is rasterised from), unpickable and on the World
+layer with the cell quads' own depth and painter order, so each sorts right
+after its tile's terrain and before the objects on it and any nearer raised
+tile: a tint never covers an object, and the part of a tile an object hides
+shows no tint. The semantic, depth and coverage planes, and so every pick,
+are unchanged. Colours come from eight fixed tints (the Okabe-Ito
+colour-blind-safe set with black replaced by indigo) at 40 % opacity. Each
+zone prefers the tint a stable hash of its id selects; in zone id order, a
+zone whose preferred tint an earlier zone in view already took gets the next
+free one. So the zones in view share a tint only when more than eight are in
+view, and the legend then says "shared tint" on those rows. A zone's tint is
+the same in every view unless a zone sorted before it collides there. If the
+overlay would take the frame past the scene limits it is left out and the
+status line says so.
+
+The overlay is always on in Zone mode. In the other modes it is off by
+default and O (or the sidebar's "Show zones" row) toggles it; the choice is
+kept across modes. The existing demonstration captures of other modes are
+therefore unchanged by the overlay.
+
+In Zone mode the sidebar lists every zone of the plane, sorted by id, with its
+display name and how many tiles of the view it holds, or "not in view"; rows
+of zones in view carry their tint as a swatch. A last row stands for the
+plane's default zone. The inspector shows a selected tile's zone (marked when
+it is the plane default), its parent chain and its display name, in every
+mode that selects tiles.
+
+Painting zones needs the catalog's optional `editing.zones` member,
+`{"paint": true, "manage": false}`: capability flags, never a list of zone
+ids, so the catalog keeps loading when zones change. `manage` is read and kept
+but grants nothing yet. Without `paint` the zone rows are disabled, a press
+only selects the tile and the status line says painting is not granted.
+With it, choose a zone row (or the default-zone row) and drag: the gesture,
+brush size and shape keys, caps, view clipping, pending fence and live
+preview are those of the terrain brush. Samples come from the ground cell
+mask; the release writes the `zone` grid. One stroke is one World transaction
+with one `terrain.set` on the grid `zone`, a cell entry with `expect` for
+every covered cell whose own value changes, and value `null` for the
+default-zone row (the cell empties and shows the plane's default zone again).
+Cells are compared by their own value, not the zone they display, so
+painting the default zone onto an empty cell writes it explicitly and is a
+change. World adds or removes the chunk's zone palette entries and the zone
+grid itself as needed; Undo and Redo restore the exact bytes. The review shows
+a neutral note per target zone, such as "Zones: 5 tiles move to path (Stone
+path)." While a zone stroke runs, the white stroke preview is drawn over the
+zone tints; no tint is white or grey, so the marked cells stay visible.
+Creating, renaming, reparenting and deleting zones are not offered yet.
+
 ### Placing objects
 
 Choose Place in the toolbar or press P (a focused text draft keeps P for
@@ -294,7 +354,10 @@ preparation as interactive input, including a placement with seeded uids and
 a palette search (it types `A`, captures `palette`, then places the first
 match) and, after the terrain step, a 3x3 sand drag stroke over grass and
 sand captured mid-gesture as `stroke-preview` and then cancelled with Escape,
-so it changes nothing. It is a deterministic scripted demonstration,
+so it changes nothing. When the catalog grants zone painting it ends in Zone
+mode: `zones` shows the overlay and legend, then a one-cell `path` stroke down
+column 5 is released (`zone-stroke`, pending review) and accepted
+(`zone-painted`). It is a deterministic scripted demonstration,
 not a claim of human input. `--reference` produces composed workspace CPU
 reference evidence and
 must be reported separately from an actual visible native window run. Native

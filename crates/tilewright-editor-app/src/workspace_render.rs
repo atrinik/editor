@@ -7,7 +7,7 @@
 //! none. A running brush stroke's live preview is unpickable copies of the
 //! prepared exact cell quads, drawn on the effect layer. The World scene and
 //! its exact picking masks remain untouched.
-use crate::workspace_ui::{Rect, WorkspaceUi};
+use crate::workspace_ui::{Rect, Widget, WorkspaceUi};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -251,6 +251,48 @@ pub fn stroke_overlay(
         .collect()
 }
 
+/// The zone overlay: a copy of every quad of the prepared exact cell scene
+/// whose cell has a tint in `tints` (keyed by plane tile), in that tint and
+/// unpickable. The copies stay on the World layer with the cell quads' own
+/// depth and painter order, so each sorts right after its tile's terrain
+/// and before the objects on it or any nearer raised tile: a tint never
+/// covers an object, and the part of a tile an object hides shows no tint.
+/// Tiles without a tint get no quad.
+pub fn zone_overlay(
+    cell_scene: &SceneBundle,
+    cell_picks: &BTreeMap<SemanticId, SelectionKey>,
+    tints: &BTreeMap<[i64; 2], [f32; 4]>,
+) -> Vec<Quad> {
+    cell_scene
+        .quads()
+        .iter()
+        .filter_map(|quad| {
+            let Some(SelectionKey::Cell { x, y, .. }) = cell_picks.get(&quad.semantic_id) else {
+                return None;
+            };
+            let color = *tints.get(&[*x, *y])?;
+            Some(Quad {
+                color,
+                grayscale: 0.0,
+                glow: None,
+                pickable: false,
+                ..*quad
+            })
+        })
+        .collect()
+}
+
+/// Logical rectangle of a row's colour swatch: the thumbnail box.
+pub fn swatch_rect(row: Rect) -> Option<Rect> {
+    let square = row.height.checked_sub(2 * THUMBNAIL_INSET)?;
+    (square > 0 && row.width >= thumbnail_indent(row.height)).then_some(Rect {
+        x: row.x + THUMBNAIL_INSET,
+        y: row.y + THUMBNAIL_INSET,
+        width: square,
+        height: square,
+    })
+}
+
 pub fn text_size(height: u32) -> f32 {
     if height <= 22 { 14.0 } else { 18.0 }
 }
@@ -413,6 +455,44 @@ fn composition_rects(layout: &UnicodeLayout, range: std::ops::Range<usize>) -> V
     )
 }
 
+/// The background of a control or active row.
+fn row_background<'a>(
+    widget: &Widget,
+    identity: &mut u32,
+    order: u32,
+) -> Result<Option<UiPrimitive<'a>>> {
+    if widget.control.is_none() && !widget.active {
+        return Ok(None);
+    }
+    let color = if widget.active {
+        [0.12, 0.32, 0.47, 1.0]
+    } else if widget.enabled {
+        [0.14, 0.18, 0.24, 1.0]
+    } else {
+        [0.09, 0.11, 0.14, 1.0]
+    };
+    let bounds = rect(widget.layout);
+    Ok(Some(UiPrimitive::Solid {
+        bounds,
+        clip: bounds,
+        paint: paint(identity, order, color)?,
+        pickable: false,
+    }))
+}
+
+/// A legend row's colour swatch, above the row's background.
+fn swatch<'a>(widget: &Widget, identity: &mut u32, order: u32) -> Result<Option<UiPrimitive<'a>>> {
+    let (Some(color), Some(square)) = (widget.swatch, swatch_rect(widget.layout)) else {
+        return Ok(None);
+    };
+    Ok(Some(UiPrimitive::Solid {
+        bounds: rect(square),
+        clip: rect(widget.layout),
+        paint: paint(identity, order, color)?,
+        pickable: false,
+    }))
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn display_list<'a>(
     ui: &'a WorkspaceUi,
@@ -446,28 +526,15 @@ fn display_list<'a>(
             .and_then(|index| index.checked_mul(2))
             .and_then(|index| index.checked_add(1))
             .ok_or(CompositionError::PainterOrderExhausted)?;
-        if widget.control.is_some() || widget.active {
-            let color = if widget.active {
-                [0.12, 0.32, 0.47, 1.0]
-            } else if widget.enabled {
-                [0.14, 0.18, 0.24, 1.0]
-            } else {
-                [0.09, 0.11, 0.14, 1.0]
-            };
-            primitives.push(UiPrimitive::Solid {
-                bounds,
-                clip: bounds,
-                paint: paint(&mut identity, order, color)?,
-                pickable: false,
-            });
-        }
+        primitives.extend(row_background(widget, &mut identity, order)?);
         let color = if widget.enabled {
             [0.91, 0.94, 0.98, 1.0]
         } else {
             [0.50, 0.56, 0.63, 1.0]
         };
+        primitives.extend(swatch(widget, &mut identity, order)?);
         let mut origin = [bounds.x + 4.0, bounds.y + 1.0];
-        if widget.thumbnail.is_some() {
+        if widget.thumbnail.is_some() || widget.swatch.is_some() {
             // Text sits beside the thumbnail, centred on a 26 px text row.
             origin[0] += thumbnail_indent(widget.layout.height) as f32;
             origin[1] += (widget.layout.height.saturating_sub(26) / 2) as f32;

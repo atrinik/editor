@@ -23,6 +23,12 @@ pub enum Control {
     Move,
     Terrain,
     Place,
+    /// Zone mode: the zone overlay, its legend and the zone brush.
+    Zone,
+    /// Show or hide the zone overlay outside Zone mode.
+    ZoneOverlay,
+    /// A row of the zone palette: paint this zone, or the default zone.
+    ZonePalette(tilewright_editor_ui::tools::ZoneChoice),
     Clear,
     Delete,
     Undo,
@@ -60,6 +66,9 @@ pub struct Widget {
     /// A preview image drawn at the start of the row, for Place palette rows.
     /// Its texture is the prototype's ready preview resource.
     pub thumbnail: Option<tilewright_render_world::TextureRef>,
+    /// A solid colour square drawn where a thumbnail would be, for zone
+    /// legend rows: the zone's overlay tint, opaque.
+    pub swatch: Option<[f32; 4]>,
 }
 
 /// Hit rectangles use physical pixels; display rectangles retain logical units
@@ -204,6 +213,7 @@ impl WorkspaceUi {
                 enabled,
                 active,
                 thumbnail: None,
+                swatch: None,
             });
         }
     }

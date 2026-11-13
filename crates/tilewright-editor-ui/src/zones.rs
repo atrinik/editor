@@ -112,10 +112,11 @@ pub fn view_zones<'w>(world: &'w World, catalog: &PreviewCatalog) -> Vec<([i64; 
     zones
 }
 
-/// The overlay tints: eight colours that stay distinguishable from each
-/// other and from the neutral sample's grass and sand (they follow the
-/// Okabe–Ito colour-blind-safe set, with black replaced by white), drawn at
-/// [`TINT_ALPHA`] over the tile.
+/// The overlay tints: eight saturated colours that stay distinguishable
+/// from each other (they follow the Okabe–Ito colour-blind-safe set, with
+/// black replaced by indigo), drawn at [`TINT_ALPHA`] over the tile. None is
+/// white or grey, so the brush preview's white lightening stays visible on
+/// top of every tint.
 pub const TINTS: [[f32; 3]; 8] = [
     [0.90, 0.62, 0.00], // orange
     [0.34, 0.71, 0.91], // sky blue
@@ -124,7 +125,7 @@ pub const TINTS: [[f32; 3]; 8] = [
     [0.00, 0.45, 0.70], // blue
     [0.84, 0.37, 0.00], // vermilion
     [0.80, 0.47, 0.65], // reddish purple
-    [1.00, 1.00, 1.00], // white
+    [0.36, 0.27, 0.62], // indigo
 ];
 /// Opacity of a zone tint over its tile.
 pub const TINT_ALPHA: f32 = 0.4;

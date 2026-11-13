@@ -99,7 +99,16 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         .set_uid_source(Box::new(tilewright_editor_ui::uid::SeededUidSource::new(
             super::DEMO_UID_SEED,
         )));
-    app.demo_all().unwrap();
+    // The steps of demo_all, with a look before the zone step.
+    for step in 0..10 {
+        assert!(!app.demo_step(step).unwrap());
+    }
+    let selected_before_zones = app.session.selection().cloned();
+    for step in 10..12 {
+        if app.demo_step(step).unwrap() {
+            break;
+        }
+    }
     let marker = app.session.world().object("marker_1").unwrap();
     assert!(marker.fields.iter().any(|(name, value)| name == "label"
         && value == &tilewright_source::FieldValue::String("Edited offline".into())));
@@ -125,12 +134,27 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
     let found = app.session.world().object(&searched).unwrap();
     assert_eq!((found.proto.as_str(), found.at), ("crate", Some([2, 1])));
     assert_eq!(
-        app.session.selection(),
-        Some(&tilewright_editor_preview::SelectionKey::Object { uid: searched })
+        selected_before_zones,
+        Some(tilewright_editor_preview::SelectionKey::Object { uid: searched })
     );
-    assert_eq!(app.tools.palette_filter(), "A");
+    // The zone step paints the last zone, `path`, down column 5 from open
+    // meadow to the path row, through one reviewed stroke.
+    let plane = &app.session.world().planes()["main"];
+    for y in 0..6 {
+        assert_eq!(
+            tilewright_editor_ui::zones::cell_zone(plane, 0, 5, y),
+            Some("path"),
+            "{y}"
+        );
+    }
+    assert_eq!(
+        tilewright_editor_ui::zones::cell_zone(plane, 0, 6, 0),
+        None,
+        "a one-cell brush"
+    );
+    assert_eq!(app.tools.palette_filter(), "", "leaving Place clears it");
     assert!(!app.tools.filter_focused());
-    assert_eq!(app.session.history().depths(), (6, 0));
+    assert_eq!(app.session.history().depths(), (7, 0));
     for phase in [
         "before",
         "pending",
@@ -148,6 +172,9 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         "search-place",
         "search-placed",
         "stroke-preview",
+        "zones",
+        "zone-stroke",
+        "zone-painted",
     ] {
         assert!(
             temporary
@@ -1981,3 +2008,6 @@ mod palette;
 
 #[path = "stroke_preview.rs"]
 mod stroke_preview;
+
+#[path = "zones.rs"]
+mod zones;

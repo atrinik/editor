@@ -20,7 +20,8 @@ use tilewright_editor_preview::{
 use tilewright_editor_recovery::{DurableRecovery, RecoveryLimits};
 use tilewright_editor_ui::brush::StrokeTarget;
 use tilewright_editor_ui::inspector::{self, SelectionSummary};
-use tilewright_editor_ui::tools::{self, ToolMode, ToolState};
+use tilewright_editor_ui::tools::{self, ToolMode, ToolState, ZoneChoice};
+use tilewright_editor_ui::zones;
 use tilewright_editor_ui::{Action, Session, SessionPhase};
 use tilewright_render_api::{
     BackendPreference, FrameOutput, RenderRequest, Renderer, TargetDescriptor, TargetKind,
@@ -30,7 +31,7 @@ use tilewright_render_wgpu::WgpuRenderer;
 use tilewright_scene::SemanticId;
 use tilewright_source::SourceRoot;
 
-const HELP: &str = "Select / Move / Terrain / Place (P) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+const HELP: &str = "Select / Move / Terrain / Place (P) / Zone (N) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | O shows zones | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
 const STROKE_INTERRUPTED: &str = "Brush stroke ended before release; nothing was prepared.";
 
 type Result<T> = std::result::Result<T, String>;
@@ -48,6 +49,9 @@ const NOTHING_TO_PLACE: &str = "Place is unavailable: the catalog grants no prot
 const TEXT_ROW_HEIGHT: u32 = 26;
 const PALETTE_ROW_HEIGHT: u32 = 40;
 const ROW_GAP: u32 = 2;
+/// Zone legend and palette rows: compact, so an id, a display name and a
+/// tile count fit on one line in the smaller type.
+const ZONE_ROW_HEIGHT: u32 = 22;
 const NO_PALETTE_MATCH: &str = "No prototype matches the filter.";
 const FILTER_PLACEHOLDER: &str = "Filter types: click or press /";
 const FILTER_HINT: &str = "Enter keeps the filter / Esc clears it";
@@ -62,6 +66,10 @@ const DEMO_SEARCH_TILE: (i64, i64) = (2, 1);
 /// Press and drag cells of the scripted stroke-preview capture, across
 /// grass and the sand the demonstration paints with.
 const DEMO_STROKE: [[i64; 2]; 2] = [[1, 2], [5, 2]];
+
+/// Press and drag cells of the scripted zone stroke: down open meadow onto
+/// the neutral sample's path row.
+const DEMO_ZONE_STROKE: [[i64; 2]; 2] = [[5, 0], [5, 5]];
 
 /// Which granted edit a scripted selection needs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -342,7 +350,7 @@ impl Application {
                 self.view.frame_revision,
                 x,
                 y,
-                self.tools.mode() == ToolMode::Terrain,
+                matches!(self.tools.mode(), ToolMode::Terrain | ToolMode::Zone),
             )
             .map_err(|error| error.to_string())?
             .ok_or("no selectable semantic hit at this pixel")?;
@@ -526,6 +534,13 @@ impl Application {
     /// mask, then begin a stroke there and keep that frame's cell mask for
     /// the drag samples. Nothing is prepared until release.
     fn begin_stroke(&mut self, x: u32, y: u32) -> Result<()> {
+        // In Zone mode without the paint grant or a chosen zone a press only
+        // selects the tile, so its zone can be inspected.
+        if self.tools.mode() == ToolMode::Zone
+            && (!self.session.catalog().editing().zones.paint || self.tools.zone_choice().is_none())
+        {
+            return self.click(x, y);
+        }
         self.click(x, y)?;
         let key = self
             .session
@@ -621,7 +636,7 @@ impl Application {
         self.review(&mut ui);
         for widget in &mut ui.widgets {
             if widget.editable.is_none() {
-                let indent = if widget.thumbnail.is_some() {
+                let indent = if widget.thumbnail.is_some() || widget.swatch.is_some() {
                     crate::workspace_render::thumbnail_indent(widget.layout.height)
                 } else {
                     0
@@ -643,56 +658,57 @@ impl Application {
         for (x, width, label, control, enabled, active) in [
             (
                 8,
-                84,
+                76,
                 "Select",
                 Control::Select,
                 true,
                 mode == ToolMode::Select,
             ),
-            (98, 76, "Move", Control::Move, true, mode == ToolMode::Move),
+            (90, 64, "Move", Control::Move, true, mode == ToolMode::Move),
             (
-                180,
-                96,
+                160,
+                84,
                 "Terrain",
                 Control::Terrain,
                 true,
                 mode == ToolMode::Terrain,
             ),
             (
-                282,
-                76,
+                250,
+                64,
                 "Place",
                 Control::Place,
                 !tools::object_palette(self.session.catalog()).is_empty(),
                 mode == ToolMode::Place,
             ),
+            (320, 64, "Zone", Control::Zone, true, mode == ToolMode::Zone),
             (
-                364,
-                76,
+                390,
+                64,
                 "Clear",
                 Control::Clear,
                 self.session.selection().is_some(),
                 false,
             ),
             (
-                446,
-                72,
+                460,
+                64,
                 "Undo",
                 Control::Undo,
                 ready && self.session.history().depths().0 > 0,
                 false,
             ),
             (
-                524,
-                72,
+                530,
+                64,
                 "Redo",
                 Control::Redo,
                 ready && self.session.history().depths().1 > 0,
                 false,
             ),
             (
-                602,
-                80,
+                600,
+                72,
                 "Delete",
                 Control::Delete,
                 ready && self.selection_deletable(),
@@ -715,9 +731,9 @@ impl Application {
         if self.unsupported_runs > 0 {
             ui.widget(
                 Rect {
-                    x: 692,
+                    x: 680,
                     y: 8,
-                    width: ui.logical_size().0.saturating_sub(702),
+                    width: ui.logical_size().0.saturating_sub(690),
                     height: 32,
                 },
                 format!(
@@ -784,6 +800,7 @@ impl Application {
                     true,
                     false,
                 ));
+                self.cell_zone_rows(&mut rows, plane, layer, [x, y]);
             }
             None => rows.push((
                 inspected
@@ -795,6 +812,7 @@ impl Application {
                 false,
             )),
         }
+        self.zone_toggle_row(&mut rows);
         if mode == ToolMode::Terrain {
             self.brush_rows(&mut rows);
             rows.push(("Terrain palette".into(), None, true, false));
@@ -814,7 +832,142 @@ impl Application {
         if mode == ToolMode::Place {
             self.place_rows(&mut rows, ready);
         }
+        if mode == ToolMode::Zone {
+            self.zone_rows(&mut rows, ready);
+        }
         rows
+    }
+
+    /// Outside Zone mode, the zone overlay toggle sits between the
+    /// selection and the tool's own rows.
+    fn zone_toggle_row(&self, rows: &mut UiRows) {
+        if self.tools.mode() == ToolMode::Zone {
+            return;
+        }
+        let shown = self.tools.zones_visible();
+        rows.push((
+            if shown {
+                "Hide zones  O"
+            } else {
+                "Show zones  O"
+            }
+            .into(),
+            Some(Control::ZoneOverlay),
+            true,
+            shown,
+        ));
+    }
+
+    /// The selected tile's zone: its id (and whether it is the plane's
+    /// default), the parent chain and the display name.
+    fn cell_zone_rows(&self, rows: &mut UiRows, plane: &str, layer: i32, [x, y]: [i64; 2]) {
+        let Some(plane) = self.session.world().planes().get(plane) else {
+            return;
+        };
+        let Some(zone) = zones::tile_zone(plane, layer, x, y) else {
+            rows.push(("Zone: none".into(), None, true, false));
+            return;
+        };
+        rows.push((
+            if zone.from_default {
+                format!("Zone: {} (plane default)", zone.id)
+            } else {
+                format!("Zone: {}", zone.id)
+            },
+            None,
+            true,
+            false,
+        ));
+        rows.push((
+            format!("Path: {}", zone.path.join(" > ")),
+            None,
+            true,
+            false,
+        ));
+        rows.push((
+            format!("Zone name: {}", zone.name.unwrap_or("none")),
+            None,
+            true,
+            false,
+        ));
+    }
+
+    /// The tint index of every zone shown in the view, as the overlay
+    /// draws it.
+    fn view_tints(&self) -> std::collections::BTreeMap<String, usize> {
+        let in_view = zones::view_zones(self.session.world(), self.session.catalog());
+        zones::assign_tints(in_view.iter().map(|(_, zone)| *zone))
+            .into_iter()
+            .map(|(zone, tint)| (zone.to_owned(), tint))
+            .collect()
+    }
+
+    /// Zone mode: the brush, then the zone legend and palette in one list.
+    /// Each zone of the plane is a row, sorted by id, with its display name
+    /// and how many tiles of the view it holds; zones in the view carry their
+    /// overlay tint as a swatch. With the paint grant a row chooses the zone
+    /// to paint; the last row paints the default zone (empties the cells).
+    fn zone_rows(&self, rows: &mut UiRows, ready: bool) {
+        let world = self.session.world();
+        let catalog = self.session.catalog();
+        let paint = catalog.editing().zones.paint;
+        if paint {
+            self.brush_rows(rows);
+        }
+        let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+        for (_, zone) in zones::view_zones(world, catalog) {
+            *counts.entry(zone).or_default() += 1;
+        }
+        let tints = zones::assign_tints(counts.keys().copied());
+        let (plane, _, _) = catalog.view();
+        let plane = world.planes().get(plane);
+        let palette = tools::zone_palette(world, catalog);
+        rows.push((
+            format!(
+                "Zones: {} of {} in view (tiles)",
+                counts.len(),
+                palette.len()
+            ),
+            None,
+            true,
+            false,
+        ));
+        for zone in palette {
+            let name = plane
+                .and_then(|plane| zones::display_name(plane, zone))
+                .unwrap_or("no display name");
+            let mut text = match counts.get(zone) {
+                Some(count) => format!("{zone} = {name} ({count})"),
+                None => format!("{zone} = {name}, not in view"),
+            };
+            if tints
+                .get(zone)
+                .is_some_and(|tint| tints.values().filter(|other| *other == tint).count() > 1)
+            {
+                text.push_str(", shared tint");
+            }
+            let choice = ZoneChoice::Zone(zone.to_owned());
+            let active = paint && self.tools.zone_choice() == Some(&choice);
+            rows.push((
+                text,
+                Some(Control::ZonePalette(choice)),
+                ready && paint,
+                active,
+            ));
+        }
+        let default = plane.and_then(|plane| plane.default_zone.as_deref());
+        rows.push((
+            default.map_or_else(
+                || "No zone (clear cells)".into(),
+                |zone| format!("Default zone (clear): {zone}"),
+            ),
+            Some(Control::ZonePalette(ZoneChoice::Default)),
+            ready && paint,
+            paint && self.tools.zone_choice() == Some(&ZoneChoice::Default),
+        ));
+        if !paint {
+            rows.push(("Zone painting not granted".into(), None, false, false));
+        }
     }
 
     /// The Place palette: one row per placeable prototype the filter keeps,
@@ -1081,6 +1234,26 @@ impl Application {
         let x = ui.sidebar_x();
         let width = ui.sidebar_width();
         let bottom = ui.logical_height();
+        let tints = if self.tools.mode() == ToolMode::Zone {
+            self.view_tints()
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        let default_zone = self
+            .session
+            .world()
+            .planes()
+            .get(self.session.catalog().view().0)
+            .and_then(|plane| plane.default_zone.clone());
+        let swatch = |control: &Option<Control>| {
+            let zone = match control {
+                Some(Control::ZonePalette(ZoneChoice::Zone(zone))) => Some(zone),
+                Some(Control::ZonePalette(ZoneChoice::Default)) => default_zone.as_ref(),
+                _ => None,
+            }?;
+            tints.get(zone).map(|tint| zones::swatch_color(*tint))
+        };
+        let swatches: Vec<_> = rows.iter().map(|row| swatch(&row.1)).collect();
         let rows: Vec<_> = rows
             .into_iter()
             .map(|(text, control, enabled, active)| {
@@ -1097,6 +1270,8 @@ impl Application {
         let height = |row: &(String, Option<Control>, bool, bool, Option<_>)| {
             if row.4.is_some() {
                 PALETTE_ROW_HEIGHT
+            } else if matches!(row.1, Some(Control::ZonePalette(_))) {
+                ZONE_ROW_HEIGHT
             } else {
                 TEXT_ROW_HEIGHT
             }
@@ -1114,7 +1289,7 @@ impl Application {
             furthest -= 1;
         }
         self.sidebar_scroll = self.sidebar_scroll.min(furthest);
-        for row in rows.into_iter().skip(self.sidebar_scroll) {
+        for (row, swatch) in rows.into_iter().zip(swatches).skip(self.sidebar_scroll) {
             let row_height = height(&row);
             // Like the furthest scroll, a row needs its gap below it too.
             if y + row_height + ROW_GAP > bottom {
@@ -1138,6 +1313,7 @@ impl Application {
                 && let Some(widget) = ui.widgets.last_mut()
             {
                 widget.thumbnail = thumbnail;
+                widget.swatch = swatch;
             }
             y += row_height + ROW_GAP;
         }
@@ -1336,6 +1512,9 @@ impl Application {
         if self.notice.is_some() {
             return "Input not applied. Details below.".into();
         }
+        if self.preview_omitted {
+            return "Zone overlay left out: too many cells for one frame.".into();
+        }
         if self.session.status().phase == SessionPhase::Pending && !self.source_review().complete {
             return REVIEW_LIMIT_MESSAGE.into();
         }
@@ -1358,6 +1537,18 @@ impl Application {
                         }
                     },
                 );
+            }
+            SessionPhase::Ready if self.tools.mode() == ToolMode::Zone => {
+                if !self.session.catalog().editing().zones.paint {
+                    return "Showing zones. This catalog does not grant zone painting.".into();
+                }
+                return match self.tools.zone_choice() {
+                    None => "Showing zones. Choose a zone in the sidebar to paint.".into(),
+                    Some(ZoneChoice::Zone(zone)) => format!("Ready. Drag to paint zone {zone}."),
+                    Some(ZoneChoice::Default) => {
+                        "Ready. Drag to return tiles to the default zone.".into()
+                    }
+                };
             }
             SessionPhase::Ready => "Ready. Select an object or choose Terrain.",
             SessionPhase::Pending => "Review changes, then Accept or Cancel.",
@@ -1457,16 +1648,18 @@ impl Application {
         self.presented_generation = None;
         self.notice = None;
         match control {
-            Control::Select | Control::Move | Control::Terrain => {
+            Control::Select | Control::Move | Control::Terrain | Control::Zone => {
                 self.tools.set_mode(match control {
                     Control::Move => ToolMode::Move,
                     Control::Terrain => ToolMode::Terrain,
+                    Control::Zone => ToolMode::Zone,
                     _ => ToolMode::Select,
                 });
                 self.sidebar_scroll = 0;
                 Ok(())
             }
             Control::Place => self.enter_place_mode(),
+            Control::ZoneOverlay | Control::ZonePalette(_) => self.zone_control(control),
             Control::PaletteFilter => self.tools.focus_filter().map_err(|error| error.to_string()),
             // Enter in the focused filter keeps its text and releases focus;
             // the filter is never reviewed.
@@ -1547,6 +1740,19 @@ impl Application {
                 }
             }
         }
+    }
+
+    /// The zone overlay toggle and the zone palette rows.
+    fn zone_control(&mut self, control: Control) -> Result<()> {
+        match control {
+            Control::ZoneOverlay => self.tools.toggle_zones().map(|_| ()),
+            Control::ZonePalette(choice) => {
+                self.tools
+                    .choose_zone(self.session.world(), self.session.catalog(), choice)
+            }
+            _ => Ok(()),
+        }
+        .map_err(|error| error.to_string())
     }
 
     fn frame(&self, cells: bool) -> Result<FrameOutput> {
@@ -1744,6 +1950,44 @@ impl Application {
         result
     }
 
+    /// Zone mode: capture the overlay and legend, then paint the last zone
+    /// of the palette down a column with a one-cell brush through the
+    /// ordinary press, drag and release, capture the pending review, accept
+    /// it and capture the result.
+    fn zone_demo(&mut self) -> Result<()> {
+        self.control(Control::Zone)?;
+        self.capture("zones")?;
+        let zone = tools::zone_palette(self.session.world(), self.session.catalog())
+            .last()
+            .map(|zone| (*zone).to_owned())
+            .ok_or("the plane defines no zone to paint")?;
+        self.control(Control::ZonePalette(ZoneChoice::Zone(zone)))?;
+        let frame = self.frame(true)?;
+        let pixel = |cell: [i64; 2]| {
+            self.prepared
+                .cell_picks
+                .iter()
+                .find_map(|(id, key)| match key {
+                    SelectionKey::Cell { x, y, .. } if [*x, *y] == cell => pixel_for(&frame, *id),
+                    _ => None,
+                })
+                .ok_or("demonstration zone cell is not in the cell mask")
+        };
+        let (start, end) = (pixel(DEMO_ZONE_STROKE[0])?, pixel(DEMO_ZONE_STROKE[1])?);
+        let brush = self.tools.brush();
+        self.tools
+            .set_brush(tilewright_editor_ui::brush::Brush::default());
+        let result = self
+            .begin_stroke(start.0, start.1)
+            .and_then(|()| self.stroke_sample(end.0, end.1))
+            .and_then(|()| self.finish_stroke());
+        self.tools.set_brush(brush);
+        result?;
+        self.capture("zone-stroke")?;
+        self.action(Action::Accept)?;
+        self.capture("zone-painted")
+    }
+
     fn demo_step(&mut self, step: usize) -> Result<bool> {
         match step {
             0 => {
@@ -1814,14 +2058,15 @@ impl Application {
                 self.action(Action::Accept)?;
                 self.capture("search-placed")?;
             }
-            10 => return Ok(true),
+            10 if self.session.catalog().editing().zones.paint => self.zone_demo()?,
+            11 => return Ok(true),
             _ => {}
         }
         Ok(false)
     }
 
     fn demo_all(&mut self) -> Result<()> {
-        for step in 0..11 {
+        for step in 0..12 {
             if self.demo_step(step)? {
                 break;
             }
@@ -2201,12 +2446,13 @@ fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
     if (step == 5 && !grants_fields(editing))
         || (step == 6 && editing.terrain.is_empty())
         || ((7..=9).contains(&step) && editing.objects.is_empty())
+        || (step == 10 && !editing.zones.paint)
     {
         None
     } else {
         [
             "before", "pending", "after", "undo", "redo", "field", "terrain", "delete", "place",
-            "palette",
+            "palette", "zones",
         ]
         .get(step)
         .copied()
@@ -2704,7 +2950,7 @@ fn native_pointer_selection(
         Hit::Control(control) => app.control(control),
         Hit::World(x, y) => {
             app.tools.cancel();
-            if app.tools.mode() == ToolMode::Terrain {
+            if matches!(app.tools.mode(), ToolMode::Terrain | ToolMode::Zone) {
                 app.begin_stroke(x, y)
             } else if app.tools.mode() == ToolMode::Place {
                 app.place_at(x, y)
@@ -2820,16 +3066,14 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
         Keycode::Down if app.tools.mode() == ToolMode::Move => app.nudge([0, 1]),
         Keycode::T => app.control(Control::Terrain),
         Keycode::P => app.control(Control::Place),
+        Keycode::N => app.control(Control::Zone),
+        Keycode::O => app.control(Control::ZoneOverlay),
         Keycode::Slash | Keycode::KpDivide if app.tools.mode() == ToolMode::Place => {
             app.control(Control::PaletteFilter)
         }
-        Keycode::LeftBracket if app.tools.mode() == ToolMode::Terrain => {
-            app.control(Control::BrushSize(-1))
-        }
-        Keycode::RightBracket if app.tools.mode() == ToolMode::Terrain => {
-            app.control(Control::BrushSize(1))
-        }
-        Keycode::B if app.tools.mode() == ToolMode::Terrain => app.control(Control::BrushShape),
+        Keycode::LeftBracket if brushing(app) => app.control(Control::BrushSize(-1)),
+        Keycode::RightBracket if brushing(app) => app.control(Control::BrushSize(1)),
+        Keycode::B if brushing(app) => app.control(Control::BrushShape),
         Keycode::W | Keycode::A | Keycode::S | Keycode::D => {
             let change = match key {
                 Keycode::W => [0.0, -1.0],
@@ -2847,6 +3091,16 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
             app.rebuild()
         }
         _ => Ok(()),
+    }
+}
+
+/// Whether the brush keys apply: Terrain mode, or Zone mode with the paint
+/// grant.
+fn brushing(app: &Application) -> bool {
+    match app.tools.mode() {
+        ToolMode::Terrain => true,
+        ToolMode::Zone => app.session.catalog().editing().zones.paint,
+        _ => false,
     }
 }
 
@@ -2953,6 +3207,26 @@ fn stroke_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
     )
 }
 
+/// The zone overlay: every in-view tile that has a zone, tinted with its
+/// zone's tint, over the cached prepared cell scene. Empty unless zones are
+/// shown (always in Zone mode; after O elsewhere).
+fn zone_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
+    if !app.tools.zones_visible() || app.prepared.frame_revision != app.view.frame_revision {
+        return Vec::new();
+    }
+    let in_view = zones::view_zones(app.session.world(), app.session.catalog());
+    let tints = zones::assign_tints(in_view.iter().map(|(_, zone)| *zone));
+    let cells = in_view
+        .iter()
+        .map(|(at, zone)| (*at, zones::tint_color(tints[zone])))
+        .collect();
+    crate::workspace_render::zone_overlay(
+        &app.prepared.cell_scene,
+        &app.prepared.cell_picks,
+        &cells,
+    )
+}
+
 /// Compose the cached prepared World with `overlay` and the interface. If
 /// the overlay would take the frame past the scene limits, compose without
 /// it and report that it was left out; the release still reviews every
@@ -2987,7 +3261,9 @@ fn compose_with_preview(
 }
 
 fn workspace_presentation(app: &mut Application) -> Result<crate::workspace_render::Presentation> {
-    let overlay = stroke_overlay(app);
+    // Zone tints first, so the stroke preview draws over them.
+    let mut overlay = zone_overlay(app);
+    overlay.extend(stroke_overlay(app));
     let (mut presentation, mut omitted) =
         compose_with_preview(&mut app.text, &app.ui, &app.prepared, &overlay)
             .map_err(|error| error.to_string())?;
