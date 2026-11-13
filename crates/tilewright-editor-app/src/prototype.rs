@@ -101,6 +101,8 @@ struct Application {
     /// Whether the last composed frame left out the stroke preview because
     /// World, preview and interface together exceeded the scene limits.
     preview_omitted: bool,
+    /// The scene limits every composed frame must meet: the renderer's.
+    frame_limits: tilewright_scene::SceneLimits,
 }
 
 /// This command is intentionally a deployment seam, not arbitrary recovery-path
@@ -175,6 +177,7 @@ pub fn run(arguments: &[String]) -> Result<()> {
         stroke_mask: None,
         prepared_scenes: 1,
         preview_omitted: false,
+        frame_limits: tilewright_scene::SceneLimits::default(),
     };
     println!(
         "{}\n{}",
@@ -235,6 +238,11 @@ impl Application {
             PreviewLimits::default(),
         )
         .map_err(|error| error.to_string())?;
+        self.prepare_scene()
+    }
+
+    /// The one place the interactive World scene is prepared.
+    fn prepare_scene(&mut self) -> Result<()> {
         self.prepared = tilewright_editor_preview::prepare(
             self.session.world(),
             self.session.catalog(),
@@ -250,16 +258,7 @@ impl Application {
     fn reflow(&mut self) -> Result<()> {
         self.presented_generation = None;
         self.interrupt_stroke();
-        self.prepared = tilewright_editor_preview::prepare(
-            self.session.world(),
-            self.session.catalog(),
-            self.session.resources(),
-            &self.view,
-            PreviewLimits::default(),
-        )
-        .map_err(|error| error.to_string())?;
-        self.prepared_scenes += 1;
-        Ok(())
+        self.prepare_scene()
     }
 
     fn action(&mut self, action: Action) -> Result<()> {
@@ -2941,11 +2940,7 @@ fn stroke_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
             y,
         })
         .collect();
-    crate::workspace_render::stroke_overlay(
-        &app.prepared.cell_scene,
-        &app.prepared.cell_picks,
-        &cells,
-    )
+    crate::workspace_render::stroke_overlay(&app.prepared, &cells)
 }
 
 /// Compose the cached prepared World with `overlay` and the interface. If
@@ -2957,42 +2952,51 @@ fn compose_with_preview(
     ui: &WorkspaceUi,
     prepared: &PreparedPreview,
     overlay: &[tilewright_scene::Quad],
+    limits: tilewright_scene::SceneLimits,
 ) -> std::result::Result<
     (crate::workspace_render::Presentation, bool),
     crate::workspace_render::CompositionError,
 > {
-    match crate::workspace_render::compose_with_overlay(
-        system,
-        ui,
-        &prepared.scene,
-        prepared.resources.clone(),
-        overlay,
-    ) {
-        Err(crate::workspace_render::CompositionError::Scene(_)) if !overlay.is_empty() => {
-            crate::workspace_render::compose(
-                system,
-                ui,
-                &prepared.scene,
-                prepared.resources.clone(),
-            )
-            .map(|presentation| (presentation, true))
-        }
+    let compose = |system: &mut tilewright_render_ui::TextSystem, overlay| {
+        crate::workspace_render::compose_with_overlay(
+            system,
+            ui,
+            &prepared.scene,
+            prepared.resources.clone(),
+            overlay,
+            limits,
+        )
+    };
+    match compose(system, overlay) {
+        Err(crate::workspace_render::CompositionError::Scene(
+            tilewright_scene::Error::LimitExceeded,
+        )) if !overlay.is_empty() => compose(system, &[]).map(|presentation| (presentation, true)),
         result => result.map(|presentation| (presentation, false)),
     }
 }
 
 fn workspace_presentation(app: &mut Application) -> Result<crate::workspace_render::Presentation> {
     let overlay = stroke_overlay(app);
-    let (mut presentation, mut omitted) =
-        compose_with_preview(&mut app.text, &app.ui, &app.prepared, &overlay)
-            .map_err(|error| error.to_string())?;
+    let (mut presentation, mut omitted) = compose_with_preview(
+        &mut app.text,
+        &app.ui,
+        &app.prepared,
+        &overlay,
+        app.frame_limits,
+    )
+    .map_err(|error| error.to_string())?;
     if app.unsupported_runs != presentation.unsupported_runs || app.preview_omitted != omitted {
         app.unsupported_runs = presentation.unsupported_runs;
         app.preview_omitted = omitted;
         app.refresh_ui();
-        (presentation, omitted) =
-            compose_with_preview(&mut app.text, &app.ui, &app.prepared, &overlay)
-                .map_err(|error| error.to_string())?;
+        (presentation, omitted) = compose_with_preview(
+            &mut app.text,
+            &app.ui,
+            &app.prepared,
+            &overlay,
+            app.frame_limits,
+        )
+        .map_err(|error| error.to_string())?;
         app.preview_omitted = omitted;
     }
     Ok(presentation)
