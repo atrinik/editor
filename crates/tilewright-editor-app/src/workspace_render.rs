@@ -4,9 +4,17 @@
 //! Scene assembly only. Typography, clipping and quad generation belong to the
 //! shared renderer. Palette thumbnails are whole, unclipped, unpickable quads
 //! that sample ready World textures; rows that are not wholly visible get
-//! none. The World scene and its exact picking masks remain untouched.
+//! none. A running brush stroke's live preview is unpickable copies of the
+//! prepared exact cell quads, placed in the World's own draw order. The
+//! World scene and
+//! its exact picking masks remain untouched.
 use crate::workspace_ui::{Rect, WorkspaceUi};
-use std::{fmt, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    sync::Arc,
+};
+use tilewright_editor_preview::{PreparedPreview, SelectionKey};
 use tilewright_editor_ui::text_input::{TextInputSnapshot, TextRevision};
 use tilewright_render_resources::{
     Error as ResourceError, ResourceBlob, ResourceProvider, ResourceRequest,
@@ -203,6 +211,67 @@ fn thumbnail_quads(ui: &WorkspaceUi, identity: u32) -> Result<Vec<Quad>> {
         });
     }
     Ok(quads)
+}
+
+/// Tint of the live brush-stroke preview: neutral white at 45 % opacity,
+/// multiplied with the opaque cell reference art, so each marked cell is
+/// lightened evenly whatever its terrain. It has little contrast on very
+/// light terrain.
+pub const STROKE_PREVIEW_TINT: [f32; 4] = [1.0, 1.0, 1.0, 0.45];
+
+/// The live brush-stroke preview: a copy of every quad of the prepared
+/// exact cell scene whose cell is in `cells`, tinted with
+/// [`STROKE_PREVIEW_TINT`] and unpickable. The cell scene is what the exact
+/// cell mask is rasterised from, compiled by the shared renderer with the
+/// same camera and height field as the terrain, so the copies have each
+/// cell's projected shape, including height-bent and stretched tiles split
+/// into several quads. Nothing is projected here.
+///
+/// The copies are World-layer quads placed in the prepared World scene's
+/// own draw order: each takes the painter order and depth of that cell's
+/// terrain draw in the World scene, and composition gives it a semantic
+/// identity above every World quad, so it draws directly after that
+/// terrain and before anything the World draws later (nearer tiles, higher
+/// ground layers, objects), which cover it as they cover the terrain. A
+/// cell the World draws no terrain for on this grid follows the World
+/// terrain draw of the nearest earlier cell in the cell scene's order, or
+/// draws before the whole World when there is none. The copies are a
+/// subset of a scene that already met the scene limits; semantic
+/// identities are assigned when composed.
+pub fn stroke_overlay(prepared: &PreparedPreview, cells: &BTreeSet<SelectionKey>) -> Vec<Quad> {
+    // Where the World draws each terrain cell: its last quad's order.
+    let mut world: BTreeMap<&SelectionKey, (i16, u32)> = BTreeMap::new();
+    for quad in prepared.scene.quads() {
+        if let Some(key @ SelectionKey::Cell { .. }) = prepared.picks.get(&quad.semantic_id) {
+            world.insert(key, (quad.depth, quad.painter_order));
+        }
+    }
+    // Scene quads are stored in draw order.
+    let mut slot = None;
+    let mut overlay = Vec::new();
+    for quad in prepared.cell_scene.quads() {
+        let Some(key) = prepared.cell_picks.get(&quad.semantic_id) else {
+            continue;
+        };
+        if let Some(found) = world.get(key) {
+            slot = Some(*found);
+        }
+        if !cells.contains(key) {
+            continue;
+        }
+        let (depth, painter_order) = slot.unwrap_or((quad.depth.saturating_sub(1), 0));
+        overlay.push(Quad {
+            color: STROKE_PREVIEW_TINT,
+            grayscale: 0.0,
+            glow: None,
+            pickable: false,
+            layer: Layer::World,
+            depth,
+            painter_order,
+            ..*quad
+        });
+    }
+    overlay
 }
 
 pub fn text_size(height: u32) -> f32 {
@@ -476,21 +545,53 @@ fn display_list<'a>(
     Ok((primitives, editable))
 }
 
+/// [`compose_with_overlay`] with no overlay and the renderer's scene limits.
+#[cfg(test)]
 pub fn compose(
     system: &mut TextSystem,
     ui: &WorkspaceUi,
     world: &SceneBundle,
     resources: Arc<dyn ResourceProvider>,
 ) -> Result<Presentation> {
+    compose_with_overlay(system, ui, world, resources, &[], SceneLimits::default())
+}
+
+/// [`compose`] with `overlay` quads (see [`stroke_overlay`]), within
+/// `limits`. The overlay keeps its geometry, resource, layer, depth and
+/// painter order; it gets fresh semantic identities above the World's, so
+/// it sorts after World quads of the same order, and must sample textures
+/// `resources` serves. The World quads are copied unchanged.
+pub fn compose_with_overlay(
+    system: &mut TextSystem,
+    ui: &WorkspaceUi,
+    world: &SceneBundle,
+    resources: Arc<dyn ResourceProvider>,
+    overlay: &[Quad],
+    limits: SceneLimits,
+) -> Result<Presentation> {
     if (world.viewport().width, world.viewport().height) != ui.size {
         return Err(CompositionError::TargetMismatch);
     }
-    let identity = world
+    let mut identity = world
         .quads()
         .iter()
         .map(|quad| quad.semantic_id.0)
         .max()
         .unwrap_or(0);
+    let overlay = overlay
+        .iter()
+        .map(|quad| {
+            identity = identity
+                .checked_add(1)
+                .ok_or(CompositionError::SemanticIdentityExhausted)?;
+            Ok(Quad {
+                semantic_id: SemanticId(identity),
+                part: 0,
+                pickable: false,
+                ..*quad
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let thumbnails = thumbnail_quads(ui, identity)?;
     // Thumbnails reuse ready World textures that need not be in the World
     // scene, so UI resource identities start above both.
@@ -532,6 +633,17 @@ pub fn compose(
             UiLimits::default(),
         )
         .map_err(CompositionError::Text)?;
+    // The overlay samples World-provided textures (the cell reference art
+    // has the largest identity), so interface textures must not reuse one.
+    if overlay.iter().any(|quad| {
+        quad.resource_id == solid.id
+            || compiled
+                .resources
+                .iter()
+                .any(|texture| texture.identity.id == quad.resource_id)
+    }) {
+        return Err(CompositionError::ResourceIdentityExhausted);
+    }
     let scene = SceneBundle::from_quads(
         world.revision(),
         world.clock_millis(),
@@ -541,9 +653,10 @@ pub fn compose(
             .quads()
             .iter()
             .copied()
+            .chain(overlay)
             .chain(thumbnails)
             .chain(compiled.quads),
-        SceneLimits::default(),
+        limits,
     )
     .map_err(CompositionError::Scene)?;
     Ok(Presentation {

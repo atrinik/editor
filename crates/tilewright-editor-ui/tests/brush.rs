@@ -479,3 +479,153 @@ fn accepting_a_cross_chunk_stroke_retains_one_inverse_and_undoes_in_one_step() {
     session.dispatch(Action::Reopen, &mut records).unwrap();
     assert_eq!(value(&session, -1, 2).as_deref(), Some("sand"));
 }
+
+/// The `at` of every cell in the prepared transaction's single
+/// `terrain.set`, in transaction order.
+fn prepared_cells(session: &Session) -> Vec<[i64; 2]> {
+    let sealed: serde_json::Value =
+        serde_json::from_str(session.history().pending().unwrap().sealed()).unwrap();
+    let operations = sealed["operations"].as_array().unwrap();
+    assert_eq!(operations.len(), 1, "{sealed}");
+    assert_eq!(operations[0]["op"], "terrain.set");
+    operations[0]["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cell| {
+            let at = cell["at"].as_array().unwrap();
+            [at[0].as_i64().unwrap(), at[1].as_i64().unwrap()]
+        })
+        .collect()
+}
+
+/// Release the running stroke and return what its live preview showed just
+/// before and the cells the prepared `terrain.set` changes. Leaves no
+/// pending change behind.
+fn preview_then_release(
+    session: &mut Session,
+    tools: &mut ToolState,
+    records: &mut Records,
+) -> (Vec<[i64; 2]>, Vec<[i64; 2]>) {
+    let stroke = tools.stroke().unwrap().clone();
+    let preview = session.stroke_changes(&stroke).unwrap();
+    // Previewing writes nothing and prepares nothing.
+    assert!(session.history().pending().is_none());
+    assert!(session.can_prepare());
+    let action = tools
+        .finish_stroke(session.generation(), !session.can_prepare())
+        .unwrap()
+        .unwrap();
+    session.dispatch(action, records).unwrap();
+    let prepared = prepared_cells(session);
+    session.dispatch(Action::Cancel, records).unwrap();
+    (preview, prepared)
+}
+
+#[test]
+fn the_live_preview_is_exactly_the_cells_the_release_prepares() {
+    let (_dir, mut session) = fixture_with(widen_view);
+    let mut records = Records::default();
+    let generation = session.generation();
+    let square = |radius| Brush {
+        shape: BrushShape::Square,
+        radius,
+    };
+    // Radius 0 across grass and sand: only the grass cells change.
+    let mut tools = sand_tools(square(0));
+    press(&mut session, &mut tools, &mut records, [0, 1]);
+    tools.extend_stroke(&cell(5, 1), generation).unwrap();
+    let (preview, prepared) = preview_then_release(&mut session, &mut tools, &mut records);
+    assert_eq!(preview, prepared);
+    assert_eq!(preview, [[0, 1], [1, 1], [2, 1], [3, 1]]);
+
+    // Radius 8 covers the whole widened view from its middle, clipped to
+    // the view's edges on every side, across both chunks.
+    let generation = session.generation();
+    let mut tools = sand_tools(square(MAXIMUM_RADIUS));
+    press(&mut session, &mut tools, &mut records, [2, 3]);
+    tools.extend_stroke(&cell(3, 3), generation).unwrap();
+    assert_eq!(tools.stroke().unwrap().len(), 12 * 6);
+    let (preview, prepared) = preview_then_release(&mut session, &mut tools, &mut records);
+    assert_eq!(preview, prepared);
+    assert!(preview.iter().any(|&[x, _]| x < 0) && preview.iter().any(|&[x, _]| x >= 0));
+    assert!(!preview.contains(&[5, 0]), "sand cells are not marked");
+
+    // A circle dragged down the view's east edge: half of every stamp lies
+    // outside the view and is neither previewed nor prepared.
+    let generation = session.generation();
+    let mut tools = sand_tools(Brush {
+        shape: BrushShape::Circle,
+        radius: 2,
+    });
+    press(&mut session, &mut tools, &mut records, [7, 0]);
+    tools.extend_stroke(&cell(7, 5), generation).unwrap();
+    let mut tools_west = sand_tools(Brush {
+        shape: BrushShape::Circle,
+        radius: 2,
+    });
+    let (preview, prepared) = preview_then_release(&mut session, &mut tools, &mut records);
+    assert_eq!(preview, prepared);
+    assert!(preview.iter().all(|&[x, y]| x <= 7 && (0..6).contains(&y)));
+    // The same circle on grass at the west edge of the widened view.
+    let generation = session.generation();
+    press(&mut session, &mut tools_west, &mut records, [-4, 0]);
+    tools_west.extend_stroke(&cell(-4, 5), generation).unwrap();
+    let (preview, prepared) = preview_then_release(&mut session, &mut tools_west, &mut records);
+    assert_eq!(preview, prepared);
+    assert!(preview.iter().all(|&[x, _]| x >= -4));
+
+    // Samples that miss (a panel, the map background) add nothing; the next
+    // hit joins the line from the last covered cell.
+    let generation = session.generation();
+    let mut tools = sand_tools(square(1));
+    press(&mut session, &mut tools, &mut records, [-3, 4]);
+    tools.extend_stroke(&cell(2, 4), generation).unwrap();
+    let (preview, prepared) = preview_then_release(&mut session, &mut tools, &mut records);
+    assert_eq!(preview, prepared);
+    assert!((-3..=2).all(|x| preview.contains(&[x, 4])));
+
+    // Over terrain that already matches, nothing would change: the preview
+    // is refused exactly as the release is, and neither prepares anything.
+    let generation = session.generation();
+    let mut tools = sand_tools(square(0));
+    press(&mut session, &mut tools, &mut records, [4, 0]);
+    tools.extend_stroke(&cell(7, 0), generation).unwrap();
+    let stroke = tools.stroke().unwrap().clone();
+    let refused = session.stroke_changes(&stroke).unwrap_err().0;
+    let action = tools
+        .finish_stroke(session.generation(), false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        session.dispatch(action, &mut records).unwrap_err().0,
+        refused
+    );
+    assert!(session.history().pending().is_none());
+    assert!(records.0.is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_preview_needs_a_ready_session_and_the_strokes_own_revision() {
+    let (_dir, mut session) = fixture();
+    let mut records = Records::default();
+    let mut tools = sand_tools(Brush::default());
+    press(&mut session, &mut tools, &mut records, [0, 0]);
+    let stroke = tools.stroke().unwrap().clone();
+    assert_eq!(session.stroke_changes(&stroke).unwrap(), [[0, 0]]);
+    // While another change is pending no preview is drawn (and no stroke
+    // could begin), and an accepted change makes the stroke stale.
+    session
+        .dispatch(stroke_action(&session, vec![[1, 0]], "sand"), &mut records)
+        .unwrap();
+    assert!(session.stroke_changes(&stroke).is_err());
+    session.dispatch(Action::Accept, &mut records).unwrap();
+    assert!(
+        session
+            .stroke_changes(&stroke)
+            .unwrap_err()
+            .0
+            .contains("stale")
+    );
+}
