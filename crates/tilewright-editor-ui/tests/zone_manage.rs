@@ -259,16 +259,15 @@ fn an_external_edit_and_a_failed_expect_guard_prepare_nothing() {
     assert!(history.pending().is_none());
     // The delete guard is the zone's whole canonical entry.
     let (_other, mut fresh) = fixture_with(|root| {
+        // Parsed and rewritten, so the checkout's line endings do not matter.
         let path = root.join(ZONES);
-        let text = fs::read_to_string(&path).unwrap();
-        fs::write(
-            path,
-            text.replace(
-                "    {\n      \"id\": \"path\",",
-                "    {\"id\": \"spare\", \"name\": \"Spare\"},\n    {\n      \"id\": \"path\",",
-            ),
-        )
-        .unwrap();
+        let mut zones: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        zones["zones"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"id": "spare", "name": "Spare"}));
+        fs::write(path, serde_json::to_vec_pretty(&zones).unwrap()).unwrap();
     });
     fresh
         .dispatch(delete(&fresh, "spare"), &mut records)
@@ -644,6 +643,7 @@ fn a_plane_without_zones_jsonc_gets_one_and_undo_removes_it() {
     tilewright_source::load(&root).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 /// The fixture plus a chunk outside the view on layer 0 and one on layer 1,
 /// each holding `meadow.pond` on one tile, so the pond is used three times
 /// over.
