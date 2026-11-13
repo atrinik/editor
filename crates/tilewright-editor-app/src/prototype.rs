@@ -58,6 +58,9 @@ const DEMO_PLACE_TILE: (i64, i64) = (6, 1);
 /// it places the one matching prototype on.
 const DEMO_FILTER: &str = "A";
 const DEMO_SEARCH_TILE: (i64, i64) = (2, 1);
+/// Press and drag cells of the scripted stroke-preview capture, across
+/// grass and the sand the demonstration paints with.
+const DEMO_STROKE: [[i64; 2]; 2] = [[1, 2], [5, 2]];
 
 /// Which granted edit a scripted selection needs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,6 +94,13 @@ struct Application {
     presented_text_revision: Option<tilewright_editor_ui::text_input::TextRevision>,
     /// The exact cell mask of the frame a running brush stroke samples.
     stroke_mask: Option<PickMask>,
+    /// How many times the World scene has been prepared. Pointer samples
+    /// during a stroke never prepare it; presses, dispatched actions (a
+    /// release among them) and view changes do.
+    prepared_scenes: u64,
+    /// Whether the last composed frame left out the stroke preview because
+    /// World, preview and interface together exceeded the scene limits.
+    preview_omitted: bool,
 }
 
 /// This command is intentionally a deployment seam, not arbitrary recovery-path
@@ -163,6 +173,8 @@ pub fn run(arguments: &[String]) -> Result<()> {
         displayed_text: None,
         presented_text_revision: None,
         stroke_mask: None,
+        prepared_scenes: 1,
+        preview_omitted: false,
     };
     println!(
         "{}\n{}",
@@ -231,6 +243,7 @@ impl Application {
             PreviewLimits::default(),
         )
         .map_err(|error| error.to_string())?;
+        self.prepared_scenes += 1;
         Ok(())
     }
 
@@ -245,6 +258,7 @@ impl Application {
             PreviewLimits::default(),
         )
         .map_err(|error| error.to_string())?;
+        self.prepared_scenes += 1;
         Ok(())
     }
 
@@ -1294,12 +1308,21 @@ impl Application {
             return "Editing blocked. Recovery details below.".into();
         }
         if let Some(stroke) = self.tools.stroke() {
+            let changes = self
+                .session
+                .stroke_changes(stroke)
+                .map_or(0, |cells| cells.len());
             return format!(
-                "Painting {} cells with {}; release to review.{}",
+                "Painting {} cells with {}, {changes} to change; release to review.{}{}",
                 stroke.len(),
                 stroke.prototype(),
                 if stroke.capped() {
                     " Brush limit reached."
+                } else {
+                    ""
+                },
+                if self.preview_omitted {
+                    " Too many cells to preview."
                 } else {
                     ""
                 }
@@ -1680,6 +1703,42 @@ impl Application {
         self.place_at(hit.0, hit.1)
     }
 
+    /// Press, drag and capture a 3x3 brush stroke mid-gesture with its live
+    /// preview, then cancel it with Esc as a native user would: nothing is
+    /// prepared and the World is unchanged. The stroke crosses terrain that
+    /// already holds the chosen value, which the preview leaves unmarked.
+    fn stroke_preview_demo(&mut self) -> Result<()> {
+        let frame = self.frame(true)?;
+        let pixel = |cell: [i64; 2]| {
+            self.prepared
+                .cell_picks
+                .iter()
+                .find_map(|(id, key)| match key {
+                    SelectionKey::Cell { x, y, .. } if [*x, *y] == cell => pixel_for(&frame, *id),
+                    _ => None,
+                })
+                .ok_or("demonstration stroke cell is not in the cell mask")
+        };
+        let (start, end) = (pixel(DEMO_STROKE[0])?, pixel(DEMO_STROKE[1])?);
+        let brush = self.tools.brush();
+        self.tools.set_brush(tilewright_editor_ui::brush::Brush {
+            shape: tilewright_editor_ui::brush::BrushShape::Square,
+            radius: 1,
+        });
+        let result = self
+            .begin_stroke(start.0, start.1)
+            .and_then(|()| self.stroke_sample(end.0, end.1))
+            .and_then(|()| self.capture("stroke-preview"));
+        if self.tools.stroke().is_some() {
+            native_key(self, Keycode::Escape)?;
+        }
+        self.tools.set_brush(brush);
+        // The cancellation notice is for an interactive author; later
+        // scripted captures keep their plain status.
+        self.notice = None;
+        result
+    }
+
     fn demo_step(&mut self, step: usize) -> Result<bool> {
         match step {
             0 => {
@@ -1729,6 +1788,7 @@ impl Application {
                 self.paint()?;
                 self.action(Action::Accept)?;
                 self.capture("terrain")?;
+                self.stroke_preview_demo()?;
             }
             7 if !self.session.catalog().editing().objects.is_empty() => {
                 self.select_visible_object(Capability::Delete)?;
@@ -2458,33 +2518,6 @@ fn native_event(
             app.view.camera.height = size.1;
             app.reflow()
         }
-        Event::MouseButtonDown {
-            mouse_btn: MouseButton::Left,
-            ..
-        } if !*minimized => native_pointer_event(
-            app,
-            event,
-            window.size(),
-            window.size_in_pixels(),
-            extend_selection,
-        ),
-        Event::MouseMotion {
-            mousestate, x, y, ..
-        } if !*minimized && app.tools.stroke().is_some() => native_stroke_motion(
-            app,
-            [*x, *y],
-            mousestate.left(),
-            window.size(),
-            window.size_in_pixels(),
-        ),
-        Event::MouseButtonUp {
-            mouse_btn: MouseButton::Left,
-            x,
-            y,
-            ..
-        } if app.tools.stroke().is_some() => {
-            native_stroke_release(app, [*x, *y], window.size(), window.size_in_pixels())
-        }
         Event::MouseWheel {
             integer_y,
             mouse_x,
@@ -2515,6 +2548,47 @@ fn native_event(
             };
             Ok(())
         }
+        _ => native_input_event(
+            app,
+            event,
+            window.size(),
+            window.size_in_pixels(),
+            *minimized,
+            extend_selection,
+        )
+        .unwrap_or(Ok(())),
+    }
+}
+
+/// Pointer and key routing that needs no window handle, so tests can drive
+/// it with real SDL event values: presses, stroke drags and releases, and
+/// world keys. `None` for every other event.
+fn native_input_event(
+    app: &mut Application,
+    event: &Event,
+    logical: (u32, u32),
+    physical: (u32, u32),
+    minimized: bool,
+    extend_selection: bool,
+) -> Option<Result<()>> {
+    Some(match event {
+        Event::MouseButtonDown {
+            mouse_btn: MouseButton::Left,
+            ..
+        } if !minimized => native_pointer_event(app, event, logical, physical, extend_selection),
+        Event::MouseMotion {
+            mousestate, x, y, ..
+        } if !minimized && app.tools.stroke().is_some() => {
+            native_stroke_motion(app, [*x, *y], mousestate.left(), logical, physical)
+        }
+        Event::MouseButtonUp {
+            mouse_btn: MouseButton::Left,
+            x,
+            y,
+            ..
+        } if app.tools.stroke().is_some() => {
+            native_stroke_release(app, [*x, *y], logical, physical)
+        }
         Event::KeyDown {
             keycode: Some(key),
             repeat: false,
@@ -2524,12 +2598,14 @@ fn native_event(
                 && app.tools.draft_text().is_none()
                 && !app.displayed_input_ready()
             {
-                return Err("accept waits for the current displayed pending diff".into());
+                return Some(Err(
+                    "accept waits for the current displayed pending diff".into()
+                ));
             }
             native_key(app, *key)
         }
-        _ => Ok(()),
-    }
+        _ => return None,
+    })
 }
 
 fn native_pointer_event(
@@ -2839,24 +2915,85 @@ fn native_present(
     }
 }
 
-fn workspace_presentation(app: &mut Application) -> Result<crate::workspace_render::Presentation> {
-    let mut presentation = crate::workspace_render::compose(
-        &mut app.text,
-        &app.ui,
-        &app.prepared.scene,
-        app.prepared.resources.clone(),
+/// The live preview of the running brush stroke: the cells its release
+/// would change, from the same Session computation that prepares the
+/// release, drawn on the cached prepared cell scene of the stroke's own
+/// frame. Empty without a stroke, or when the release would be refused.
+fn stroke_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
+    let Some(stroke) = app.tools.stroke() else {
+        return Vec::new();
+    };
+    if stroke.generation() != app.view.frame_revision
+        || app.prepared.frame_revision != app.view.frame_revision
+    {
+        return Vec::new();
+    }
+    let Ok(changes) = app.session.stroke_changes(stroke) else {
+        return Vec::new();
+    };
+    let cells = changes
+        .into_iter()
+        .map(|[x, y]| SelectionKey::Cell {
+            plane: stroke.plane().into(),
+            layer: stroke.layer(),
+            grid: stroke.grid().into(),
+            x,
+            y,
+        })
+        .collect();
+    crate::workspace_render::stroke_overlay(
+        &app.prepared.cell_scene,
+        &app.prepared.cell_picks,
+        &cells,
     )
-    .map_err(|error| error.to_string())?;
-    if app.unsupported_runs != presentation.unsupported_runs {
+}
+
+/// Compose the cached prepared World with `overlay` and the interface. If
+/// the overlay would take the frame past the scene limits, compose without
+/// it and report that it was left out; the release still reviews every
+/// cell. Returns the presentation and whether the overlay was left out.
+fn compose_with_preview(
+    system: &mut tilewright_render_ui::TextSystem,
+    ui: &WorkspaceUi,
+    prepared: &PreparedPreview,
+    overlay: &[tilewright_scene::Quad],
+) -> std::result::Result<
+    (crate::workspace_render::Presentation, bool),
+    crate::workspace_render::CompositionError,
+> {
+    match crate::workspace_render::compose_with_overlay(
+        system,
+        ui,
+        &prepared.scene,
+        prepared.resources.clone(),
+        overlay,
+    ) {
+        Err(crate::workspace_render::CompositionError::Scene(_)) if !overlay.is_empty() => {
+            crate::workspace_render::compose(
+                system,
+                ui,
+                &prepared.scene,
+                prepared.resources.clone(),
+            )
+            .map(|presentation| (presentation, true))
+        }
+        result => result.map(|presentation| (presentation, false)),
+    }
+}
+
+fn workspace_presentation(app: &mut Application) -> Result<crate::workspace_render::Presentation> {
+    let overlay = stroke_overlay(app);
+    let (mut presentation, mut omitted) =
+        compose_with_preview(&mut app.text, &app.ui, &app.prepared, &overlay)
+            .map_err(|error| error.to_string())?;
+    if app.unsupported_runs != presentation.unsupported_runs || app.preview_omitted != omitted {
         app.unsupported_runs = presentation.unsupported_runs;
+        app.preview_omitted = omitted;
         app.refresh_ui();
-        presentation = crate::workspace_render::compose(
-            &mut app.text,
-            &app.ui,
-            &app.prepared.scene,
-            app.prepared.resources.clone(),
-        )
-        .map_err(|error| error.to_string())?;
+        (presentation, omitted) =
+            compose_with_preview(&mut app.text, &app.ui, &app.prepared, &overlay)
+                .map_err(|error| error.to_string())?;
+        app.preview_omitted = omitted;
     }
     Ok(presentation)
 }

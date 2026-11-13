@@ -217,6 +217,10 @@ impl Stroke {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+    /// The committed World revision the stroke was begun against.
+    pub fn expected(&self) -> [u8; 32] {
+        self.expected
+    }
     /// Covered cells in `[x, y]` order.
     pub fn cells(&self) -> impl ExactSizeIterator<Item = [i64; 2]> + '_ {
         self.cells.iter().copied()

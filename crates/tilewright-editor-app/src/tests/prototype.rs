@@ -85,6 +85,8 @@ fn application_with_source(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, A
         displayed_text: None,
         presented_text_revision: None,
         stroke_mask: None,
+        prepared_scenes: 1,
+        preview_omitted: false,
     };
     (temporary, app)
 }
@@ -145,6 +147,7 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         "palette",
         "search-place",
         "search-placed",
+        "stroke-preview",
     ] {
         assert!(
             temporary
@@ -1975,3 +1978,6 @@ fn without_a_placeable_prototype_place_is_disabled_with_a_plain_reason() {
 
 #[path = "palette.rs"]
 mod palette;
+
+#[path = "stroke_preview.rs"]
+mod stroke_preview;

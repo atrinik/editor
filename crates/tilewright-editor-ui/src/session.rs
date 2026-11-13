@@ -160,6 +160,9 @@ impl CoordinateGuards {
     }
 }
 
+/// One cell a `terrain.set` changes and the value it holds before.
+type TerrainChange<'w> = ([i64; 2], Option<&'w str>);
+
 pub struct Session {
     history: History,
     catalog: PreviewCatalog,
@@ -400,6 +403,78 @@ impl Session {
         proto: &str,
         skip_unchanged: bool,
     ) -> Result<Vec<Value>, SessionError> {
+        let changes = self.terrain_changes(plane, layer, grid, cells, proto, skip_unchanged)?;
+        Ok(cell_operations(changes, proto))
+    }
+    /// The cells of one brush stroke that its `terrain.set` changes, each
+    /// with its committed value, in stroke order. Dispatch of
+    /// [`Action::PaintStroke`] and [`Session::stroke_changes`] both use this,
+    /// so the live preview and the prepared transaction cannot differ.
+    fn stroke_plan<'w>(
+        &'w self,
+        plane: &str,
+        layer: i32,
+        grid: &str,
+        cells: &[[i64; 2]],
+        proto: &str,
+    ) -> Result<Vec<TerrainChange<'w>>, SessionError> {
+        if cells.is_empty() || cells.len() > crate::brush::MAXIMUM_STROKE_CELLS {
+            return Err(refuse("brush stroke cell count refused"));
+        }
+        if !cells.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err(refuse("brush stroke cells must be distinct and ordered"));
+        }
+        let changes = self.terrain_changes(plane, layer, grid, cells, proto, true)?;
+        if changes.is_empty() {
+            return Err(refuse(
+                "brush stroke changes no cell: every covered cell already has this terrain",
+            ));
+        }
+        Ok(changes)
+    }
+    /// The cells a running brush stroke would change if it were released
+    /// now: exactly the `at` of every cell in the `terrain.set` that
+    /// dispatching its [`Action::PaintStroke`] would prepare, in the same
+    /// order, computed by the same code. Covered cells that already hold the
+    /// stroke's terrain are not included. It reads only the committed World
+    /// in memory and prepares nothing; release still revalidates the
+    /// catalog and reloads the source, and an external change found then
+    /// refuses the whole stroke. An error means the release would be
+    /// refused too, including a stroke that changes no cell.
+    pub fn stroke_changes(
+        &self,
+        stroke: &crate::brush::Stroke,
+    ) -> Result<Vec<[i64; 2]>, SessionError> {
+        if !self.can_prepare() {
+            return Err(refuse(
+                "review pending transaction: Accept or Cancel before another edit",
+            ));
+        }
+        if stroke.expected() != self.history.document().revision() {
+            return Err(refuse("stale source revision"));
+        }
+        let cells: Vec<[i64; 2]> = stroke.cells().collect();
+        Ok(self
+            .stroke_plan(
+                stroke.plane(),
+                stroke.layer(),
+                stroke.grid(),
+                &cells,
+                stroke.prototype(),
+            )?
+            .into_iter()
+            .map(|(at, _)| at)
+            .collect())
+    }
+    fn terrain_changes<'w>(
+        &'w self,
+        plane: &str,
+        layer: i32,
+        grid: &str,
+        cells: &[[i64; 2]],
+        proto: &str,
+        skip_unchanged: bool,
+    ) -> Result<Vec<TerrainChange<'w>>, SessionError> {
         let (p, l, _) = self.catalog.view();
         if plane != p
             || layer != l
@@ -420,7 +495,7 @@ impl Session {
             .iter()
             .position(|g| g == grid)
             .ok_or_else(|| refuse("unknown ground grid"))?;
-        let mut operations = Vec::new();
+        let mut changes = Vec::new();
         for &[x, y] in cells {
             let local = usize::try_from(y.rem_euclid(32) * 32 + x.rem_euclid(32))
                 .map_err(|_| refuse("cell overflow"))?;
@@ -433,9 +508,9 @@ impl Session {
             if skip_unchanged && before == Some(proto) {
                 continue;
             }
-            operations.push(json!({"at":[x,y],"value":proto,"expect":before}));
+            changes.push(([x, y], before));
         }
-        Ok(operations)
+        Ok(changes)
     }
     fn prepare(&mut self, expected: [u8; 32], op: &Value) -> Result<(), SessionError> {
         self.prepare_operations(expected, std::slice::from_ref(op))
@@ -661,18 +736,10 @@ impl Session {
                 proto,
                 expected,
             } => {
-                if cells.is_empty() || cells.len() > crate::brush::MAXIMUM_STROKE_CELLS {
-                    return Err(refuse("brush stroke cell count refused"));
-                }
-                if !cells.windows(2).all(|pair| pair[0] < pair[1]) {
-                    return Err(refuse("brush stroke cells must be distinct and ordered"));
-                }
-                let cells = self.terrain_cells(&plane, layer, &grid, &cells, &proto, true)?;
-                if cells.is_empty() {
-                    return Err(refuse(
-                        "brush stroke changes no cell: every covered cell already has this terrain",
-                    ));
-                }
+                let cells = cell_operations(
+                    self.stroke_plan(&plane, layer, &grid, &cells, &proto)?,
+                    &proto,
+                );
                 // One gesture is one operation, so review, recovery, undo and
                 // redo each treat the whole stroke as a single World change.
                 self.prepare(expected,&json!({"op":"terrain.set","plane":plane,"layer":layer,"grid":grid,"cells":cells}))
@@ -883,6 +950,14 @@ impl Session {
         Ok(())
     }
 }
+/// `terrain.set` cell entries setting `proto`, each expecting its value.
+fn cell_operations(changes: Vec<TerrainChange<'_>>, proto: &str) -> Vec<Value> {
+    changes
+        .into_iter()
+        .map(|(at, before)| json!({"at":at,"value":proto,"expect":before}))
+        .collect()
+}
+
 fn field_json(value: &FieldValue) -> Result<Value, SessionError> {
     match value {
         FieldValue::Null => Ok(Value::Null),

@@ -121,8 +121,31 @@ size and `B` the shape. A stroke keeps the brush it began with and covers at
 most 4,096 distinct cells (the default view's cell budget); a stamp that would
 pass the cap is refused whole and the stroke stops growing.
 
-While the button is held the status line counts the covered cells; nothing is
-prepared or drawn as changed yet. Release turns the whole gesture into one
+While the button is held, a live preview marks the cells the stroke would
+change if released now: a neutral translucent white tint on each such cell,
+and the status line counts the covered cells and how many of them would
+change. The marked cells are exactly the cells the release puts into its
+`terrain.set`: the editor session computes both with one function from the
+same stroke, so covered cells that already hold the chosen value stay
+unmarked, cells outside the view are never covered, and a stroke that would
+change nothing marks nothing. The tint is drawn on copies of the prepared
+exact cell-reference quads, the quads the cell mask itself is rasterised
+from, so it follows each cell's projected shape exactly, including
+isometric diamonds and tiles that terrain heights bend or stretch. The
+copies are unpickable and sit on the renderer's effect layer: above all
+World content, objects included, so the author sees every cell that would
+change, even one an object stands on or a nearer raised tile partly hides;
+interface panels still cover it. They never reach a semantic, depth or
+coverage plane, so what a click picks is unchanged. Each pointer sample
+reuses the cached prepared World scene; only the overlay and the interface
+are composed again, and no World scene is prepared. The overlay is bounded by
+the stroke's 4,096-cell cap and is a subset of a scene that already met the
+renderer's scene limits; should the World, the overlay and the interface
+together still exceed them, the frame is drawn without the overlay and the
+status line says the cells are too many to preview, while the release still
+reviews every cell. Nothing is prepared, written or added to History until
+release, and Escape (or anything else that abandons the stroke) removes the
+preview. Release turns the whole gesture into one
 semantic `terrain.set` operation in one World transaction, with each changed
 cell expecting its committed value; cells that already hold the chosen value
 are left out, and a stroke that changes nothing prepares nothing. That one
@@ -269,7 +292,9 @@ for its manifest/stale-source/unsupported-edit rejection contract.
 `--demo-script` drives the same session actions, command history and scene
 preparation as interactive input, including a placement with seeded uids and
 a palette search (it types `A`, captures `palette`, then places the first
-match). It is a deterministic scripted demonstration,
+match) and, after the terrain step, a 3x3 sand drag stroke over grass and
+sand captured mid-gesture as `stroke-preview` and then cancelled with Escape,
+so it changes nothing. It is a deterministic scripted demonstration,
 not a claim of human input. `--reference` produces composed workspace CPU
 reference evidence and
 must be reported separately from an actual visible native window run. Native
