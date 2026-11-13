@@ -132,16 +132,22 @@ change nothing marks nothing. The tint is drawn on copies of the prepared
 exact cell-reference quads, the quads the cell mask itself is rasterised
 from, so it has each cell's projected shape, including isometric diamonds
 and tiles that terrain heights bend or stretch. The copies are placed in the
-World's own draw order. The preview compiles the World together with the
-cell reference tiles once per prepared scene, with the shared renderer,
-purely to learn where each cell falls among the World's draws; a copy then
-draws directly after the last World draw before its cell: after the cell's
-own terrain, or, for a cell without terrain, at that cell's own position in
-the order (not at an earlier cell's), in isometric and top-down views alike.
-A cell before every World draw draws first, and if that combined ordering
-scene would exceed twice the scene limits every copy draws before the whole
-World instead. Anything the World draws later covers the mark as it covers
-the terrain: an object standing on the
+World's own draw order. The first time a prepared scene needs it (when the
+zone overlay or a stroke preview is shown), the preview compiles the World's
+terrain, then the cell reference tiles, then the World's placed objects into
+one scene with the shared renderer, purely to learn where each cell falls
+among the World's draws, and keeps that for the prepared scene; sessions
+that never show an overlay never pay for it. A copy then draws directly
+after the last World draw before its cell: after the cell's own terrain, or,
+for a cell without terrain, at that cell's own position in the order (not at
+an earlier cell's), in isometric and top-down views alike. Because the cells
+come before the placed objects, an object on the grid's own ground render
+layer, which shares its tile's order key, is still drawn after the mark. A
+cell before every World draw draws first. If that combined ordering scene
+cannot be compiled (it may use twice the scene limits), no mark is drawn and
+the status line adds "Preview unavailable for this view."; the release still
+prepares the whole stroke. Anything the World draws later covers the mark as
+it covers the terrain: an object standing on the
 cell, a nearer raised tile or a higher ground layer hides the mark there.
 Where a terrain art's outline differs from the reference cell shape, the
 mark can reach a thin edge of a farther tile that the click mask gives to the
@@ -219,7 +225,14 @@ drawn, before the objects on it, any nearer raised tile and higher ground
 layers, which cover it as they cover the ground: the part of a tile an
 object hides shows no tint. A tile without ground keeps its own place in
 that order, so a zoned but unpainted area stays visible and is covered only
-by what is on it or nearer, exactly as ground there would be. The semantic, depth and coverage planes, and so every pick,
+by what is on it or nearer, exactly as ground there would be. Objects on the
+grid's own ground render layer (a placed object may use any granted render
+layer) are drawn after their tile's tint too. A nearer tile's tint does draw
+over the part of a farther object that overhangs that nearer tile, as the
+nearer tile's ground would, including where the tile has no ground. When the
+cells' places in the draw order cannot be computed for a view (see the
+terrain brush), no tint is drawn and the status line says "Zone overlay and
+stroke preview unavailable for this view." The semantic, depth and coverage planes, and so every pick,
 are unchanged.
 
 Colours come from eight fixed tints (the Okabe-Ito colour-blind-safe set with
@@ -270,7 +283,7 @@ the `zone` grid. Tiles whose chunk does not exist are left out of a zone
 stroke like tiles outside the view, because painting them would create a
 chunk document holding only a zone grid; tiles of an existing chunk that
 merely have no ground stay paintable, and a stroke that reaches no existing
-chunk changes nothing and is refused.
+chunk is refused, saying its tiles are in map chunks that do not exist.
 
 One stroke is one World transaction with one `terrain.set` on the grid
 `zone`, a cell entry with `expect` for every covered cell whose own value

@@ -32,6 +32,9 @@ use tilewright_scene::SemanticId;
 use tilewright_source::SourceRoot;
 
 const HELP: &str = "Select / Move / Terrain / Place (P) / Zone (N) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | O shows zones | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+/// Status when an overlay is wanted but the cells' places in the World's
+/// draw order could not be computed for this view.
+const OVERLAY_UNAVAILABLE: &str = "Zone overlay and stroke preview unavailable for this view.";
 const STROKE_INTERRUPTED: &str = "Brush stroke ended before release; nothing was prepared.";
 
 type Result<T> = std::result::Result<T, String>;
@@ -945,6 +948,13 @@ impl Application {
         ));
     }
 
+    /// Whether an overlay (zone tints or a stroke preview) is wanted now but
+    /// cannot be drawn because the cell slots are unavailable.
+    fn overlay_unavailable(&self) -> bool {
+        (self.tools.zones_visible() || self.tools.stroke().is_some())
+            && self.prepared.cell_slots().is_none()
+    }
+
     fn zone_view_key(&self) -> ([u8; 32], u64) {
         (
             self.session.world().source_digest(),
@@ -1645,6 +1655,8 @@ impl Application {
                 },
                 if self.preview_omitted {
                     " Too many cells to preview."
+                } else if self.prepared.cell_slots().is_none() {
+                    " Preview unavailable for this view."
                 } else {
                     ""
                 }
@@ -1655,6 +1667,9 @@ impl Application {
         }
         if self.preview_omitted {
             return "Zone overlay left out: too many cells for one frame.".into();
+        }
+        if self.overlay_unavailable() {
+            return OVERLAY_UNAVAILABLE.into();
         }
         if self.session.status().phase == SessionPhase::Pending && !self.source_review().complete {
             return REVIEW_LIMIT_MESSAGE.into();

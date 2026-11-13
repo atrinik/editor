@@ -228,20 +228,22 @@ pub const STROKE_PREVIEW_TINT: [f32; 4] = [1.0, 1.0, 1.0, 0.45];
 /// into several quads. Nothing is projected here.
 ///
 /// The copies are World-layer quads placed in the prepared World scene's
-/// own draw order. `PreparedPreview::cell_slots`, computed once per
-/// prepared scene by compiling the World and the cell reference objects
-/// together with the shared renderer, gives each cell the `(depth, painter
-/// order)` of the last World quad drawn before it; composition gives the
-/// copy a semantic identity above every World quad, so it draws directly
-/// after that quad and before anything the World draws later (nearer tiles,
-/// higher ground layers, objects), which cover it as they cover the
-/// terrain. That holds for cells without terrain too: they get their own
-/// position in the order, not an earlier cell's. A cell with no slot (none
-/// drawn before it, or a combined ordering scene too large to compile)
-/// draws before the whole World. The copies are a subset of a scene that
-/// already met the scene limits; semantic identities are assigned when
-/// composed. Copies of two overlays in one slot draw in the order the
-/// overlays are passed to [`compose_with_overlay`].
+/// own draw order. `PreparedPreview::cell_slots`, computed on first use per
+/// prepared scene by compiling the World's terrain, the cell reference
+/// objects and the World's placed objects together with the shared
+/// renderer, gives each cell the `(depth, painter order)` of the last World
+/// quad drawn before it; composition gives the copy a semantic identity
+/// above every World quad, so it draws directly after that quad and before
+/// anything the World draws later: objects on the tile (including objects
+/// on the grid's own ground render layer), nearer tiles and higher ground
+/// layers cover it as they cover the terrain. Cells without terrain get
+/// their own position in the order, not an earlier cell's. A cell drawn
+/// before every World quad draws first. When the slots are unavailable
+/// (the combined scene could not be compiled) there are no copies at all;
+/// callers say so. The copies are a subset of a scene that already met the
+/// scene limits; semantic identities are assigned when composed. Copies of
+/// two overlays in one slot draw in the order the overlays are passed to
+/// [`compose_with_overlay`].
 pub fn stroke_overlay(prepared: &PreparedPreview, cells: &BTreeSet<SelectionKey>) -> Vec<Quad> {
     world_ordered_copies(prepared, |key| {
         cells.contains(key).then_some(STROKE_PREVIEW_TINT)
@@ -255,14 +257,16 @@ fn world_ordered_copies(
     prepared: &PreparedPreview,
     tint: impl Fn(&SelectionKey) -> Option<[f32; 4]>,
 ) -> Vec<Quad> {
+    let Some(slots) = prepared.cell_slots() else {
+        return Vec::new();
+    };
     prepared
         .cell_scene
         .quads()
         .iter()
         .filter_map(|quad| {
             let color = tint(prepared.cell_picks.get(&quad.semantic_id)?)?;
-            let (depth, painter_order) = prepared
-                .cell_slots
+            let (depth, painter_order) = slots
                 .get(&quad.semantic_id)
                 .copied()
                 .flatten()

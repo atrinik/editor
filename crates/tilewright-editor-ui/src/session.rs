@@ -506,6 +506,14 @@ impl Session {
                 "unknown zone: it is not in this plane's zones.jsonc",
             ));
         }
+        if !cells
+            .iter()
+            .any(|&[x, y]| crate::zones::chunk_exists(plane, layer, x, y))
+        {
+            return Err(refuse(
+                "zone stroke changes no cell: the covered tiles are in map chunks that do not exist",
+            ));
+        }
         let changes: Vec<TerrainChange<'w>> = cells
             .iter()
             // A tile whose chunk does not exist is left out like a tile

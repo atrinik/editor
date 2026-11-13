@@ -53,35 +53,42 @@ fn texture(
     Ok((texture, *anchor))
 }
 /// Where each cell of the cell scene falls in the World scene's draw order,
-/// as the shared renderer orders it: the World objects and the cell
-/// reference objects are compiled together into one scene that is only
-/// read, never drawn, with every cell after the World objects of its own
-/// order key. A cell's slot is then the `(depth, painter order)` of the last
-/// drawn World quad before it, or `None` when no World quad comes before
-/// it. Empty cells get a real slot too. Nothing is projected or ordered
-/// here; the renderer's own compile does both. When the combined scene
-/// exceeds twice the scene limits the map is empty and callers fall back.
-fn cell_slots(
+/// as the shared renderer orders it. The World's terrain objects, then the
+/// cell reference objects, then the World's placed objects are compiled
+/// together into one scene that is only read, never drawn. A cell has the
+/// order key of its tile's ground, so it sorts after that tile's terrain
+/// (equal keys keep list order) and before any placed object with an equal
+/// key, such as an object on the grid's own ground render layer; objects on
+/// that tile are therefore always drawn after the cell, as after the
+/// terrain. A cell's slot is the `(depth, painter order)` of the last drawn
+/// World quad before it, or `None` when no World quad comes before it, so
+/// empty cells get a real slot too. Nothing is projected or ordered here;
+/// the renderer's own compile does both. `None` when the combined scene
+/// cannot be compiled within twice the scene limits.
+pub(crate) fn cell_slots(
     world: &tilewright_scene::SceneBundle,
-    world_objects: &[WorldObject],
-    cell_view: &WorldView,
-    limits: tilewright_scene::SceneLimits,
-) -> BTreeMap<SemanticId, Option<(i16, u32)>> {
+    inputs: &SlotInputs,
+) -> Option<crate::CellSlots> {
+    let SlotInputs {
+        world_objects,
+        terrain,
+        cell_view,
+        limits,
+    } = inputs;
     let offset = world_objects
         .iter()
         .map(|object| object.semantic_id.0)
         .max()
         .unwrap_or(0);
-    let mut objects = world_objects.to_vec();
+    let (ground, placed) = world_objects.split_at(*terrain);
+    let mut objects = ground.to_vec();
     for cell in &cell_view.objects {
-        let Some(id) = offset.checked_add(cell.semantic_id.0) else {
-            return BTreeMap::new();
-        };
         objects.push(WorldObject {
-            semantic_id: SemanticId(id),
+            semantic_id: SemanticId(offset.checked_add(cell.semantic_id.0)?),
             ..cell.clone()
         });
     }
+    objects.extend_from_slice(placed);
     let combined = WorldView {
         objects,
         ..cell_view.clone()
@@ -89,11 +96,9 @@ fn cell_slots(
     let doubled = tilewright_scene::SceneLimits {
         maximum_quads: limits.maximum_quads.saturating_mul(2),
         maximum_raster_samples: limits.maximum_raster_samples.saturating_mul(2),
-        ..limits
+        ..*limits
     };
-    let Ok(ordered) = tilewright_render_world::compile(&combined, doubled) else {
-        return BTreeMap::new();
-    };
+    let ordered = tilewright_render_world::compile(&combined, doubled).ok()?;
     // A World quad is the same (identity, part) in both scenes.
     let in_world: BTreeMap<(SemanticId, u16), (i16, u32)> = world
         .quads()
@@ -117,7 +122,41 @@ fn cell_slots(
             last = Some(*slot);
         }
     }
-    slots
+    Some(slots)
+}
+
+/// How many leading `objects` are terrain. Terrain is inserted before
+/// placed objects, so `identified` lists it first; the cell slots rely on
+/// that split, so it is checked rather than assumed.
+fn terrain_prefix(
+    objects: &[WorldObject],
+    picks: &BTreeMap<SemanticId, SelectionKey>,
+) -> Result<usize, PreviewError> {
+    let is_terrain = |object: &WorldObject| {
+        matches!(
+            picks.get(&object.semantic_id),
+            Some(SelectionKey::Cell { .. })
+        )
+    };
+    let terrain = objects
+        .iter()
+        .take_while(|object| is_terrain(object))
+        .count();
+    if objects[terrain..].iter().any(is_terrain) {
+        return Err(failure("terrain objects must precede placed objects"));
+    }
+    Ok(terrain)
+}
+
+/// What [`cell_slots`] needs, kept with a prepared scene until an overlay
+/// first asks for the slots.
+pub(crate) struct SlotInputs {
+    /// The World scene's objects: `terrain` terrain objects, then the placed
+    /// objects.
+    pub(crate) world_objects: Vec<WorldObject>,
+    pub(crate) terrain: usize,
+    pub(crate) cell_view: WorldView,
+    pub(crate) limits: tilewright_scene::SceneLimits,
 }
 
 fn identified(
@@ -206,6 +245,7 @@ pub fn prepare(
     adapter.terrain(&mut objects)?;
     let inventory = adapter.objects(&mut objects)?;
     let (objects, picks) = identified(objects)?;
+    let terrain = terrain_prefix(&objects, &picks)?;
     let world_view_objects = objects.clone();
     let world_view = WorldView {
         revision: view.frame_revision,
@@ -227,7 +267,6 @@ pub fn prepare(
     };
     let cell_scene = tilewright_render_world::compile(&cell_view, limits.scene)
         .map_err(|e| failure(e.to_string()))?;
-    let cell_slots = cell_slots(&scene, &world_view_objects, &cell_view, limits.scene);
     let mut diagnostics=vec![PreviewDiagnostic{code:"preview.effects-neutral",message:"Preview v1 uses neutral effects and one-tile footprints; profile fields are retained without inferred rendering behavior.".into()}];
     if inventory > 0 {
         diagnostics.push(PreviewDiagnostic {
@@ -240,7 +279,13 @@ pub fn prepare(
     Ok(PreparedPreview {
         scene,
         cell_scene,
-        cell_slots,
+        cell_slots: std::sync::OnceLock::new(),
+        slot_inputs: SlotInputs {
+            world_objects: world_view_objects,
+            terrain,
+            cell_view,
+            limits: limits.scene,
+        },
         resources: Arc::new(memory),
         picks,
         cell_picks,

@@ -751,6 +751,38 @@ fn zone_strokes_and_the_overlay_leave_tiles_of_missing_chunks_alone() {
         )
         .unwrap_err()
         .0;
-    assert!(refused.contains("changes no cell"), "{refused}");
+    assert!(
+        refused.contains("map chunks that do not exist") && !refused.contains("already has"),
+        "{refused}"
+    );
     assert!(!missing.exists());
+}
+
+/// Blend `tint` at `alpha` over an opaque terrain colour, as the reference
+/// renderer composites a translucent quad.
+fn over(base: [f32; 3], tint: [f32; 3], alpha: f32) -> [f32; 3] {
+    [0, 1, 2].map(|k| base[k] * (1.0 - alpha) + tint[k] * 255.0 * alpha)
+}
+
+#[test]
+fn every_zone_preview_stands_out_from_every_resting_tint_on_the_sample_terrain() {
+    // The sample's grass and sand. A previewed cell is its target tint at
+    // the preview opacity; it replaces the cell's old tint (any tint) and
+    // sits next to resting tiles of the target. The weakest pair over both
+    // terrains still differs by at least 16 of 255 on some channel.
+    let terrains = [[91.0, 145.0, 77.0], [204.0, 179.0, 116.0]];
+    let mut weakest = f32::MAX;
+    for base in terrains {
+        for target in zones::TINTS {
+            let previewed = over(base, target, zones::PREVIEW_ALPHA);
+            for resting in zones::TINTS {
+                let shown = over(base, resting, zones::TINT_ALPHA);
+                let difference = (0..3)
+                    .map(|k| (previewed[k] - shown[k]).abs())
+                    .fold(0.0, f32::max);
+                weakest = weakest.min(difference);
+            }
+        }
+    }
+    assert!(weakest >= 16.0, "{weakest}");
 }

@@ -904,3 +904,179 @@ fn an_empty_tile_is_drawn_after_farther_objects_not_at_an_earlier_tiles_place() 
         tint.painter_order
     );
 }
+
+/// A crate on the floor render layer (the pick grid's own ground layer) at
+/// the empty-of-objects tile (6, 1), so it shares its tile's terrain order
+/// key; optionally the sample as bent isometric terrain.
+fn ground_layer_object(world: &Path, isometric: bool) {
+    if isometric {
+        isometric_with_empty_run(world);
+    }
+    let chunk = world.join("planes/main/layers/0/0_0.jsonc");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&chunk).unwrap()).unwrap();
+    value["objects"].as_array_mut().unwrap().push(
+        serde_json::json!({"uid": "floor_crate", "at": [6, 1], "proto": "crate", "layer": "floor"}),
+    );
+    fs::write(&chunk, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+
+/// The opaque pixels of the floor crate `overlay` changes when drawn over
+/// the World, and how many opaque crate pixels there are.
+fn tinted_crate_pixels(app: &Application, overlay: &[Quad]) -> (Vec<usize>, usize) {
+    let world = &app.prepared.scene;
+    let identity = world.quads().iter().map(|q| q.semantic_id.0).max().unwrap();
+    let scene = |extra: &[Quad]| {
+        SceneBundle::from_quads(
+            world.revision(),
+            0,
+            world.viewport(),
+            world.clear_color(),
+            world
+                .quads()
+                .iter()
+                .copied()
+                .chain(extra.iter().zip(identity + 1..).map(|(quad, id)| Quad {
+                    semantic_id: tilewright_scene::SemanticId(id),
+                    part: 0,
+                    ..*quad
+                })),
+            SceneLimits::default(),
+        )
+        .unwrap()
+    };
+    let plain = render(&scene(&[]), app.prepared.resources.clone());
+    let shown = render(&scene(overlay), app.prepared.resources.clone());
+    let crate_id = app
+        .prepared
+        .picks
+        .iter()
+        .find(|(_, key)| matches!(key, SelectionKey::Object { uid } if uid == "floor_crate"))
+        .map(|(id, _)| id.0)
+        .unwrap();
+    let mut pixels = 0;
+    let mut tinted = Vec::new();
+    for (index, id) in plain.semantic_ids.iter().enumerate() {
+        if *id == crate_id && plain.rgba8[index * 4 + 3] == 255 {
+            pixels += 1;
+            if plain.rgba8[index * 4..index * 4 + 4] != shown.rgba8[index * 4..index * 4 + 4] {
+                tinted.push(index);
+            }
+        }
+    }
+    (tinted, pixels)
+}
+
+/// The copies in `overlay` of the crate cell (6, 1)'s own cell quads.
+fn own_cell(app: &Application, overlay: &[Quad]) -> Vec<Quad> {
+    let own: Vec<_> = app
+        .prepared
+        .cell_scene
+        .quads()
+        .iter()
+        .filter(|quad| {
+            matches!(
+                app.prepared.cell_picks.get(&quad.semantic_id),
+                Some(SelectionKey::Cell { x: 6, y: 1, .. })
+            )
+        })
+        .map(|quad| quad.positions)
+        .collect();
+    overlay
+        .iter()
+        .copied()
+        .filter(|quad| own.contains(&quad.positions))
+        .collect()
+}
+
+#[test]
+fn objects_on_the_ground_render_layer_are_never_tinted_or_marked() {
+    for isometric in [false, true] {
+        let (_temporary, mut app) = zone_application(|world| ground_layer_object(world, isometric));
+        app.control(Control::Zone).unwrap();
+        let tints = crate::prototype::zone_overlay(&app);
+        let cell = app
+            .prepared
+            .cell_picks
+            .values()
+            .find(|key| matches!(key, SelectionKey::Cell { x: 6, y: 1, .. }))
+            .cloned()
+            .unwrap();
+        let mark = crate::workspace_render::stroke_overlay(&app.prepared, &BTreeSet::from([cell]));
+        assert!(!mark.is_empty());
+        // The crate shares its tile's order key: neither its own cell's tint
+        // nor the terrain brush's mark on that cell ever draws over it.
+        for (name, overlay) in [("tint", own_cell(&app, &tints)), ("mark", mark)] {
+            let (tinted, pixels) = tinted_crate_pixels(&app, &overlay);
+            assert!(pixels > 100, "isometric={isometric}: {pixels}");
+            assert!(
+                tinted.is_empty(),
+                "isometric={isometric}: {name} over the crate: {}",
+                tinted.len()
+            );
+        }
+        // Over the whole overlay: top-down, nothing at all lands on the
+        // crate. Isometric, the crate overhangs nearer tiles, and a nearer
+        // tile's tint draws where that tile's ground would, over the
+        // overhang (the nearer tiles here have no ground, or art that does
+        // not fill the reference diamond); never inside the crate's own or
+        // a farther tile.
+        let (tinted, _) = tinted_crate_pixels(&app, &tints);
+        if isometric {
+            let cells = app.frame(true).unwrap();
+            for index in tinted {
+                let under = app
+                    .prepared
+                    .cell_picks
+                    .get(&tilewright_scene::SemanticId(cells.semantic_ids[index]));
+                assert!(
+                    matches!(under, Some(SelectionKey::Cell { x, y, .. }) if x + y > 7),
+                    "a tint over the crate at {index} belongs to {under:?}"
+                );
+            }
+        } else {
+            assert!(tinted.is_empty(), "top-down: {}", tinted.len());
+        }
+    }
+}
+
+#[test]
+fn unavailable_cell_slots_draw_no_overlay_and_say_so() {
+    let (_temporary, mut app) = zone_application(|_| {});
+    // As when the combined ordering compile fails.
+    assert!(app.prepared.withhold_cell_slots());
+    app.control(Control::Select).unwrap();
+    assert!(
+        !app.status_label().contains("unavailable"),
+        "nothing wanted"
+    );
+    route(&mut app, &key(Keycode::N)).unwrap();
+    assert!(crate::prototype::zone_overlay(&app).is_empty());
+    assert!(overlay_quads(&mut app).is_empty());
+    assert_eq!(
+        app.status_label(),
+        "Zone overlay and stroke preview unavailable for this view."
+    );
+    // A stroke still prepares its change; only the preview is missing.
+    route(&mut app, &key(Keycode::T)).unwrap();
+    app.control(Control::Palette {
+        grid: "floor".into(),
+        prototype: "sand".into(),
+    })
+    .unwrap();
+    assert!(app.prepared.withhold_cell_slots());
+    acknowledge_ui(&mut app);
+    let (start, end) = (cell_pixel(&mut app, 0, 1), cell_pixel(&mut app, 2, 1));
+    route(&mut app, &button(true, start)).unwrap();
+    // The press rebuilt the prepared scene; withhold its slots again.
+    assert!(app.prepared.withhold_cell_slots());
+    route(&mut app, &drag(end)).unwrap();
+    assert!(overlay_quads(&mut app).is_empty());
+    assert!(
+        app.status_label()
+            .ends_with("Preview unavailable for this view."),
+        "{}",
+        app.status_label()
+    );
+    route(&mut app, &button(false, end)).unwrap();
+    assert!(app.session.history().pending().is_some());
+}
