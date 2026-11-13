@@ -184,6 +184,10 @@ fn a_typed_location_is_checked_in_the_draft_and_reviewed_as_one_change() {
         ("elsewhere 0 1 1", "no plane with this id"),
         ("main x 1 1", "layer must be a whole number"),
         ("0 1 99999999999999999", "x and y must be whole numbers"),
+        ("0 -9223372036854775808 1", "x and y must be whole numbers"),
+        ("0 1 9223372036854775807", "x and y must be whole numbers"),
+        ("0 9007199254740992 1", "x and y must be whole numbers"),
+        ("0 1 -9007199254740992", "x and y must be whole numbers"),
         ("0 -2 2", "already leads there"),
     ] {
         app.tools.select_all().unwrap();
@@ -378,4 +382,90 @@ fn a_frame_past_the_scene_limits_names_the_overlay_it_leaves_out() {
         app.status_label(),
         "Zone overlay and badges left out: too many cells for one frame."
     );
+}
+
+/// The neutral sample as bent isometric ground: corner heights differ, so
+/// each cell is compiled as a mesh of sub-quads.
+fn bent_isometric(world: &std::path::Path) {
+    isometric(world);
+    let chunk = world.join("planes/main/layers/0/0_0.jsonc");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&chunk).unwrap()).unwrap();
+    let rows: Vec<Vec<i32>> = (0..32)
+        .map(|y| (0..32).map(|x| (x * 7 + y * 13) % 5 * 6).collect())
+        .collect();
+    value["terrain"]["height"] = serde_json::json!({ "rows": rows });
+    fs::write(&chunk, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn badge_outlines_stay_one_to_about_two_pixels_wide_on_every_kind_of_cell() {
+    use crate::workspace_render::{ANCHOR_BADGE, BADGE_OUTLINE, PORTAL_BADGE};
+    for (name, prepare) in [
+        (
+            "top-down",
+            (|_: &std::path::Path| {}) as fn(&std::path::Path),
+        ),
+        ("flat isometric", isometric),
+        ("bent isometric", bent_isometric),
+    ] {
+        let (_temporary, mut app) = zone_application(prepare);
+        route(&mut app, &key(Keycode::K)).unwrap();
+        let badges = crate::prototype::badge_overlay(&app);
+        if name == "bent isometric" {
+            assert!(
+                badges.len() > 2 * 3,
+                "{name}: cells are meshes: {}",
+                badges.len()
+            );
+        }
+        // Group each badge's quads by colour run: the outline copies, then
+        // the badge copies, in the same count.
+        let mut index = 0;
+        let mut badges_seen = 0;
+        while index < badges.len() {
+            let outline_color = badges[index].color;
+            let mut end = index;
+            while end < badges.len() && badges[end].color == outline_color {
+                end += 1;
+            }
+            let parts = end - index;
+            let (outline, badge) = (&badges[index..end], &badges[end..end + parts]);
+            assert!(badge.iter().all(|quad| quad.color != outline_color));
+            assert!(
+                badge
+                    .iter()
+                    .all(|quad| [ANCHOR_BADGE, PORTAL_BADGE].contains(&quad.color))
+            );
+            let union = |quads: &[tilewright_scene::Quad]| {
+                let mut all = quads.iter().map(|quad| bounds(quad.positions));
+                let first = all.next().unwrap();
+                all.fold(first, |[min, max], [lo, hi]| {
+                    [
+                        [min[0].min(lo[0]), min[1].min(lo[1])],
+                        [max[0].max(hi[0]), max[1].max(hi[1])],
+                    ]
+                })
+            };
+            let ([inner_min, inner_max], [outer_min, outer_max]) = (union(badge), union(outline));
+            for axis in 0..2 {
+                for extra in [
+                    inner_min[axis] - outer_min[axis],
+                    outer_max[axis] - inner_max[axis],
+                ] {
+                    // At least the outline width; along the axes a 2:1
+                    // diamond's outline reaches about 2.2 times it across
+                    // (a bent cell's bounds a little more), never the 9 to
+                    // 14 px that scaling by its sub-quads gave.
+                    assert!(
+                        (BADGE_OUTLINE - 0.01..=3.0 * BADGE_OUTLINE).contains(&extra),
+                        "{name}: axis {axis}: {extra}"
+                    );
+                }
+            }
+            badges_seen += 1;
+            index = end + parts;
+        }
+        assert_eq!(badges_seen, 3, "{name}");
+    }
 }

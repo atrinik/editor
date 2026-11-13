@@ -4072,12 +4072,12 @@ fn grants_fields(editing: &tilewright_editor_preview::EditingCapabilities) -> bo
             .any(|grant| !grant.fields.is_empty())
 }
 
-/// Labels are logged after successful presentation; this does not own native handles.
 /// Whether any `editing.objects` entry grants portal editing.
 fn grants_portals(editing: &tilewright_editor_preview::EditingCapabilities) -> bool {
     editing.objects.values().any(|grant| grant.portal)
 }
 
+/// Labels are logged after successful presentation; this does not own native handles.
 fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
     let editing = app.session.catalog().editing();
     if (step == 5 && !grants_fields(editing))

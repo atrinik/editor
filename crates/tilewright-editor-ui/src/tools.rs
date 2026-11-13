@@ -964,7 +964,7 @@ impl ToolState {
         let coordinate = |text: &str| {
             text.parse::<i64>()
                 .ok()
-                .filter(|value| value.abs() <= MAX_SAFE_COORDINATE)
+                .filter(|value| (-MAX_SAFE_COORDINATE..=MAX_SAFE_COORDINATE).contains(value))
                 .ok_or(ToolError(
                     "x and y must be whole numbers within plus or minus 9007199254740991",
                 ))
