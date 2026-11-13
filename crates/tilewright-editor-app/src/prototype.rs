@@ -1128,23 +1128,6 @@ impl Application {
             }),
             _ => None,
         };
-        let id_row = |rows: &mut UiRows,
-                      fits: &mut Vec<(usize, IdText)>,
-                      id: &str,
-                      variants: Vec<(String, String)>,
-                      control: Option<Control>,
-                      enabled: bool,
-                      active: bool| {
-            let (prefix, suffix) = variants[0].clone();
-            fits.push((
-                rows.len(),
-                IdText::Id {
-                    id: id.into(),
-                    variants,
-                },
-            ));
-            rows.push((format!("{prefix}{id}{suffix}"), control, enabled, active));
-        };
         let Some((plane, id, zone)) = chosen else {
             rows.push(("Choose a zone above to manage it".into(), None, true, false));
             rows.push((
@@ -1183,6 +1166,51 @@ impl Application {
             ready,
             self.tools.zone_draft() == Some(tools::ZoneDraft::Name),
         ));
+        self.zone_parent_rows(rows, fits, plane, (id, zone), ready);
+        let usage = self.zone_use_rows(rows, fits, plane, (id, zone));
+        if usage.unused() {
+            rows.push((
+                "Delete zone (unused)".into(),
+                Some(Control::ZoneDelete),
+                ready,
+                false,
+            ));
+        } else {
+            rows.push((
+                "Delete: not while in use".into(),
+                Some(Control::ZoneDelete),
+                false,
+                false,
+            ));
+        }
+        id_row(
+            rows,
+            fits,
+            id,
+            vec![("New zone under ".into(), String::new())],
+            Some(Control::ZoneCreate(Some(id.to_owned()))),
+            ready,
+            false,
+        );
+        rows.push((
+            "New top-level zone".into(),
+            Some(Control::ZoneCreate(None)),
+            ready,
+            false,
+        ));
+        rows.push((ZONE_IDS_FIXED.into(), None, true, false));
+    }
+
+    /// The chosen zone's parent, and when listed its choices: no parent,
+    /// then every zone but itself and its descendants.
+    fn zone_parent_rows(
+        &self,
+        rows: &mut UiRows,
+        fits: &mut Vec<(usize, IdText)>,
+        plane: &tilewright_source::Plane,
+        (id, zone): (&str, &tilewright_source::Zone),
+        ready: bool,
+    ) {
         let open = self.tools.parent_choices_open();
         match zone.parent.as_deref() {
             Some(parent) => id_row(
@@ -1224,6 +1252,18 @@ impl Application {
                 );
             }
         }
+    }
+
+    /// What keeps World from deleting the chosen zone, one fact per row, so
+    /// a disabled Delete has its reasons in view, then its properties
+    /// (read-only).
+    fn zone_use_rows<'w>(
+        &self,
+        rows: &mut UiRows,
+        fits: &mut Vec<(usize, IdText)>,
+        plane: &'w tilewright_source::Plane,
+        (id, zone): (&str, &tilewright_source::Zone),
+    ) -> zones::ZoneUse<'w> {
         let in_view = self
             .view_zone_tiles()
             .iter()
@@ -1293,37 +1333,7 @@ impl Application {
                 false,
             ));
         }
-        if usage.unused() {
-            rows.push((
-                "Delete zone (unused)".into(),
-                Some(Control::ZoneDelete),
-                ready,
-                false,
-            ));
-        } else {
-            rows.push((
-                "Delete: not while in use".into(),
-                Some(Control::ZoneDelete),
-                false,
-                false,
-            ));
-        }
-        id_row(
-            rows,
-            fits,
-            id,
-            vec![("New zone under ".into(), String::new())],
-            Some(Control::ZoneCreate(Some(id.to_owned()))),
-            ready,
-            false,
-        );
-        rows.push((
-            "New top-level zone".into(),
-            Some(Control::ZoneCreate(None)),
-            ready,
-            false,
-        ));
-        rows.push((ZONE_IDS_FIXED.into(), None, true, false));
+        usage
     }
 
     /// The Place palette: one row per placeable prototype the filter keeps,
@@ -1572,12 +1582,7 @@ impl Application {
                     width,
                     height: 22,
                 },
-                match (supported, self.tools.zone_draft()) {
-                    (false, _) => "Unsupported text; cannot review",
-                    (true, Some(tools::ZoneDraft::Name)) => "Display name; empty = none / Enter",
-                    (true, Some(tools::ZoneDraft::Create)) => "New id (fixed), space, name / Enter",
-                    (true, None) => "Ctrl+A selects / Enter reviews",
-                },
+                draft_hint(supported, self.tools.zone_draft()),
                 None,
                 supported,
                 false,
@@ -2510,9 +2515,8 @@ impl Application {
         self.capture("zone-created")?;
         // A tile holds it now: deletion is refused with the reason, as a
         // native press on the row would show it.
-        let refusal = match self.control(Control::ZoneDelete) {
-            Err(refusal) => refusal,
-            Ok(()) => return Err("deleting a used zone was not refused".into()),
+        let Err(refusal) = self.control(Control::ZoneDelete) else {
+            return Err("deleting a used zone was not refused".into());
         };
         self.notice = Some(refusal);
         self.capture("zone-delete-refused")?;
@@ -2717,6 +2721,38 @@ fn append_change_review(
 }
 
 /// A stored text value on one line, its line breaks and controls as markers.
+/// The hint under a text draft.
+fn draft_hint(supported: bool, zone: Option<tools::ZoneDraft>) -> &'static str {
+    match (supported, zone) {
+        (false, _) => "Unsupported text; cannot review",
+        (true, Some(tools::ZoneDraft::Name)) => "Display name; empty = none / Enter",
+        (true, Some(tools::ZoneDraft::Create)) => "New id (fixed), space, name / Enter",
+        (true, None) => "Ctrl+A selects / Enter reviews",
+    }
+}
+
+/// Push a row naming zone `id` and record how to fit it: `variants` are
+/// the `(prefix, suffix)` pairs around the id, widest first.
+fn id_row(
+    rows: &mut UiRows,
+    fits: &mut Vec<(usize, IdText)>,
+    id: &str,
+    variants: Vec<(String, String)>,
+    control: Option<Control>,
+    enabled: bool,
+    active: bool,
+) {
+    let (prefix, suffix) = variants[0].clone();
+    fits.push((
+        rows.len(),
+        IdText::Id {
+            id: id.into(),
+            variants,
+        },
+    ));
+    rows.push((format!("{prefix}{id}{suffix}"), control, enabled, active));
+}
+
 fn stored_breaks_marked(text: &str) -> String {
     tilewright_editor_ui::text_input::mark_stored_breaks(text).0
 }
