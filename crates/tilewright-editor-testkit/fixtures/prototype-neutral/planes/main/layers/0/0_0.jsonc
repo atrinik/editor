@@ -116,6 +116,34 @@
       "fields": {
         "label": "Spare marker"
       }
+    },
+    {
+      "uid": "gate_east",
+      "at": [
+        7,
+        0
+      ],
+      "proto": "gate",
+      "layer": "item",
+      "portal": {
+        "anchor": "arrival"
+      }
+    },
+    {
+      "uid": "gate_west",
+      "at": [
+        0,
+        3
+      ],
+      "proto": "gate",
+      "layer": "item",
+      "portal": {
+        "layer": 0,
+        "at": [
+          -2,
+          2
+        ]
+      }
     }
   ]
 }

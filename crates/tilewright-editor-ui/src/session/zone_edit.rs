@@ -87,7 +87,7 @@ impl Session {
             Action::DeleteZone { zone, .. } => delete(source, &path, zone)?,
             _ => return Err(refuse("not a zone management action")),
         };
-        self.prepare_text(expected, &operations)
+        self.prepare_text(expected, &operations, "zone change refused")
     }
 
     /// The operations that add the new zone: an `insert` at the end of the
@@ -149,11 +149,13 @@ impl Session {
 
     /// Prepare one transaction of `operations`, each already JSON text.
     /// History seals the consulted files and checks the full World revision;
-    /// a World refusal leaves nothing pending.
-    fn prepare_text(
+    /// a World refusal leaves nothing pending and is reported after
+    /// `refused`.
+    pub(super) fn prepare_text(
         &mut self,
         expected: [u8; 32],
         operations: &[String],
+        refused: &str,
     ) -> Result<(), SessionError> {
         let text = format!(
             "{{\"format\":\"tilewright.transaction/1\",\"title\":\"Editor semantic action\",\"actor\":\"editor:prototype\",\"operations\":[{}]}}",
@@ -161,7 +163,7 @@ impl Session {
         );
         self.history
             .prepare(expected, "editor:action", &text)
-            .map_err(|error| SessionError(format!("zone change refused: {error}")))?;
+            .map_err(|error| SessionError(format!("{refused}: {error}")))?;
         self.status.phase = SessionPhase::Pending;
         self.status.message = "Pending World diff; Accept publishes, Cancel writes nothing".into();
         self.invalidate_frame()

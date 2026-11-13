@@ -1,0 +1,7 @@
+{
+  "format": "tilewright.anchors/1",
+  "anchors": [
+    {"id": "arrival", "layer": 0, "at": [7, 3]},
+    {"id": "lookout", "layer": 0, "at": [-2, 0]}
+  ]
+}

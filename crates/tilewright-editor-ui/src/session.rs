@@ -12,6 +12,7 @@ use tilewright_source::{FieldValue, World};
 
 use crate::uid::{OsUidSource, UidSource};
 
+mod anchor_edit;
 mod zone_edit;
 
 #[derive(Clone, Debug)]
@@ -116,6 +117,38 @@ pub enum Action {
     DeleteZone {
         plane: String,
         zone: String,
+        expected: [u8; 32],
+    },
+    /// Add anchor `anchor` on plane tile `x, y` of the active view, on its
+    /// spatial layer: one `insert` at the end of the plane's
+    /// `anchors.jsonc`, or its `document.create` when the plane has none.
+    /// `anchor` must be a World identifier the plane does not use yet.
+    /// Needs `editing.anchors.edit`. Anchor ids are fixed once created.
+    CreateAnchor {
+        plane: String,
+        anchor: String,
+        x: i64,
+        y: i64,
+        expected: [u8; 32],
+    },
+    /// Move anchor `anchor`, which is on a tile of the active view, to plane
+    /// tile `x, y` of the active view: one `set` of its `at` expecting the
+    /// committed position. Every portal that names the anchor now leads to
+    /// the new tile. Needs `editing.anchors.edit`.
+    MoveAnchor {
+        plane: String,
+        anchor: String,
+        x: i64,
+        y: i64,
+        expected: [u8; 32],
+    },
+    /// Delete anchor `anchor` of the active view's plane: one `remove` of
+    /// its entry expecting its committed JSON. Refused, with the objects
+    /// listed, while a portal anywhere in the world names it. Needs
+    /// `editing.anchors.edit`.
+    DeleteAnchor {
+        plane: String,
+        anchor: String,
         expected: [u8; 32],
     },
     Accept,
@@ -662,6 +695,7 @@ impl Session {
             let mut lines = crate::insertion::notes(committed, pending.sealed());
             lines.extend(crate::zones::notes(committed, pending.sealed()));
             lines.extend(crate::zones::definition_notes(committed, pending.world()));
+            lines.extend(crate::anchors::notes(committed, pending.world()));
             lines.extend(crate::removal::warnings(committed, pending.sealed()));
             lines
         });
@@ -713,6 +747,9 @@ impl Session {
                     | Action::SetZoneParent { .. }
                     | Action::CreateZone { .. }
                     | Action::DeleteZone { .. }
+                    | Action::CreateAnchor { .. }
+                    | Action::MoveAnchor { .. }
+                    | Action::DeleteAnchor { .. }
                     | Action::Undo
                     | Action::Redo
             )
@@ -910,6 +947,9 @@ impl Session {
             | Action::SetZoneParent { .. }
             | Action::CreateZone { .. }
             | Action::DeleteZone { .. }) => self.manage_zones(&action),
+            action @ (Action::CreateAnchor { .. }
+            | Action::MoveAnchor { .. }
+            | Action::DeleteAnchor { .. }) => self.edit_anchors(&action),
             Action::Accept => self.accept(recovery),
             Action::Cancel => {
                 self.history.cancel();
