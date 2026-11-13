@@ -110,7 +110,10 @@ fn placement_needs_a_grant_and_a_tile_of_the_active_view() {
     );
 
     let (_dir, mut session) = fixture();
-    assert_eq!(object_palette(session.catalog()), ["marker", "stone"]);
+    assert_eq!(
+        object_palette(session.catalog()),
+        ["bush", "crate", "lamp", "marker", "stone"]
+    );
     // Prototypes without a grant, mapped or not, are refused.
     for proto in ["grass", "unknown"] {
         let error = session
@@ -582,7 +585,10 @@ fn the_place_tool_builds_one_action_from_a_picked_tile_and_a_granted_choice() {
                 .remove(1);
         });
     });
-    assert_eq!(object_palette(without_stone.catalog()), ["marker"]);
+    assert_eq!(
+        object_palette(without_stone.catalog()),
+        ["bush", "crate", "lamp", "marker"]
+    );
     assert!(
         tools
             .place_action(without_stone.catalog(), &cell, revision, false)

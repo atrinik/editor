@@ -57,6 +57,36 @@
       "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
     },
     {
+      "id": "bush",
+      "path": "preview-assets/bush.atx1",
+      "sha256": "2e50e61176206b04f06424fd1508c997b1260a84179827ce712cad25f44a6c92",
+      "width": 28,
+      "height": 24,
+      "license": "MIT",
+      "author": "Seraphina Studios",
+      "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
+    },
+    {
+      "id": "crate",
+      "path": "preview-assets/crate.atx1",
+      "sha256": "28effb497c6a697be963bca366d66737fc0d8679a4b715756c3300c35b82738e",
+      "width": 24,
+      "height": 24,
+      "license": "MIT",
+      "author": "Seraphina Studios",
+      "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
+    },
+    {
+      "id": "lamp",
+      "path": "preview-assets/lamp.atx1",
+      "sha256": "462d0e16469fce5f4ee2359a1a85853aa97488caeb0103f7dfbbe754a25904b6",
+      "width": 16,
+      "height": 40,
+      "license": "MIT",
+      "author": "Seraphina Studios",
+      "notice": "Copyright 2026 Seraphina Studios; original geometric fixture, MIT."
+    },
+    {
       "id": "grass_edge_1",
       "path": "preview-assets/grass_edge_1.atx1",
       "sha256": "da3b826e8e361847715a4e105ecdccfef564e716b825f107eb5bc30a59d96930",
@@ -229,6 +259,21 @@
       "anchor": "standing"
     },
     {
+      "proto": "bush",
+      "resource": "bush",
+      "anchor": "standing"
+    },
+    {
+      "proto": "crate",
+      "resource": "crate",
+      "anchor": "standing"
+    },
+    {
+      "proto": "lamp",
+      "resource": "lamp",
+      "anchor": "standing"
+    },
+    {
       "proto": "grass_edge_1",
       "resource": "grass_edge_1",
       "anchor": "ground"
@@ -344,6 +389,27 @@
             "visits": 0
           }
         }
+      },
+      {
+        "proto": "bush",
+        "layer": "item",
+        "fields": [
+          "label"
+        ]
+      },
+      {
+        "proto": "crate",
+        "layer": "item",
+        "fields": [
+          "label"
+        ]
+      },
+      {
+        "proto": "lamp",
+        "layer": "item",
+        "fields": [
+          "label"
+        ]
       }
     ]
   }

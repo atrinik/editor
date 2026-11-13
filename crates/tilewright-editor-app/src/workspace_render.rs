@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Scene assembly only. Typography, clipping and quad generation belong to the
-//! shared renderer. The World scene and its exact picking masks remain untouched.
+//! shared renderer. Palette thumbnails are whole, unclipped, unpickable quads
+//! that sample ready World textures; rows that are not wholly visible get
+//! none. The World scene and its exact picking masks remain untouched.
 use crate::workspace_ui::{Rect, WorkspaceUi};
 use std::{fmt, sync::Arc};
 use tilewright_editor_ui::text_input::{TextInputSnapshot, TextRevision};
@@ -13,7 +15,9 @@ use tilewright_render_ui::{
     TextAffinity, TextCursor, TextSystem, UiDisplayList, UiLimits, UiPaint, UiPrimitive, UiRect,
     UiTexture, UiViewport, UnicodeLayout, UnicodeTexture, builtin,
 };
-use tilewright_scene::{Digest256, ResourceId, SceneBundle, SceneLimits, SemanticId};
+use tilewright_scene::{
+    Digest256, Layer, Quad, ResourceId, Sampling, SceneBundle, SceneLimits, SemanticId,
+};
 
 type Result<T> = std::result::Result<T, CompositionError>;
 
@@ -79,6 +83,128 @@ impl ResourceProvider for Resources {
         self.world.load(request)
     }
 }
+/// Logical inset of a row thumbnail's square box from the row's top-left.
+pub const THUMBNAIL_INSET: u32 = 2;
+/// Most thumbnails one frame draws. Only visible rows carry one, and the
+/// sidebar shows far fewer rows than this at any supported size.
+pub const MAX_THUMBNAILS: usize = 64;
+
+/// Logical text indent of a row that starts with a thumbnail: the square
+/// box plus a gap.
+pub const fn thumbnail_indent(row_height: u32) -> u32 {
+    row_height
+}
+
+/// Physical pixel rectangle of the thumbnail of an image of `size` texels
+/// in the logical `row`: a square box inset at the row's start, the image
+/// scaled to fit it with its aspect ratio kept, centred, and snapped to
+/// whole physical pixels. `None` unless the row lies wholly inside the
+/// logical `clip` (the sidebar). Rows are whole, so a thumbnail is drawn
+/// whole or not at all; it never needs partial clipping and can never
+/// reach the toolbar, the review panel or the World view.
+pub fn thumbnail_rect(ui: &WorkspaceUi, row: Rect, clip: Rect, size: (u32, u32)) -> Option<Rect> {
+    let end = |start: u32, length: u32| u64::from(start) + u64::from(length);
+    if row.x < clip.x
+        || row.y < clip.y
+        || end(row.x, row.width) > end(clip.x, clip.width)
+        || end(row.y, row.height) > end(clip.y, clip.height)
+        || size.0 == 0
+        || size.1 == 0
+    {
+        return None;
+    }
+    let square = row.height.checked_sub(2 * THUMBNAIL_INSET)?;
+    if square == 0 || row.width < thumbnail_indent(row.height) {
+        return None;
+    }
+    let boxed = ui.scale(Rect {
+        x: row.x + THUMBNAIL_INSET,
+        y: row.y + THUMBNAIL_INSET,
+        width: square,
+        height: square,
+    });
+    if boxed.width == 0 || boxed.height == 0 {
+        return None;
+    }
+    let (width, height) = (u64::from(size.0), u64::from(size.1));
+    let (box_width, box_height) = (u64::from(boxed.width), u64::from(boxed.height));
+    // Round to nearest; the limiting side fills the box exactly.
+    let (fitted_width, fitted_height) = if width * box_height <= height * box_width {
+        ((width * box_height * 2 + height) / (height * 2), box_height)
+    } else {
+        (box_width, (height * box_width * 2 + width) / (width * 2))
+    };
+    let fitted_width = u32::try_from(fitted_width.clamp(1, box_width)).ok()?;
+    let fitted_height = u32::try_from(fitted_height.clamp(1, box_height)).ok()?;
+    Some(Rect {
+        x: boxed.x + (boxed.width - fitted_width) / 2,
+        y: boxed.y + (boxed.height - fitted_height) / 2,
+        width: fitted_width,
+        height: fitted_height,
+    })
+}
+
+/// One textured, unpickable interface quad per visible thumbnail row, at
+/// most [`MAX_THUMBNAILS`]. Each samples the prototype's whole ready
+/// texture, the same identity the World scene uses. Semantic identities
+/// start after `identity`; painter order matches the row's text, above the
+/// row's background.
+#[allow(clippy::cast_precision_loss)]
+fn thumbnail_quads(ui: &WorkspaceUi, identity: u32) -> Result<Vec<Quad>> {
+    let mut quads = Vec::new();
+    let mut next = identity;
+    for (index, widget) in ui.widgets.iter().enumerate() {
+        let Some(texture) = widget.thumbnail else {
+            continue;
+        };
+        if quads.len() == MAX_THUMBNAILS {
+            break;
+        }
+        let Some(target) = thumbnail_rect(
+            ui,
+            widget.layout,
+            ui.logical_sidebar,
+            (texture.width, texture.height),
+        ) else {
+            continue;
+        };
+        let order = u32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(2))
+            .and_then(|index| index.checked_add(2))
+            .ok_or(CompositionError::PainterOrderExhausted)?;
+        next = next
+            .checked_add(1)
+            .ok_or(CompositionError::SemanticIdentityExhausted)?;
+        let (left, top) = (target.x as f32, target.y as f32);
+        let right = (target.x + target.width) as f32;
+        let bottom = (target.y + target.height) as f32;
+        quads.push(Quad {
+            semantic_id: SemanticId(next),
+            part: 0,
+            resource_id: texture.id,
+            resource_revision: texture.revision,
+            resource_digest: texture.digest,
+            frame: None,
+            positions: [[left, top], [right, top], [right, bottom], [left, bottom]],
+            uvs: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            depth: 0,
+            painter_order: order,
+            color: if widget.enabled {
+                [1.0, 1.0, 1.0, 1.0]
+            } else {
+                [1.0, 1.0, 1.0, 0.5]
+            },
+            grayscale: if widget.enabled { 0.0 } else { 1.0 },
+            glow: None,
+            pickable: false,
+            sampling: Sampling::Linear,
+            layer: Layer::Interface,
+        });
+    }
+    Ok(quads)
+}
+
 pub fn text_size(height: u32) -> f32 {
     if height <= 22 { 14.0 } else { 18.0 }
 }
@@ -241,6 +367,7 @@ fn composition_rects(layout: &UnicodeLayout, range: std::ops::Range<usize>) -> V
     )
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn display_list<'a>(
     ui: &'a WorkspaceUi,
     mut identity: u32,
@@ -294,6 +421,11 @@ fn display_list<'a>(
             [0.50, 0.56, 0.63, 1.0]
         };
         let mut origin = [bounds.x + 4.0, bounds.y + 1.0];
+        if widget.thumbnail.is_some() {
+            // Text sits beside the thumbnail, centred on a 26 px text row.
+            origin[0] += thumbnail_indent(widget.layout.height) as f32;
+            origin[1] += (widget.layout.height.saturating_sub(26) / 2) as f32;
+        }
         if let Some(snapshot) = &widget.editable {
             let layout = system
                 .layout(&widget.text, text_size(widget.layout.height), None)
@@ -353,9 +485,19 @@ pub fn compose(
     if (world.viewport().width, world.viewport().height) != ui.size {
         return Err(CompositionError::TargetMismatch);
     }
+    let identity = world
+        .quads()
+        .iter()
+        .map(|quad| quad.semantic_id.0)
+        .max()
+        .unwrap_or(0);
+    let thumbnails = thumbnail_quads(ui, identity)?;
+    // Thumbnails reuse ready World textures that need not be in the World
+    // scene, so UI resource identities start above both.
     let resource = world
         .quads()
         .iter()
+        .chain(&thumbnails)
         .map(|quad| quad.resource_id.0)
         .max()
         .unwrap_or(0);
@@ -371,12 +513,9 @@ pub fn compose(
     let first_resource = resource
         .checked_add(2)
         .ok_or(CompositionError::ResourceIdentityExhausted)?;
-    let identity = world
-        .quads()
-        .iter()
-        .map(|quad| quad.semantic_id.0)
-        .max()
-        .unwrap_or(0);
+    let identity = thumbnails
+        .last()
+        .map_or(identity, |quad| quad.semantic_id.0);
     let (primitives, editable) = display_list(ui, identity, system)?;
     let logical = ui.logical_size();
     let compiled = system
@@ -398,7 +537,12 @@ pub fn compose(
         world.clock_millis(),
         world.viewport(),
         world.clear_color(),
-        world.quads().iter().copied().chain(compiled.quads),
+        world
+            .quads()
+            .iter()
+            .copied()
+            .chain(thumbnails)
+            .chain(compiled.quads),
         SceneLimits::default(),
     )
     .map_err(CompositionError::Scene)?;
@@ -471,6 +615,163 @@ mod tests {
                 ..request
             }),
             Err(ResourceError::NotFound)
+        );
+    }
+    fn texture(id: u64, width: u32, height: u32) -> tilewright_render_world::TextureRef {
+        tilewright_render_world::TextureRef {
+            id: ResourceId(id),
+            revision: 1,
+            digest: Digest256([7; 32]),
+            width,
+            height,
+        }
+    }
+    fn row(y: u32) -> Rect {
+        Rect {
+            x: 970,
+            y,
+            width: 300,
+            height: 26,
+        }
+    }
+    #[test]
+    fn thumbnails_fit_their_row_box_keep_aspect_and_snap_to_whole_pixels() {
+        let ui = WorkspaceUi::new((1280, 800), (1280, 800));
+        let clip = ui.logical_sidebar;
+        // The box is 22x22 at (972, 102). Tall art fills its height.
+        assert_eq!(
+            thumbnail_rect(&ui, row(100), clip, (24, 40)),
+            Some(Rect {
+                x: 976,
+                y: 102,
+                width: 13,
+                height: 22
+            })
+        );
+        // Wide art fills its width, rounded to nearest, and is centred.
+        assert_eq!(
+            thumbnail_rect(&ui, row(100), clip, (28, 24)),
+            Some(Rect {
+                x: 972,
+                y: 103,
+                width: 22,
+                height: 19
+            })
+        );
+        // Square and tiny art fill the box; a 1x64 sliver keeps one pixel.
+        assert_eq!(
+            thumbnail_rect(&ui, row(100), clip, (4, 4)).map(|r| (r.width, r.height)),
+            Some((22, 22))
+        );
+        assert_eq!(
+            thumbnail_rect(&ui, row(100), clip, (1, 64)).map(|r| (r.width, r.height)),
+            Some((1, 22))
+        );
+        assert_eq!(thumbnail_rect(&ui, row(100), clip, (0, 4)), None);
+        // At twice the pixel density the box is 44 physical pixels.
+        let dense = WorkspaceUi::new((640, 400), (1280, 800));
+        let dense_row = Rect {
+            x: 330,
+            y: 60,
+            width: 300,
+            height: 26,
+        };
+        assert_eq!(
+            thumbnail_rect(&dense, dense_row, dense.logical_sidebar, (24, 40)),
+            Some(Rect {
+                x: 673,
+                y: 124,
+                width: 26,
+                height: 44
+            })
+        );
+    }
+    #[test]
+    fn rows_not_wholly_inside_the_sidebar_get_no_thumbnail() {
+        let ui = WorkspaceUi::new((1280, 800), (1280, 800));
+        let clip = ui.logical_sidebar;
+        // The sidebar starts below the 48 px toolbar and ends at 800.
+        assert!(thumbnail_rect(&ui, row(48), clip, (24, 24)).is_some());
+        assert!(thumbnail_rect(&ui, row(47), clip, (24, 24)).is_none());
+        assert!(thumbnail_rect(&ui, row(774), clip, (24, 24)).is_some());
+        assert!(thumbnail_rect(&ui, row(775), clip, (24, 24)).is_none());
+        // Left of the sidebar is the World view or the review panel.
+        let left = Rect { x: 950, ..row(100) };
+        assert!(thumbnail_rect(&ui, left, clip, (24, 24)).is_none());
+        let narrow = Rect {
+            width: 20,
+            ..row(100)
+        };
+        assert!(thumbnail_rect(&ui, narrow, clip, (24, 24)).is_none());
+    }
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn thumbnail_quads_are_bounded_unpickable_and_above_their_row() {
+        let mut ui = WorkspaceUi::new((1280, 4000), (1280, 4000));
+        for index in 0..100 {
+            ui.widget(row(56 + index * 28), "row", None, true, false);
+            ui.widgets.last_mut().unwrap().thumbnail = Some(texture(3, 24, 24));
+        }
+        ui.widgets[1].enabled = false;
+        let quads = thumbnail_quads(&ui, 10).unwrap();
+        assert_eq!(quads.len(), MAX_THUMBNAILS);
+        // Disabled rows draw their thumbnail grey and half transparent.
+        assert_eq!(
+            (quads[0].color, quads[0].grayscale),
+            ([1.0, 1.0, 1.0, 1.0], 0.0)
+        );
+        assert_eq!(
+            (quads[1].color, quads[1].grayscale),
+            ([1.0, 1.0, 1.0, 0.5], 1.0)
+        );
+        for (index, quad) in quads.iter().enumerate() {
+            assert!(!quad.pickable);
+            assert_eq!(quad.layer, Layer::Interface);
+            assert_eq!(quad.semantic_id.0, 11 + u32::try_from(index).unwrap());
+            // Above the row background (2i+1), level with its text (2i+2).
+            assert_eq!(quad.painter_order, u32::try_from(index * 2 + 2).unwrap());
+            assert_eq!(quad.frame, None);
+            for corner in quad.positions {
+                assert_eq!(corner, corner.map(f32::round));
+            }
+        }
+    }
+    #[test]
+    fn composed_ui_resources_start_above_thumbnail_textures() {
+        let mut system = crate::font_pack::test_system();
+        let mut ui = WorkspaceUi::new((320, 240), (320, 240));
+        let at = Rect {
+            x: 170,
+            y: 90,
+            width: 140,
+            height: 26,
+        };
+        ui.widget(at, "lamp / item", None, true, false);
+        ui.widgets.last_mut().unwrap().thumbnail = Some(texture(50, 16, 40));
+        let world = tilewright_editor_preview::empty_scene(320, 240, 1).unwrap();
+        let presentation = compose(&mut system, &ui, &world, Arc::new(Missing)).unwrap();
+        let quads = presentation.scene.quads();
+        let thumbnails: Vec<_> = quads
+            .iter()
+            .filter(|quad| quad.resource_id == ResourceId(50))
+            .collect();
+        assert_eq!(thumbnails.len(), 1);
+        assert!(
+            quads
+                .iter()
+                .filter(|quad| quad.resource_id != ResourceId(50))
+                .all(|quad| quad.resource_id.0 > 50)
+        );
+        // Thumbnail and UI semantic identities are distinct.
+        let identities: std::collections::BTreeSet<_> =
+            quads.iter().map(|quad| quad.semantic_id).collect();
+        assert!(identities.contains(&thumbnails[0].semantic_id));
+        assert_eq!(
+            quads
+                .iter()
+                .filter(|quad| quad.semantic_id == thumbnails[0].semantic_id)
+                .count(),
+            1
         );
     }
     #[test]

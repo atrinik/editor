@@ -169,10 +169,10 @@ keep their own reach and combine with it.
 
 Choose Place in the toolbar or press P (a focused text draft keeps P for
 itself). The sidebar lists the prototypes the catalog's `editing.objects`
-entries grant, one plain row each, sorted by prototype id, with the chosen
-one marked; entering Place mode chooses the first row when none is chosen,
-and clicking a row chooses it. Without any entry, Place is disabled and P
-reports why. Click a tile, empty or not: the exact cell-reference mask
+entries grant, one row each, sorted by prototype id, with the chosen one
+marked; entering Place mode chooses the first row when none is chosen, and
+clicking a row (its thumbnail included) chooses it. Without any entry, Place
+is disabled and P reports why. Click a tile, empty or not: the exact cell-reference mask
 picks it, as in Terrain mode. One click is one World transaction with one
 `object.insert` on that tile of the active view (the catalog's plane and
 spatial layer, inside the view bounds), appended on top of the tile's
@@ -181,6 +181,49 @@ field values of the entry's optional `defaults`; World validates it against
 the profile schema before the diff is shown, and refuses it, writing
 nothing, when the defaults do not satisfy the schema. Nothing can be placed
 while a change is pending.
+
+A filter field sits at the top of the sidebar in Place mode, above the
+scrolled rows. Click it, or press `/` (or keypad divide) in Place mode, to
+focus it, then type; clicking always works, while `/` was only tested on
+layouts where it needs no modifier. The palette keeps the prototypes whose
+id contains the text, ignoring case, and its header counts the matches. Case is folded one character at a time with
+Unicode's full lowercase mapping, without locale tailoring or context
+(capital sigma always becomes σ, never final ς) and without normalization,
+so a precomposed accent does not match a decomposed one; text still being
+composed in an input method does not filter until it is committed. The field
+takes the single-line rules of other inputs (control characters and U+2028
+and U+2029 are refused) and holds at most 64 bytes of UTF-8. While it is
+focused every key is text: P, Q, Delete and the pan and tool keys type
+or edit, they do not act. Enter, or a click anywhere else, releases focus
+and keeps the filter; the click also does what it normally does (a tile
+click in Place mode places, a row click chooses, a toolbar click acts). Esc
+clears the filter and releases focus. With the field
+unfocused, Esc first clears a non-empty filter, and only the next Esc
+cancels a pending change as before. The filter is view state only: it is
+bound to no selection or World revision, never creates a transaction, and
+never changes what may be placed. Under the filter field a pinned row, which
+never scrolls and is not clickable, always names the chosen prototype in
+full with its thumbnail, `Placing: crate`, so the choice stays visible when
+the filter hides its palette row; it is dimmed while a pending change blocks
+placing. A hidden choice stays chosen and a tile click still places it; its
+palette row is marked only while shown. When nothing matches, one neutral
+"No prototype matches the filter." row stands in for the list. The filter
+stays editable while a change is pending, when the rows are disabled as
+before. Re-entering Place keeps the filter; switching to another tool clears
+it, so Place opens with the whole palette.
+
+Each palette row is 40 logical pixels tall, and starts with a thumbnail of
+its prototype: the prototype's ready preview texture from the catalog, the
+same resource the World view draws, fitted into a 36-pixel square with its
+aspect ratio kept, centred and snapped to whole physical pixels. Thumbnails
+are extra textured quads in the composed workspace scene and need no
+renderer change. Only rows laid out in the sidebar get one, and rows are
+laid out only when they fit whole, so a thumbnail never reaches the toolbar,
+the review panel or the World view; scrolling never cuts one in half. They
+are not pickable and are not in the World scene, so the exact semantic masks
+used for selection, painting and placement are unchanged by them; a press
+on a thumbnail is a press on its row. Disabled rows show a grey, faded
+thumbnail.
 
 The uid is `o.` followed by 128 random bits from the operating system in
 lowercase base32 (26 characters), as the World format recommends, so uids
@@ -224,7 +267,9 @@ for its manifest/stale-source/unsupported-edit rejection contract.
 ## Evidence and limits
 
 `--demo-script` drives the same session actions, command history and scene
-preparation as interactive input, including a placement with seeded uids. It is a deterministic scripted demonstration,
+preparation as interactive input, including a placement with seeded uids and
+a palette search (it types `A`, captures `palette`, then places the first
+match). It is a deterministic scripted demonstration,
 not a claim of human input. `--reference` produces composed workspace CPU
 reference evidence and
 must be reported separately from an actual visible native window run. Native

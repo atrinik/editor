@@ -120,6 +120,8 @@ pub struct TextInput {
     selection: TextSelection,
     composition: Option<Composition>,
     revision: TextRevision,
+    /// Byte budget for the committed text; new input past it is refused.
+    limit: usize,
 }
 
 impl TextInput {
@@ -128,10 +130,17 @@ impl TextInput {
     }
 
     pub(crate) fn with_identity(text: String, draft: u64) -> Result<Self, ToolError> {
+        Self::with_limit(text, draft, MAX_INPUT_BYTES)
+    }
+
+    /// A draft whose committed text never exceeds `limit` bytes (at most
+    /// [`MAX_INPUT_BYTES`]).
+    pub(crate) fn with_limit(text: String, draft: u64, limit: usize) -> Result<Self, ToolError> {
+        let limit = limit.min(MAX_INPUT_BYTES);
         // Existing source can contain controls or line separators. Opening it
         // must remain lossless; only newly inserted user input follows the
         // single-line policy in `validate_insert`.
-        if text.len() > MAX_INPUT_BYTES {
+        if text.len() > limit {
             return Err(ToolError("Input exceeds byte budget"));
         }
         let selection = TextSelection::caret(TextCursor::new(text.len()));
@@ -140,6 +149,7 @@ impl TextInput {
             selection,
             composition: None,
             revision: TextRevision { draft, revision: 0 },
+            limit,
         })
     }
 
@@ -265,7 +275,7 @@ impl TextInput {
             || self.selection.range(),
             |composition| composition.replacement.clone(),
         );
-        validate_insert(&self.text, &replacement, text)?;
+        validate_insert(&self.text, &replacement, text, self.limit)?;
         // Even empty cancellation events validate their offsets first.
         let selection = scalar_selection_bytes(text, start, length)?;
         let next = if text.is_empty() {
@@ -295,7 +305,7 @@ impl TextInput {
     }
 
     fn replace(&mut self, range: Range<usize>, text: &str) -> Result<(), ToolError> {
-        validate_insert(&self.text, &range, text)?;
+        validate_insert(&self.text, &range, text, self.limit)?;
         if range.is_empty() && text.is_empty() && self.composition.is_none() {
             return Ok(());
         }
@@ -374,13 +384,18 @@ pub fn scalar_selection_bytes(
     Ok(Some(byte_at(start)?..byte_at(end)?))
 }
 
-fn validate_insert(current: &str, range: &Range<usize>, text: &str) -> Result<(), ToolError> {
+fn validate_insert(
+    current: &str,
+    range: &Range<usize>,
+    text: &str,
+    limit: usize,
+) -> Result<(), ToolError> {
     if range.start > range.end {
         return Err(ToolError("Invalid replacement range"));
     }
     validate_cursor(current, TextCursor::new(range.start))?;
     validate_cursor(current, TextCursor::new(range.end))?;
-    if text.len() > MAX_INPUT_BYTES - (current.len() - range.len())
+    if text.len() > limit.saturating_sub(current.len() - range.len())
         || text.chars().any(breaks_single_line)
     {
         return Err(ToolError(

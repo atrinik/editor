@@ -17,6 +17,20 @@ pub struct ReadyResources {
     pub(crate) vector: Vec<(String, [u8; 32])>,
 }
 
+impl ReadyResources {
+    /// The ready texture `proto` is drawn with under `catalog`, for UI
+    /// previews such as palette thumbnails: the identity the prepared scene
+    /// uses, served by the same provider, so nothing is loaded or copied
+    /// again. `None` for an unmapped prototype or a different catalog.
+    pub fn prototype_texture(&self, catalog: &PreviewCatalog, proto: &str) -> Option<TextureRef> {
+        if self.catalog_revision != catalog.revision() {
+            return None;
+        }
+        let (name, _) = catalog.prototypes.get(proto)?;
+        self.textures.get(name).copied()
+    }
+}
+
 pub(crate) struct MemoryResources(pub(crate) BTreeMap<u64, (TextureRef, Vec<u8>)>);
 impl ResourceProvider for MemoryResources {
     fn load(
