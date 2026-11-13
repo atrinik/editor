@@ -26,6 +26,10 @@ strip "${stage}/tilewright-editor-${version}/bin/tilewright-editor"
 cp LICENSE PROVENANCE.md THIRD_PARTY_NOTICES.md \
   "${stage}/tilewright-editor-${version}/"
 python3 tools/check-prototype-assets.py
+# Every sample file must be on the package allowlist. The staged sample is
+# opened as a World below, which does not read the preview catalog or its
+# art; this test covers those too.
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_package_assets.py' >/dev/null
 python3 tools/package-assets.py --root . --stage "${stage}/tilewright-editor-${version}"
 python3 tools/package-font-notice.py --root . --stage "${stage}/tilewright-editor-${version}" >/dev/null
 python3 tools/prepare-font-pack.py stage --root . --font-pack "${font_pack}" \

@@ -79,11 +79,6 @@ jobs:
         run: |
           cargo fetch --locked
           python3 tools/prepare-font-pack.py prepare --acquire --output "${RUNNER_TEMP}/unicode-font-pack"
-      # The staged sample is opened as a World below, which does not read the
-      # preview catalog or its art: the allowlist test checks that every
-      # sample file, those included, is packaged.
-      - name: Check the sample package allowlist
-        run: python3 -m unittest discover -s tools -p 'test_package_assets.py'
       - name: Build immutable package
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
