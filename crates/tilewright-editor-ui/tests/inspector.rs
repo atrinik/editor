@@ -407,3 +407,80 @@ fn stored_line_and_paragraph_separators_open_and_review_unchanged() {
     };
     assert_eq!(value, serde_json::json!("A\u{2028}B\u{2029}C!"));
 }
+
+#[test]
+fn deleting_a_stored_break_marker_reviews_the_value_minus_exactly_that_character() {
+    use tilewright_editor_ui::text_input::{TextCursor, TextSelection, stored_break_hint};
+    let stored = "Trail\nmar\u{2028}ker\r\nend";
+    let (dir, _, _) = fixture();
+    let chunk_path = dir.path().join("planes/main/layers/0/0_0.jsonc");
+    let mut chunk: serde_json::Value =
+        serde_json::from_slice(&fs::read(&chunk_path).unwrap()).unwrap();
+    chunk["objects"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|object| object["uid"] == "marker_1")
+        .unwrap()["fields"]["label"] = serde_json::json!(stored);
+    fs::write(chunk_path, serde_json::to_vec(&chunk).unwrap()).unwrap();
+    let document = WorldDocument::open(dir.path()).unwrap();
+    let (catalog, _) = loader::load(
+        document.source(),
+        document.world(),
+        PreviewLimits::default(),
+    )
+    .unwrap();
+    let key = key();
+    let view = inspect(
+        document.world(),
+        &catalog,
+        Some(&key),
+        4,
+        document.revision(),
+    );
+    let row = view.rows.iter().find(|row| row.name == "label").unwrap();
+    assert!(
+        row.editable,
+        "World accepts the stored value for this schema"
+    );
+    assert_eq!(
+        stored_break_hint(stored).as_deref(),
+        Some("Contains 3 line breaks")
+    );
+    for (caret, remove, expected) in [
+        // Backspace after the line feed; Delete before the separator; the
+        // CR LF pair is one grapheme, so one marker and one deletion.
+        (6, false, "Trailmar\u{2028}ker\r\nend"),
+        (9, true, "Trail\nmarker\r\nend"),
+        (17, false, "Trail\nmar\u{2028}kerend"),
+    ] {
+        let mut tools = ToolState::default();
+        tools.begin_field(&view, "label", false).unwrap();
+        assert_eq!(tools.draft_text(), Some(stored));
+        let revision = tools.input_revision().unwrap();
+        tools
+            .set_selection(TextSelection::caret(TextCursor::new(caret)), revision)
+            .unwrap();
+        if remove {
+            tools.delete().unwrap();
+        } else {
+            tools.backspace();
+        }
+        let Action::SetField { value, .. } = tools.build_action(&view, false).unwrap() else {
+            panic!("expected field")
+        };
+        assert_eq!(value.as_str().unwrap().as_bytes(), expected.as_bytes());
+    }
+    // Unchanged, or with other edits, the stored breaks reach review intact.
+    let mut tools = ToolState::default();
+    tools.begin_field(&view, "label", false).unwrap();
+    let Action::SetField { value, .. } = tools.build_action(&view, false).unwrap() else {
+        panic!("expected field")
+    };
+    assert_eq!(value, serde_json::json!(stored));
+    tools.input("!").unwrap();
+    let Action::SetField { value, .. } = tools.build_action(&view, false).unwrap() else {
+        panic!("expected field")
+    };
+    assert_eq!(value, serde_json::json!(format!("{stored}!")));
+}
