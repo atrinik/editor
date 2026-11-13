@@ -730,18 +730,18 @@ fn prototype_grants_stop_at_the_view_plane_and_its_upper_bounds() {
     put(dir.path(), "preview.jsonc", &catalog.to_string());
     let (catalog, _) = loader::load(&root, &world, PreviewLimits::default()).unwrap();
 
-    for uid in ["marker_1", "last_x", "last_y"] {
-        assert!(catalog.in_active_view(&world, uid), "{uid}");
-        assert!(catalog.can_delete(&world, uid), "{uid}");
-        assert!(catalog.can_edit_field(&world, uid, "label"), "{uid}");
+    for object in ["marker_1", "last_x", "last_y"] {
+        assert!(catalog.in_active_view(&world, object), "{object}");
+        assert!(catalog.can_delete(&world, object), "{object}");
+        assert!(catalog.can_edit_field(&world, object, "label"), "{object}");
     }
     // Another plane at in-bounds x/y, and one tile past the upper x and y
     // bounds: no delete, no field edit, no move.
-    for uid in ["elsewhere", "past_x", "past_y"] {
-        assert!(!catalog.in_active_view(&world, uid), "{uid}");
-        assert!(!catalog.can_delete(&world, uid), "{uid}");
-        assert!(!catalog.can_edit_field(&world, uid, "label"), "{uid}");
-        assert!(!catalog.can_move(&world, uid), "{uid}");
+    for object in ["elsewhere", "past_x", "past_y"] {
+        assert!(!catalog.in_active_view(&world, object), "{object}");
+        assert!(!catalog.can_delete(&world, object), "{object}");
+        assert!(!catalog.can_edit_field(&world, object, "label"), "{object}");
+        assert!(!catalog.can_move(&world, object), "{object}");
     }
     // Placement targets use the same scope.
     assert!(catalog.tile_in_active_view("main", 0, 2, 2));
