@@ -414,7 +414,7 @@
     ],
     "zones": {
       "paint": true,
-      "manage": false
+      "manage": true
     }
   }
 }
