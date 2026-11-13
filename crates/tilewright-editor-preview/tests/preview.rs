@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{fmt::Write, fs, path::Path};
 use tilewright_editor_preview::{
-    ObjectGrant, PreviewLimits, SelectionKey, loader, prepare, render_scene,
+    ObjectGrant, PreviewLimits, SelectionKey, ZoneGrant, loader, prepare, render_scene,
 };
 use tilewright_render_api::{BackendPreference, TargetDescriptor, TargetKind};
 use tilewright_render_resources::ResourceRequest;
@@ -590,6 +590,68 @@ fn optional_object_grants_parse_strictly_and_their_absence_changes_nothing() {
     c["editing"]["placement"] = json!([]);
     put(dir.path(), "preview.jsonc", &c.to_string());
     assert!(loader::load(&root, &world, limits).is_err());
+}
+
+#[test]
+fn the_optional_zone_grant_is_two_strict_flags_and_its_absence_changes_nothing() {
+    let (dir, root, world, original) = fixture(false, false);
+    let limits = PreviewLimits::default();
+    let (absent, _) = loader::load(&root, &world, limits).unwrap();
+    assert_eq!(absent.editing().zones, ZoneGrant::default());
+    assert!(!absent.editing().zones.paint && !absent.editing().zones.manage);
+
+    for (flags, expected) in [
+        (
+            json!({"paint": true, "manage": false}),
+            ZoneGrant {
+                paint: true,
+                manage: false,
+            },
+        ),
+        (
+            json!({"paint": false, "manage": true}),
+            ZoneGrant {
+                paint: false,
+                manage: true,
+            },
+        ),
+    ] {
+        let mut granted = original.clone();
+        granted["editing"]["zones"] = flags;
+        put(dir.path(), "preview.jsonc", &granted.to_string());
+        let (catalog, _) = loader::load(&root, &world, limits).unwrap();
+        assert_eq!(catalog.editing().zones, expected);
+        // Every other capability is exactly what the catalog without the
+        // member grants.
+        assert_eq!(catalog.editing().terrain, absent.editing().terrain);
+        assert_eq!(
+            catalog.editing().movable_uids,
+            absent.editing().movable_uids
+        );
+        assert_eq!(catalog.editing().objects, absent.editing().objects);
+    }
+
+    // A capability flag, never a list of zone ids; closed and strict.
+    for (case, zones) in [
+        json!(true),
+        json!([]),
+        json!(["meadow"]),
+        json!({}),
+        json!({"paint": true}),
+        json!({"manage": true}),
+        json!({"paint": "yes", "manage": false}),
+        json!({"paint": 1, "manage": false}),
+        json!({"paint": true, "manage": null}),
+        json!({"paint": true, "manage": false, "zones": ["meadow"]}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut c = original.clone();
+        c["editing"]["zones"] = zones;
+        put(dir.path(), "preview.jsonc", &c.to_string());
+        assert!(loader::load(&root, &world, limits).is_err(), "case {case}");
+    }
 }
 
 /// Give the preview fixture's profile an object field schema: an optional

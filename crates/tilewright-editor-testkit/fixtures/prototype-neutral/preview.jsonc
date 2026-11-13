@@ -411,6 +411,10 @@
           "label"
         ]
       }
-    ]
+    ],
+    "zones": {
+      "paint": true,
+      "manage": false
+    }
   }
 }

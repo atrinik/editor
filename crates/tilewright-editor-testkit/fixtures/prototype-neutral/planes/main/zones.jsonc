@@ -1,0 +1,17 @@
+{
+  "format": "tilewright.zones/1",
+  "zones": [
+    {
+      "id": "meadow",
+      "name": "Quiet meadow"
+    },
+    {
+      "id": "meadow.pond",
+      "parent": "meadow"
+    },
+    {
+      "id": "path",
+      "name": "Stone path"
+    }
+  ]
+}

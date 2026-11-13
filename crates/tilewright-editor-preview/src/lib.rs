@@ -40,7 +40,7 @@ pub fn render_scene<R: Renderer>(
 mod catalog;
 pub mod loader;
 mod prepare;
-pub use catalog::{EditingCapabilities, ObjectGrant, PreviewCatalog};
+pub use catalog::{EditingCapabilities, ObjectGrant, PreviewCatalog, ZoneGrant};
 pub use loader::ReadyResources;
 pub use prepare::prepare;
 use sha2::{Digest, Sha256};

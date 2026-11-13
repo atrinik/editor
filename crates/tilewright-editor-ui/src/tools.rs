@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Local input only; every edit leaves this module as a Session action.
-use crate::brush::{Brush, Stroke};
+use crate::brush::{Brush, Stroke, StrokeTarget};
 use crate::text_input::{TextInput, TextInputSnapshot, TextRevision, TextSelection};
 use crate::{
     Action, SelectionKey,
@@ -13,7 +13,7 @@ use crate::{
 use serde_json::Value;
 use std::fmt;
 use tilewright_editor_preview::PreviewCatalog;
-use tilewright_source::FieldType;
+use tilewright_source::{FieldType, World};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ToolMode {
@@ -23,6 +23,41 @@ pub enum ToolMode {
     Terrain,
     /// Click a tile to place the chosen prototype there.
     Place,
+    /// Show every tile's zone; drag to paint the chosen zone when the
+    /// catalog grants `editing.zones.paint`.
+    Zone,
+}
+
+/// What the zone brush paints.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ZoneChoice {
+    /// A zone of the active view's plane.
+    Zone(String),
+    /// Empty the cells, so they show the plane's default zone again.
+    Default,
+}
+impl ZoneChoice {
+    /// The `zone` cell value this choice writes; `None` empties the cell.
+    pub fn value(&self) -> Option<&str> {
+        match self {
+            Self::Zone(zone) => Some(zone),
+            Self::Default => None,
+        }
+    }
+}
+
+/// The zones of the active view's plane, sorted by id: the zone palette.
+/// It lists the plane's definitions whether or not painting is granted.
+pub fn zone_palette<'w>(world: &'w World, catalog: &PreviewCatalog) -> Vec<&'w str> {
+    let (plane, _, _) = catalog.view();
+    world.planes().get(plane).map_or_else(Vec::new, |plane| {
+        plane
+            .zones
+            .keys()
+            .map(String::as_str)
+            .take(MAX_CHOICES)
+            .collect()
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,6 +141,9 @@ pub struct ToolState {
     next_draft: u64,
     brush: Brush,
     stroke: Option<Stroke>,
+    zone: Option<ZoneChoice>,
+    /// Whether the zone overlay shows outside Zone mode.
+    show_zones: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +174,39 @@ impl ToolState {
     /// A running stroke keeps the brush it began with.
     pub fn set_brush(&mut self, brush: Brush) {
         self.brush = brush.resized(0);
+    }
+    pub fn zone_choice(&self) -> Option<&ZoneChoice> {
+        self.zone.as_ref()
+    }
+    /// Choose what the zone brush paints: a zone of the view's plane, or
+    /// the default zone. Painting itself still needs the catalog grant.
+    pub fn choose_zone(
+        &mut self,
+        world: &World,
+        catalog: &PreviewCatalog,
+        choice: ZoneChoice,
+    ) -> Result<(), ToolError> {
+        if let ZoneChoice::Zone(zone) = &choice
+            && !zone_palette(world, catalog).contains(&zone.as_str())
+        {
+            return Err(ToolError("The zone is not defined in this plane"));
+        }
+        self.zone = Some(choice);
+        Ok(())
+    }
+    /// Whether the zone overlay is drawn: always in Zone mode, and in the
+    /// other modes only after [`Self::toggle_zones`] turned it on.
+    pub fn zones_visible(&self) -> bool {
+        self.mode == ToolMode::Zone || self.show_zones
+    }
+    /// Show or hide the zone overlay outside Zone mode. In Zone mode it is
+    /// always shown, so nothing changes there.
+    pub fn toggle_zones(&mut self) -> Result<bool, ToolError> {
+        if self.mode == ToolMode::Zone {
+            return Err(ToolError("Zones always show in Zone mode"));
+        }
+        self.show_zones = !self.show_zones;
+        Ok(self.show_zones)
     }
     pub fn terrain_choice(&self) -> Option<&TerrainChoice> {
         self.terrain.as_ref()
@@ -564,15 +635,19 @@ impl ToolState {
     pub fn stroke(&self) -> Option<&Stroke> {
         self.stroke.as_ref()
     }
-    /// Begin a drag stroke at the inspected `cell` with the chosen terrain and
-    /// brush. It uses the same capability, palette and freshness checks as a
-    /// single-cell paint and stamps the press cell immediately.
+    /// Begin a drag stroke at the inspected `cell` with the brush and the
+    /// chosen terrain (Terrain mode) or zone (Zone mode). Terrain uses the
+    /// same capability, palette and freshness checks as a single-cell paint;
+    /// both stamp the press cell immediately.
     pub fn begin_stroke(
         &mut self,
         inspector: &Inspector<'_>,
         cell: &SelectionKey,
         pending: bool,
     ) -> Result<(), ToolError> {
+        if self.mode == ToolMode::Zone {
+            return self.begin_zone_stroke(inspector, cell, pending);
+        }
         let Action::Paint {
             plane,
             layer,
@@ -593,9 +668,70 @@ impl ToolState {
         let (_, _, bounds) = inspector.catalog.view();
         self.retire_draft();
         let mut stroke = Stroke::begin(
-            plane, layer, grid, proto, self.brush, expected, generation, bounds,
+            plane,
+            layer,
+            grid,
+            StrokeTarget::Terrain(proto),
+            self.brush,
+            expected,
+            generation,
+            bounds,
         );
         stroke.stamp([x, y]);
+        self.stroke = Some(stroke);
+        Ok(())
+    }
+    /// A zone stroke samples the ground cell mask like a terrain stroke; its
+    /// release writes the `zone` grid instead.
+    fn begin_zone_stroke(
+        &mut self,
+        inspector: &Inspector<'_>,
+        cell: &SelectionKey,
+        pending: bool,
+    ) -> Result<(), ToolError> {
+        available(pending)?;
+        if !inspector.catalog.editing().zones.paint {
+            return Err(ToolError(
+                "The catalog does not allow painting zones (editing.zones.paint)",
+            ));
+        }
+        let stamp = inspector
+            .stamp
+            .as_ref()
+            .filter(|s| &s.key == cell)
+            .ok_or(ToolError("Paint requires the current inspected cell"))?;
+        let choice = self
+            .zone
+            .as_ref()
+            .ok_or(ToolError("Choose a zone in the zone palette"))?;
+        if let ZoneChoice::Zone(zone) = choice
+            && !zone_palette(inspector.world, inspector.catalog).contains(&zone.as_str())
+        {
+            return Err(ToolError("The chosen zone is no longer defined"));
+        }
+        let SelectionKey::Cell {
+            plane,
+            layer,
+            grid,
+            x,
+            y,
+        } = cell
+        else {
+            return Err(ToolError("Paint requires a cell"));
+        };
+        let (_, _, bounds) = inspector.catalog.view();
+        let mut stroke = Stroke::begin(
+            plane.clone(),
+            *layer,
+            grid.clone(),
+            StrokeTarget::Zone(choice.value().map(str::to_owned)),
+            self.brush,
+            stamp.revision,
+            stamp.generation,
+            bounds,
+        );
+        self.retire_draft();
+        stroke.stamp([*x, *y]);
         self.stroke = Some(stroke);
         Ok(())
     }

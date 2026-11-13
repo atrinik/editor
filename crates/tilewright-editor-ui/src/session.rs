@@ -49,6 +49,16 @@ pub enum Action {
         proto: String,
         expected: [u8; 32],
     },
+    /// One zone brush gesture: every covered cell of the active view gets
+    /// `zone`, or is emptied (`None`, the plane's default zone), in one
+    /// reviewed `terrain.set` on the grid `zone`. Needs `editing.zones.paint`.
+    PaintZones {
+        plane: String,
+        layer: i32,
+        cells: Vec<[i64; 2]>,
+        zone: Option<String>,
+        expected: [u8; 32],
+    },
     /// Delete one placed object in the active view, with its inventory, as
     /// one reviewed `object.remove`.
     Remove {
@@ -418,12 +428,7 @@ impl Session {
         cells: &[[i64; 2]],
         proto: &str,
     ) -> Result<Vec<TerrainChange<'w>>, SessionError> {
-        if cells.is_empty() || cells.len() > crate::brush::MAXIMUM_STROKE_CELLS {
-            return Err(refuse("brush stroke cell count refused"));
-        }
-        if !cells.windows(2).all(|pair| pair[0] < pair[1]) {
-            return Err(refuse("brush stroke cells must be distinct and ordered"));
-        }
+        stroke_cells(cells)?;
         let changes = self.terrain_changes(plane, layer, grid, cells, proto, true)?;
         if changes.is_empty() {
             return Err(refuse(
@@ -454,17 +459,64 @@ impl Session {
             return Err(refuse("stale source revision"));
         }
         let cells: Vec<[i64; 2]> = stroke.cells().collect();
-        Ok(self
-            .stroke_plan(
-                stroke.plane(),
-                stroke.layer(),
-                stroke.grid(),
-                &cells,
-                stroke.prototype(),
-            )?
-            .into_iter()
-            .map(|(at, _)| at)
-            .collect())
+        let changes = match stroke.target() {
+            crate::brush::StrokeTarget::Terrain(proto) => {
+                self.stroke_plan(stroke.plane(), stroke.layer(), stroke.grid(), &cells, proto)?
+            }
+            crate::brush::StrokeTarget::Zone(zone) => {
+                self.zone_plan(stroke.plane(), stroke.layer(), &cells, zone.as_deref())?
+            }
+        };
+        Ok(changes.into_iter().map(|(at, _)| at).collect())
+    }
+    /// The cells of one zone stroke whose `zone` cell `zone` changes, each
+    /// with its committed cell value (`None` for an empty cell), in stroke
+    /// order. Dispatch of [`Action::PaintZones`] and
+    /// [`Session::stroke_changes`] both use this. Cells are compared by their
+    /// own value, not the zone they display: painting the default zone into
+    /// an empty cell writes it explicitly, and so is a change.
+    fn zone_plan<'w>(
+        &'w self,
+        plane: &str,
+        layer: i32,
+        cells: &[[i64; 2]],
+        zone: Option<&str>,
+    ) -> Result<Vec<TerrainChange<'w>>, SessionError> {
+        stroke_cells(cells)?;
+        if !self.catalog.editing().zones.paint {
+            return Err(refuse(
+                "zone painting refused: the catalog does not grant editing.zones.paint",
+            ));
+        }
+        let (p, l, _) = self.catalog.view();
+        if plane != p || layer != l || !cells.iter().all(|&[x, y]| self.in_bounds(x, y)) {
+            return Err(refuse("zone painting is limited to the active view"));
+        }
+        let world = self.history.document().world();
+        let plane = world
+            .planes()
+            .get(plane)
+            .ok_or_else(|| refuse("unknown plane"))?;
+        if let Some(zone) = zone
+            && !plane.zones.contains_key(zone)
+        {
+            return Err(refuse(
+                "unknown zone: it is not in this plane's zones.jsonc",
+            ));
+        }
+        let changes: Vec<TerrainChange<'w>> = cells
+            .iter()
+            .filter_map(|&[x, y]| {
+                let before = crate::zones::cell_zone(plane, layer, x, y);
+                (before != zone).then_some(([x, y], before))
+            })
+            .collect();
+        if changes.is_empty() {
+            return Err(refuse(
+                "zone stroke changes no cell: every covered cell already has this zone",
+            ));
+        }
+        Ok(changes)
     }
     fn terrain_changes<'w>(
         &'w self,
@@ -552,6 +604,7 @@ impl Session {
         self.warnings = self.history.pending().map_or_else(Vec::new, |pending| {
             let committed = self.history.document().world();
             let mut lines = crate::insertion::notes(committed, pending.sealed());
+            lines.extend(crate::zones::notes(committed, pending.sealed()));
             lines.extend(crate::removal::warnings(committed, pending.sealed()));
             lines
         });
@@ -596,6 +649,7 @@ impl Session {
                     | Action::SetField { .. }
                     | Action::Paint { .. }
                     | Action::PaintStroke { .. }
+                    | Action::PaintZones { .. }
                     | Action::Remove { .. }
                     | Action::Place { .. }
                     | Action::Undo
@@ -743,6 +797,24 @@ impl Session {
                 // One gesture is one operation, so review, recovery, undo and
                 // redo each treat the whole stroke as a single World change.
                 self.prepare(expected,&json!({"op":"terrain.set","plane":plane,"layer":layer,"grid":grid,"cells":cells}))
+            }
+            Action::PaintZones {
+                plane,
+                layer,
+                cells,
+                zone,
+                expected,
+            } => {
+                let cells: Vec<Value> = self
+                    .zone_plan(&plane, layer, &cells, zone.as_deref())?
+                    .into_iter()
+                    .map(|(at, before)| json!({"at":at,"value":zone,"expect":before}))
+                    .collect();
+                // The pick grid is a ground layer; the edited grid is `zone`.
+                self.prepare(
+                    expected,
+                    &json!({"op":"terrain.set","plane":plane,"layer":layer,"grid":"zone","cells":cells}),
+                )
             }
             Action::Remove { uid, expected } => {
                 let world = self.history.document().world();
@@ -950,6 +1022,18 @@ impl Session {
         Ok(())
     }
 }
+/// A stroke's cells: at least one, at most the stroke cap, distinct and in
+/// order.
+fn stroke_cells(cells: &[[i64; 2]]) -> Result<(), SessionError> {
+    if cells.is_empty() || cells.len() > crate::brush::MAXIMUM_STROKE_CELLS {
+        return Err(refuse("brush stroke cell count refused"));
+    }
+    if !cells.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(refuse("brush stroke cells must be distinct and ordered"));
+    }
+    Ok(())
+}
+
 /// `terrain.set` cell entries setting `proto`, each expecting its value.
 fn cell_operations(changes: Vec<TerrainChange<'_>>, proto: &str) -> Vec<Value> {
     changes

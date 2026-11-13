@@ -18,6 +18,7 @@ use tilewright_editor_preview::{
     PickMask, PreparedPreview, PreviewLimits, SelectionKey, ViewSpec, loader,
 };
 use tilewright_editor_recovery::{DurableRecovery, RecoveryLimits};
+use tilewright_editor_ui::brush::StrokeTarget;
 use tilewright_editor_ui::inspector::{self, SelectionSummary};
 use tilewright_editor_ui::tools::{self, ToolMode, ToolState};
 use tilewright_editor_ui::{Action, Session, SessionPhase};
@@ -1312,10 +1313,14 @@ impl Application {
                 .session
                 .stroke_changes(stroke)
                 .map_or(0, |cells| cells.len());
+            let target = match stroke.target() {
+                StrokeTarget::Terrain(proto) => format!("with {proto}"),
+                StrokeTarget::Zone(Some(zone)) => format!("into zone {zone}"),
+                StrokeTarget::Zone(None) => "back to the default zone".into(),
+            };
             return format!(
-                "Painting {} cells with {}, {changes} to change; release to review.{}{}",
+                "Painting {} cells {target}, {changes} to change; release to review.{}{}",
                 stroke.len(),
-                stroke.prototype(),
                 if stroke.capped() {
                     " Brush limit reached."
                 } else {
