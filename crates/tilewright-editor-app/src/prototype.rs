@@ -55,6 +55,10 @@ const ROW_GAP: u32 = 2;
 /// Zone legend and palette rows: compact, so an id, a display name and a
 /// tile count fit on one line in the smaller type.
 const ZONE_ROW_HEIGHT: u32 = 22;
+/// Shown with every zone management row set: ids cannot be changed later.
+const ZONE_IDS_FIXED: &str = "Zone ids are fixed once created";
+/// Most zone properties listed, read-only, in the zone inspector.
+const MAXIMUM_PROPERTY_ROWS: usize = 8;
 const NO_PALETTE_MATCH: &str = "No prototype matches the filter.";
 const FILTER_PLACEHOLDER: &str = "Filter types: click or press /";
 const FILTER_HINT: &str = "Enter keeps the filter / Esc clears it";
@@ -73,6 +77,14 @@ const DEMO_STROKE: [[i64; 2]; 2] = [[1, 2], [5, 2]];
 /// Press and drag cells of the scripted zone stroke: down open meadow onto
 /// the neutral sample's path row.
 const DEMO_ZONE_STROKE: [[i64; 2]; 2] = [[5, 0], [5, 5]];
+/// The scripted zone management: the zone whose display name it edits and
+/// under which it creates a zone, the new name, the new zone's id and name,
+/// and the open meadow tile it paints with the new zone.
+const DEMO_RENAMED_ZONE: &str = "meadow";
+const DEMO_ZONE_NAME: &str = "Open meadow";
+const DEMO_NEW_ZONE: &str = "meadow.grove";
+const DEMO_NEW_ZONE_NAME: &str = "Grove";
+const DEMO_NEW_ZONE_TILE: [i64; 2] = [2, 4];
 
 /// The zones of the in-view tiles for one World revision and frame.
 struct ZoneView {
@@ -978,12 +990,16 @@ impl Application {
         }
     }
 
-    /// The tint of every zone the view's plane defines in the committed
-    /// World: a zone's colour changes only when zone definitions do, never
-    /// because of a stroke, a pending diff or what is in view.
+    /// The tint of every zone the view's plane defines in the shown World
+    /// (the pending one while a change is reviewed): a zone's colour depends
+    /// only on the plane's zone definitions, never on a stroke, the tiles'
+    /// zones or what is in view. A pending change that creates or deletes a
+    /// zone can move other zones' tints, and the legend, the overlay and
+    /// the swatches all follow it, then the committed World again after
+    /// Accept, Cancel or Undo.
     fn zone_tints(&self) -> std::collections::BTreeMap<String, usize> {
-        let committed = self.session.history().document().world();
-        committed
+        self.session
+            .world()
             .planes()
             .get(self.session.catalog().view().0)
             .map(|plane| {
@@ -1005,6 +1021,7 @@ impl Application {
         let world = self.session.world();
         let catalog = self.session.catalog();
         let paint = catalog.editing().zones.paint;
+        let manage = catalog.editing().zones.manage;
         if paint {
             self.brush_rows(rows);
         }
@@ -1057,11 +1074,11 @@ impl Application {
                 },
             ));
             let choice = ZoneChoice::Zone(zone.to_owned());
-            let active = paint && self.tools.zone_choice() == Some(&choice);
+            let active = (paint || manage) && self.tools.zone_choice() == Some(&choice);
             rows.push((
                 format!("{zone}{long}"),
                 Some(Control::ZonePalette(choice)),
-                ready && paint,
+                ready && (paint || manage),
                 active,
             ));
         }
@@ -1090,6 +1107,220 @@ impl Application {
         if !paint {
             rows.push(("Zone painting not granted".into(), None, false, false));
         }
+        if manage {
+            self.zone_manage_rows(rows, fits, ready);
+        }
+    }
+
+    /// With `editing.zones.manage`: the chosen zone's inspector (its fixed
+    /// id, display name, parent, use, properties) with its edits, then the
+    /// rows that start a new zone. Rows naming a zone id are fitted later.
+    fn zone_manage_rows(&self, rows: &mut UiRows, fits: &mut Vec<(usize, IdText)>, ready: bool) {
+        let world = self.session.world();
+        let catalog = self.session.catalog();
+        let plane = world.planes().get(catalog.view().0);
+        let chosen = match self.tools.zone_choice() {
+            Some(ZoneChoice::Zone(zone)) => plane.and_then(|plane| {
+                plane
+                    .zones
+                    .get_key_value(zone)
+                    .map(|(id, definition)| (plane, id.as_str(), definition))
+            }),
+            _ => None,
+        };
+        let id_row = |rows: &mut UiRows,
+                      fits: &mut Vec<(usize, IdText)>,
+                      id: &str,
+                      variants: Vec<(String, String)>,
+                      control: Option<Control>,
+                      enabled: bool,
+                      active: bool| {
+            let (prefix, suffix) = variants[0].clone();
+            fits.push((
+                rows.len(),
+                IdText::Id {
+                    id: id.into(),
+                    variants,
+                },
+            ));
+            rows.push((format!("{prefix}{id}{suffix}"), control, enabled, active));
+        };
+        let Some((plane, id, zone)) = chosen else {
+            rows.push(("Choose a zone above to manage it".into(), None, true, false));
+            rows.push((
+                "New top-level zone".into(),
+                Some(Control::ZoneCreate(None)),
+                ready,
+                false,
+            ));
+            rows.push((ZONE_IDS_FIXED.into(), None, true, false));
+            return;
+        };
+        id_row(
+            rows,
+            fits,
+            id,
+            vec![
+                ("Zone ".into(), " (id is fixed)".into()),
+                ("Zone ".into(), String::new()),
+            ],
+            None,
+            true,
+            false,
+        );
+        let name = match (&zone.name, zones::display_name(plane, id)) {
+            (Some(name), _) => format!("Name: {name}"),
+            (None, Some(inherited)) => format!("Name: none (shows {inherited})"),
+            (None, None) => "Name: none".into(),
+        };
+        rows.push((name, None, true, false));
+        rows.push((
+            "Edit display name".into(),
+            Some(Control::ZoneName),
+            ready,
+            self.tools.zone_draft() == Some(tools::ZoneDraft::Name),
+        ));
+        let open = self.tools.parent_choices_open();
+        match zone.parent.as_deref() {
+            Some(parent) => id_row(
+                rows,
+                fits,
+                parent,
+                vec![
+                    ("Parent: ".into(), " (change)".into()),
+                    ("Parent: ".into(), String::new()),
+                ],
+                Some(Control::ZoneParents),
+                ready,
+                open,
+            ),
+            None => rows.push((
+                "Parent: none (change)".into(),
+                Some(Control::ZoneParents),
+                ready,
+                open,
+            )),
+        }
+        if open {
+            rows.push((
+                "No parent (top level)".into(),
+                Some(Control::ZoneParent(None)),
+                ready && zone.parent.is_some(),
+                zone.parent.is_none(),
+            ));
+            for candidate in zones::parent_choices(plane, id) {
+                let current = zone.parent.as_deref() == Some(candidate);
+                id_row(
+                    rows,
+                    fits,
+                    candidate,
+                    vec![("Under ".into(), String::new())],
+                    Some(Control::ZoneParent(Some(candidate.to_owned()))),
+                    ready && !current,
+                    current,
+                );
+            }
+        }
+        let in_view = self
+            .view_zone_tiles()
+            .iter()
+            .filter(|(_, tile)| tile == id)
+            .count();
+        // What keeps World from deleting the zone, one fact per row, so a
+        // disabled Delete below has its reasons in view.
+        let usage = zones::zone_use(plane, id);
+        let tiles = |count: usize| {
+            if count == 1 {
+                "1 tile".to_owned()
+            } else {
+                format!("{count} tiles")
+            }
+        };
+        rows.push((
+            format!("Shown on {} in view", tiles(in_view)),
+            None,
+            true,
+            false,
+        ));
+        rows.push((
+            match (usage.tiles, usage.chunks, usage.layers) {
+                (0, 0, _) => "Holds no tile in the plane".to_owned(),
+                (0, 1, _) => "Listed by 1 chunk palette, no tile".to_owned(),
+                (0, chunks, _) => format!("Listed by {chunks} chunk palettes, no tile"),
+                (count, _, 1) => format!("Holds {} in the plane", tiles(count)),
+                (count, _, layers) => format!("Holds {} on {layers} layers", tiles(count)),
+            },
+            None,
+            true,
+            false,
+        ));
+        match usage.children.as_slice() {
+            [] => rows.push(("No child zones".into(), None, true, false)),
+            [child] => id_row(
+                rows,
+                fits,
+                child,
+                vec![("Child zone: ".into(), String::new())],
+                None,
+                true,
+                false,
+            ),
+            children => rows.push((format!("{} child zones", children.len()), None, true, false)),
+        }
+        if usage.default {
+            rows.push(("It is the plane's default zone".into(), None, true, false));
+        }
+        let properties = zones::properties(zone);
+        for (name, value) in properties.iter().take(MAXIMUM_PROPERTY_ROWS) {
+            rows.push((
+                format!("Property {name} = {value} (read-only)"),
+                None,
+                true,
+                false,
+            ));
+        }
+        if properties.len() > MAXIMUM_PROPERTY_ROWS {
+            rows.push((
+                format!(
+                    "{} more properties not shown",
+                    properties.len() - MAXIMUM_PROPERTY_ROWS
+                ),
+                None,
+                true,
+                false,
+            ));
+        }
+        if usage.unused() {
+            rows.push((
+                "Delete zone (unused)".into(),
+                Some(Control::ZoneDelete),
+                ready,
+                false,
+            ));
+        } else {
+            rows.push((
+                "Delete: not while in use".into(),
+                Some(Control::ZoneDelete),
+                false,
+                false,
+            ));
+        }
+        id_row(
+            rows,
+            fits,
+            id,
+            vec![("New zone under ".into(), String::new())],
+            Some(Control::ZoneCreate(Some(id.to_owned()))),
+            ready,
+            false,
+        );
+        rows.push((
+            "New top-level zone".into(),
+            Some(Control::ZoneCreate(None)),
+            ready,
+            false,
+        ));
+        rows.push((ZONE_IDS_FIXED.into(), None, true, false));
     }
 
     /// The Place palette: one row per placeable prototype the filter keeps,
@@ -1337,10 +1568,11 @@ impl Application {
                     width,
                     height: 22,
                 },
-                if supported {
-                    "Ctrl+A selects / Enter reviews"
-                } else {
-                    "Unsupported text; cannot review"
+                match (supported, self.tools.zone_draft()) {
+                    (false, _) => "Unsupported text; cannot review",
+                    (true, Some(tools::ZoneDraft::Name)) => "Display name; empty = none / Enter",
+                    (true, Some(tools::ZoneDraft::Create)) => "New id (fixed), space, name / Enter",
+                    (true, None) => "Ctrl+A selects / Enter reviews",
                 },
                 None,
                 supported,
@@ -1695,7 +1927,11 @@ impl Application {
                 );
             }
             SessionPhase::Ready if self.tools.mode() == ToolMode::Zone => {
-                if !self.session.catalog().editing().zones.paint {
+                let editing = self.session.catalog().editing();
+                if !editing.zones.paint && editing.zones.manage {
+                    return "Showing zones. Choose a zone in the sidebar to manage it.".into();
+                }
+                if !editing.zones.paint {
                     return "Showing zones. This catalog does not grant zone painting.".into();
                 }
                 return match self.tools.zone_choice() {
@@ -1815,7 +2051,14 @@ impl Application {
                 Ok(())
             }
             Control::Place => self.enter_place_mode(),
-            Control::ZoneOverlay | Control::ZonePalette(_) => self.zone_control(control),
+            Control::ZoneOverlay
+            | Control::ZonePalette(_)
+            | Control::ZoneName
+            | Control::ZoneParents
+            | Control::ZoneParent(_)
+            | Control::ZoneCreate(_)
+            | Control::ZoneDelete => self.zone_control(control),
+            Control::ApplyDraft if self.tools.zone_draft().is_some() => self.apply_zone_draft(),
             Control::PaletteFilter => self.tools.focus_filter().map_err(|error| error.to_string()),
             // Enter in the focused filter keeps its text and releases focus;
             // the filter is never reviewed.
@@ -1898,17 +2141,79 @@ impl Application {
         }
     }
 
-    /// The zone overlay toggle and the zone palette rows.
+    /// The zone overlay toggle, the zone palette rows and the zone
+    /// management rows. Edits leave as Session actions; the Session checks
+    /// the grant, the revision and every refusal again.
     fn zone_control(&mut self, control: Control) -> Result<()> {
+        let unavailable = self.blocked.is_some() || !self.session.can_prepare();
+        let expected = self.session.history().document().revision();
+        let plane = self.session.catalog().view().0.to_owned();
+        let chosen = match self.tools.zone_choice() {
+            Some(ZoneChoice::Zone(zone)) => Some(zone.clone()),
+            _ => None,
+        };
         match control {
             Control::ZoneOverlay => self.tools.toggle_zones().map(|_| ()),
             Control::ZonePalette(choice) => {
                 self.tools
                     .choose_zone(self.session.world(), self.session.catalog(), choice)
             }
+            Control::ZoneName => self.tools.begin_zone_name(
+                self.session.world(),
+                self.session.catalog(),
+                expected,
+                unavailable,
+            ),
+            Control::ZoneCreate(parent) => self.tools.begin_zone_create(
+                self.session.world(),
+                self.session.catalog(),
+                parent,
+                expected,
+                unavailable,
+            ),
+            Control::ZoneParents => self
+                .tools
+                .toggle_parent_choices(self.session.catalog())
+                .map(|_| ()),
+            Control::ZoneParent(parent) => {
+                let zone = chosen.ok_or("choose a zone in the zone list first")?;
+                return self.action(Action::SetZoneParent {
+                    plane,
+                    zone,
+                    parent,
+                    expected,
+                });
+            }
+            Control::ZoneDelete => {
+                let zone = chosen.ok_or("choose a zone in the zone list first")?;
+                return self.action(Action::DeleteZone {
+                    plane,
+                    zone,
+                    expected,
+                });
+            }
             _ => Ok(()),
         }
         .map_err(|error| error.to_string())
+    }
+
+    /// Review the open zone draft: its glyphs must all be in the font, as
+    /// for field drafts, then it becomes one Session action.
+    fn apply_zone_draft(&mut self) -> Result<()> {
+        let snapshot = self.tools.draft_snapshot().ok_or("no draft")?;
+        let layout = self
+            .text
+            .layout(&snapshot.display_text, 18.0, None)
+            .map_err(|error| error.to_string())?;
+        if !layout.missing_glyphs().is_empty() {
+            return Err("missing font glyphs: review blocked; draft preserved".into());
+        }
+        let unavailable = self.blocked.is_some() || !self.session.can_prepare();
+        let action = self
+            .tools
+            .zone_action(self.session.world(), self.session.catalog(), unavailable)
+            .map_err(|error| error.to_string())?;
+        self.action(action)
     }
 
     fn frame(&self, cells: bool) -> Result<FrameOutput> {
@@ -2145,6 +2450,73 @@ impl Application {
         self.capture("zone-painted")
     }
 
+    /// Zone management: rename a zone's display name, create a child zone
+    /// and paint one tile with it, try to delete it while that tile holds
+    /// it (the refusal is captured), undo the paint and delete it. Every
+    /// edit is reviewed and accepted through the ordinary controls.
+    fn zone_manage_demo(&mut self) -> Result<()> {
+        self.control(Control::Zone)?;
+        self.action(Action::ClearSelection)?;
+        self.control(Control::ZonePalette(ZoneChoice::Zone(
+            DEMO_RENAMED_ZONE.into(),
+        )))?;
+        self.control(Control::ZoneName)?;
+        self.tools.select_all().map_err(|error| error.to_string())?;
+        self.tools
+            .input(DEMO_ZONE_NAME)
+            .map_err(|error| error.to_string())?;
+        self.control(Control::ApplyDraft)?;
+        self.capture("zone-rename")?;
+        self.action(Action::Accept)?;
+        self.control(Control::ZoneCreate(Some(DEMO_RENAMED_ZONE.into())))?;
+        self.tools
+            .input(&format!("{DEMO_NEW_ZONE} {DEMO_NEW_ZONE_NAME}"))
+            .map_err(|error| error.to_string())?;
+        self.control(Control::ApplyDraft)?;
+        self.capture("zone-create")?;
+        self.action(Action::Accept)?;
+        // The new zone is in the palette: paint one tile with it.
+        self.control(Control::ZonePalette(ZoneChoice::Zone(DEMO_NEW_ZONE.into())))?;
+        let frame = self.frame(true)?;
+        let [x, y] = DEMO_NEW_ZONE_TILE;
+        let at = self
+            .prepared
+            .cell_picks
+            .iter()
+            .find_map(|(id, key)| match key {
+                SelectionKey::Cell { x: cx, y: cy, .. } if (*cx, *cy) == (x, y) => {
+                    pixel_for(&frame, *id)
+                }
+                _ => None,
+            })
+            .ok_or("demonstration zone tile is not in the cell mask")?;
+        let brush = self.tools.brush();
+        self.tools
+            .set_brush(tilewright_editor_ui::brush::Brush::default());
+        let result = self
+            .begin_stroke(at.0, at.1)
+            .and_then(|()| self.finish_stroke());
+        self.tools.set_brush(brush);
+        result?;
+        self.action(Action::Accept)?;
+        self.capture("zone-created")?;
+        // A tile holds it now: deletion is refused with the reason, as a
+        // native press on the row would show it.
+        let refusal = match self.control(Control::ZoneDelete) {
+            Err(refusal) => refusal,
+            Ok(()) => return Err("deleting a used zone was not refused".into()),
+        };
+        self.notice = Some(refusal);
+        self.capture("zone-delete-refused")?;
+        self.notice = None;
+        self.action(Action::Undo)?;
+        self.action(Action::Accept)?;
+        self.control(Control::ZoneDelete)?;
+        self.capture("zone-delete")?;
+        self.action(Action::Accept)?;
+        self.capture("zone-deleted")
+    }
+
     fn demo_step(&mut self, step: usize) -> Result<bool> {
         match step {
             0 => {
@@ -2216,14 +2588,19 @@ impl Application {
                 self.capture("search-placed")?;
             }
             10 if self.session.catalog().editing().zones.paint => self.zone_demo()?,
-            11 => return Ok(true),
+            11 if self.session.catalog().editing().zones.manage
+                && self.session.catalog().editing().zones.paint =>
+            {
+                self.zone_manage_demo()?;
+            }
+            12 => return Ok(true),
             _ => {}
         }
         Ok(false)
     }
 
     fn demo_all(&mut self) -> Result<()> {
-        for step in 0..12 {
+        for step in 0..13 {
             if self.demo_step(step)? {
                 break;
             }
@@ -2604,12 +2981,23 @@ fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
         || (step == 6 && editing.terrain.is_empty())
         || ((7..=9).contains(&step) && editing.objects.is_empty())
         || (step == 10 && !editing.zones.paint)
+        || (step == 11 && !(editing.zones.paint && editing.zones.manage))
     {
         None
     } else {
         [
-            "before", "pending", "after", "undo", "redo", "field", "terrain", "delete", "place",
-            "palette", "zones",
+            "before",
+            "pending",
+            "after",
+            "undo",
+            "redo",
+            "field",
+            "terrain",
+            "delete",
+            "place",
+            "palette",
+            "zones",
+            "zone-manage",
         ]
         .get(step)
         .copied()

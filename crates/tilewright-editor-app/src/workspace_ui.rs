@@ -29,6 +29,16 @@ pub enum Control {
     ZoneOverlay,
     /// A row of the zone palette: paint this zone, or the default zone.
     ZonePalette(tilewright_editor_ui::tools::ZoneChoice),
+    /// Edit the chosen zone's display name in the text draft.
+    ZoneName,
+    /// List or hide the chosen zone's parent choices.
+    ZoneParents,
+    /// Make this zone the chosen zone's parent; `None` makes it top level.
+    ZoneParent(Option<String>),
+    /// Type a new zone under this parent (`None`: at the top level).
+    ZoneCreate(Option<String>),
+    /// Delete the chosen zone, when it is unused.
+    ZoneDelete,
     Clear,
     Delete,
     Undo,
