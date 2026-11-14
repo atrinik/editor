@@ -33,7 +33,12 @@ if grep -RnE --include='*.rs' --exclude-dir=tests --exclude=tests.rs \
 fi
 
 # The read-only reports never reach an editing session, history, recovery
-# or provisioning: not even through the ui crate that exports them.
+# or provisioning: not even through the ui crate that exports them. A
+# missing source directory fails rather than passing an empty search.
+test -d crates/tilewright-editor-observe/src || {
+  echo "missing crates/tilewright-editor-observe/src" >&2
+  exit 1
+}
 if grep -RnE --include='*.rs' \
   '\b(Session|History|DurableRecovery|RecoveryStore)\b|tilewright_edit::|tilewright_editor_(commands|recovery)|provision' \
   crates/tilewright-editor-observe/src | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' >/dev/null; then

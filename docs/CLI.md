@@ -36,7 +36,9 @@ a world, never change one (a test compares the two Worlds). If it fails and
 the default load succeeds, the budget alone refused the world: lint reports
 `world.over_editor_budget` and its other findings come from the default
 load. If both fail, the default load's diagnostics are the load failure, as
-for every other command. Each command then opens the editor catalog,
+for every other command. The two loads are not atomic: a tree changed
+between them can give a budget finding for a different tree than the
+revision the report names. Each command then opens the editor catalog,
 `preview.jsonc`, with the preview loader.
 Nothing else is opened: no session, recovery store, provisioned copy,
 transaction or publication. The crate that builds the reports,
@@ -139,13 +141,19 @@ checked: the profile cannot yet say what blocks movement.
 Severities are defined by the desktop editor's entry points:
 
 - `open ROOT` and these read-only commands need only World to load the
-  world; they do not read the catalog.
+  world; they do not need the catalog.
 - `window` opens no world.
 - The editing entry point, `prototype`, which the provisioning helper
   starts on a private copy, opens the world with the prototype load budget
   (`tilewright_editor_document::prototype_load_options`: at most 256 files,
   1,024 directory entries and 8 MiB read, 1 MiB per document), then requires
   `preview.jsonc` to load and the catalog's view to be prepared.
+- Before that, the provisioning helper (`tools/provision-prototype.py`)
+  copies the whole tree with limits of its own: at most 4,096 directory
+  entries and 4,096 regular files, 64 MiB in total and a directory depth of
+  32, and it refuses links and special files. Lint does not check these:
+  these commands read only through the World loader, which sees World's
+  files and none of the helper's tree walk.
 
 An **error** means the editing entry point cannot open or show the world as
 it is; `lint` then exits 1. A **warning** is probably a mistake, but the
@@ -181,7 +189,7 @@ followed by `name_clipped: true`. The numbers live in
 |---|---|
 | Characters of one free-text value | 256 |
 | Bytes of one printed report | 1,048,576 (1 MiB) |
-| `overview`: planes | 32 |
+| `overview`: planes | 64 |
 | `overview`: spatial layers per plane | 16 |
 | `overview`: render layers, terrains, view zones, entries of each grant list | 64 each |
 | Field names, default names and granted fields per object or prototype; fields per object | 8 |
@@ -194,11 +202,12 @@ followed by `name_clipped: true`. The numbers live in
 | Load failure: diagnostics listed (`problems` counts all, at most 256) | 128 |
 
 Beyond loading the world, each command does work proportional to the world's
-size at most. The bounds are chosen so that every report fits the output
+size at most. The bounds are computed so that every report fits the output
 budget at its worst: every list full, every id at World's longest and every
 free-text value made of characters that print as 12-byte escapes. Tests
-build exactly that; the largest JSON reports are a load failure (about
-827 KB) and `tile` (about 437 KB). A report past the budget would be refused
+build a near-worst case and check it fits; the largest JSON reports there
+are a load failure (about 827 KB), `overview` (about 448 KB) and `tile`
+(about 437 KB). A report past the budget would be refused
 (`output.budget`) rather than cut. There is no paging yet: `--match` narrows
 `catalog`, and `tile` takes one tile at a time.
 

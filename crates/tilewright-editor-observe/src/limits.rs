@@ -6,14 +6,15 @@
 //! with how many items it left out; free text cut at its bound is followed
 //! by `<name>_clipped: true`.
 //!
-//! The list bounds are chosen so that every report fits the output budget
+//! The list bounds are computed so that every report fits the output budget
 //! even at its worst: every list full, every identifier at World's longest
 //! (128 characters, field names 64), and every free-text value 256
 //! characters that each print as a 12-byte JSON surrogate-pair escape.
-//! Tests build exactly that (`reports_at_every_bound_...` in
-//! `tests/worlds.rs`, `the_largest_load_failure_fits_the_budget`); their
-//! JSON is about 437 KB for `tile`, 387 KB for `catalog`, 279 KB for
-//! `overview`, 117 KB for `lint` and 827 KB for a load failure, against a
+//! Tests build a near-worst case and check that it fits
+//! (`reports_at_every_bound_...` in `tests/worlds.rs`,
+//! `the_largest_load_failure_fits_the_budget`); their JSON is about 448 KB
+//! for `overview`, 437 KB for `tile`, 387 KB for `catalog`, 117 KB for
+//! `lint` and 827 KB for a load failure, against a
 //! budget of 1,048,576 bytes. The text form is smaller.
 
 /// Most characters of one free-text value: a title, a name, a version, a
@@ -28,7 +29,7 @@ pub const MAXIMUM_OUTPUT_BYTES: usize = 1 << 20;
 
 /// `overview`: planes, spatial layers of a plane, render layers and
 /// terrains of the profile.
-pub const MAXIMUM_PLANES: usize = 32;
+pub const MAXIMUM_PLANES: usize = 64;
 pub const MAXIMUM_LAYERS: usize = 16;
 pub const MAXIMUM_RENDER_LAYERS: usize = 64;
 pub const MAXIMUM_TERRAINS: usize = 64;
