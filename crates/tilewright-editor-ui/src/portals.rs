@@ -8,7 +8,7 @@
 //! exist; it does not check that a location target has a map chunk or
 //! ground, so the review warns about those. Nothing here edits anything or
 //! validates World data beyond what a warning needs.
-use crate::anchors::{PortalHolder, Target, portals, short};
+use crate::anchors::{PortalHolder, Target, portals, short, target_tile};
 use std::collections::BTreeMap;
 use tilewright_editor_preview::PreviewCatalog;
 use tilewright_source::World;
@@ -58,16 +58,83 @@ pub fn describe(world: &World, target: &Target<'_>) -> String {
     }
 }
 
-/// The plane, layer and tile `target` leads to, when it can be resolved.
-fn tile<'w>(world: &'w World, target: &Target<'w>) -> Option<(&'w str, i32, [i64; 2])> {
-    match *target {
-        Target::Location { plane, layer, at } => Some((plane, layer, at)),
-        Target::Anchor { plane, anchor } => world
-            .planes()
-            .get(plane)
-            .and_then(|source| source.anchors.get(anchor))
-            .map(|found| (plane, found.layer, found.at)),
+/// What is wrong, or worth saying, about where a portal leads in the
+/// loaded World. World checks that a target plane and a target anchor
+/// exist; it does not check that a location target has a map chunk or
+/// ground, so these are the editor's own checks. A portal is one-ended, so a
+/// target without a way back is never reported.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TargetCheck<'w> {
+    /// The portal leads to the tile its own object stands on.
+    pub own_tile: bool,
+    /// For a location target on a plane the World has: what it lacks.
+    pub location: Option<LocationCheck<'w>>,
+}
+
+/// The checks of a location target on a plane the World has.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LocationCheck<'w> {
+    /// The map chunk holding the target tile does not exist.
+    pub missing_chunk: bool,
+    /// The chunk exists but has no ground on this grid at the target tile.
+    pub missing_ground: Option<&'w str>,
+    /// The target is not on `view`'s plane and spatial layer.
+    pub outside_view: bool,
+}
+
+/// Checks where `holder`'s portal leads in `world`: whether it is the
+/// object's own tile and, for a location target, whether its chunk exists
+/// and has ground on `grid` (the pick grid, see [`pick_grid`]). `view` is
+/// the plane and spatial layer the caller shows, if any; a target elsewhere
+/// is checked the same way.
+pub fn check_target<'w>(
+    world: &'w World,
+    grid: Option<&'w str>,
+    view: Option<(&str, i32)>,
+    holder: &PortalHolder<'_>,
+) -> TargetCheck<'w> {
+    let mut check = TargetCheck::default();
+    let Some((plane, layer, at)) = target_tile(world, &holder.target) else {
+        return check;
+    };
+    check.own_tile = plane == holder.plane && layer == holder.layer && holder.tile == Some(at);
+    let Target::Location { .. } = holder.target else {
+        return check;
+    };
+    let Some(source) = world.planes().get(plane) else {
+        return check;
+    };
+    let mut location = LocationCheck {
+        outside_view: view
+            .is_some_and(|(view_plane, view_layer)| plane != view_plane || layer != view_layer),
+        ..LocationCheck::default()
+    };
+    let size = i64::from(source.chunk_size);
+    let chunk = (size > 0)
+        .then(|| {
+            source
+                .chunks
+                .get(&(layer, at[0].div_euclid(size), at[1].div_euclid(size)))
+        })
+        .flatten();
+    match chunk {
+        None => location.missing_chunk = true,
+        Some(chunk) => {
+            if let Some(grid) = grid {
+                let index = world.profile().ground_layers.iter().position(|g| g == grid);
+                let local =
+                    usize::try_from(at[1].rem_euclid(size) * size + at[0].rem_euclid(size)).ok();
+                let ground = index
+                    .zip(local)
+                    .and_then(|(index, local)| chunk.ground.get(index)?.value(local));
+                if ground.is_none() {
+                    location.missing_ground = Some(grid);
+                }
+            }
+        }
     }
+    check.location = Some(location);
+    check
 }
 
 /// Warnings and notes about where `holder`'s portal now leads in `world`:
@@ -80,54 +147,34 @@ fn target_lines(
     holder: &PortalHolder<'_>,
     name: &str,
 ) -> Vec<String> {
+    let (view_plane, view_layer, _) = catalog.view();
+    let check = check_target(
+        world,
+        pick_grid(world, catalog),
+        Some((view_plane, view_layer)),
+        holder,
+    );
     let mut lines = Vec::new();
-    let Some((plane, layer, at)) = tile(world, &holder.target) else {
-        return lines;
-    };
-    if plane == holder.plane && layer == holder.layer && holder.tile == Some(at) {
+    if check.own_tile {
         lines.push(format!(
             "Warning: {name}'s portal leads to the tile the object stands on."
         ));
     }
-    let Target::Location { .. } = holder.target else {
+    let Some(location) = check.location else {
         return lines;
     };
-    let Some(source) = world.planes().get(plane) else {
-        return lines;
-    };
-    let (view_plane, view_layer, _) = catalog.view();
-    let elsewhere = plane != view_plane || layer != view_layer;
-    let size = i64::from(source.chunk_size);
-    let chunk = (size > 0)
-        .then(|| {
-            source
-                .chunks
-                .get(&(layer, at[0].div_euclid(size), at[1].div_euclid(size)))
-        })
-        .flatten();
-    let Some(chunk) = chunk else {
+    if location.missing_chunk {
         lines.push(format!(
             "Warning: {name}'s portal target is in a map chunk that does not exist; World does not check portal targets."
         ));
-        if elsewhere {
-            lines.push(not_shown());
-        }
-        return lines;
-    };
-    if let Some(grid) = pick_grid(world, catalog) {
-        let index = world.profile().ground_layers.iter().position(|g| g == grid);
-        let local = usize::try_from(at[1].rem_euclid(size) * size + at[0].rem_euclid(size)).ok();
-        let ground = index
-            .zip(local)
-            .and_then(|(index, local)| chunk.ground.get(index)?.value(local));
-        if ground.is_none() {
-            lines.push(format!(
-                "Warning: {name}'s portal target has no ground on the {} grid; World does not check portal targets.",
-                short(grid)
-            ));
-        }
     }
-    if elsewhere {
+    if let Some(grid) = location.missing_ground {
+        lines.push(format!(
+            "Warning: {name}'s portal target has no ground on the {} grid; World does not check portal targets.",
+            short(grid)
+        ));
+    }
+    if location.outside_view {
         lines.push(not_shown());
     }
     lines

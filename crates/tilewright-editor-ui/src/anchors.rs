@@ -10,7 +10,7 @@
 //! a missing anchor or plane, and this module only reads what it loaded.
 use std::collections::{BTreeMap, BTreeSet};
 use tilewright_editor_preview::PreviewCatalog;
-use tilewright_source::{Object, Portal, World};
+use tilewright_source::{Object, Plane, Portal, World};
 
 /// Where a portal leads, with its plane resolved.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +124,33 @@ pub fn reference_counts<'w>(world: &'w World, plane: &str) -> BTreeMap<&'w str, 
         }
     }
     counts
+}
+
+/// Most anchors of one tile a tile description lists; the rest are counted.
+pub const MAXIMUM_TILE_ANCHORS: usize = 8;
+
+/// The anchors of `plane` on spatial `layer` at plane tile `at`, sorted by
+/// id.
+pub fn tile_anchors(plane: &Plane, layer: i32, at: [i64; 2]) -> Vec<&str> {
+    plane
+        .anchors
+        .iter()
+        .filter(|(_, anchor)| anchor.layer == layer && anchor.at == at)
+        .map(|(id, _)| id.as_str())
+        .collect()
+}
+
+/// The plane, layer and tile `target` leads to, when it can be resolved: a
+/// location as it is written, an anchor where its plane defines it.
+pub fn target_tile<'w>(world: &'w World, target: &Target<'w>) -> Option<(&'w str, i32, [i64; 2])> {
+    match *target {
+        Target::Location { plane, layer, at } => Some((plane, layer, at)),
+        Target::Anchor { plane, anchor } => world
+            .planes()
+            .get(plane)
+            .and_then(|source| source.anchors.get(anchor))
+            .map(|found| (plane, found.layer, found.at)),
+    }
 }
 
 /// The anchors on tiles of the active view (its plane, spatial layer and
