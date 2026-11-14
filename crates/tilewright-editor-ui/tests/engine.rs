@@ -147,6 +147,7 @@ const EDIT_KINDS: [&str; 15] = [
 
 /// One action of every edit kind, built only from uids, ids and plane
 /// coordinates: no `Select`, no frame generation.
+#[allow(clippy::too_many_lines)]
 fn edits(expected: [u8; 32]) -> Vec<Action> {
     let main = || String::from("main");
     vec![
@@ -304,6 +305,10 @@ fn every_edit_is_addressed_without_the_selection_and_carries_the_sessions_actor(
     assert!(records.inverses.is_empty());
 }
 
+/// The text a transaction writer wrote with the fixed actor, from the
+/// sealed transaction of the same action.
+type FixedText = Box<dyn Fn(&Value) -> String>;
+
 #[test]
 fn the_apps_transactions_are_byte_identical_to_the_fixed_actor_text() {
     let dir = fixture_with(|_| {});
@@ -312,7 +317,7 @@ fn the_apps_transactions_are_byte_identical_to_the_fixed_actor_text() {
     let expected = revision(&session);
     // Each of the three transaction writers, with the text it wrote when the
     // actor was the fixed string `editor:prototype`.
-    let mut cases: Vec<(Action, Box<dyn Fn(&Value) -> String>)> = Vec::new();
+    let mut cases: Vec<(Action, FixedText)> = Vec::new();
     cases.push((
         Action::Paint {
             plane: "main".into(),

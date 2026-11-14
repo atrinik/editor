@@ -72,7 +72,7 @@ fn application_with_source(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, A
             History::new(document),
             catalog,
             resources,
-            tilewright_editor_ui::Actor::new("editor:prototype").unwrap(),
+            tilewright_editor_ui::Actor::new(super::ACTOR).unwrap(),
         ),
         recovery,
         evidence,
