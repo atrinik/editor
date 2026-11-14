@@ -127,6 +127,16 @@ pub fn view_zones<'w>(world: &'w World, catalog: &PreviewCatalog) -> Vec<([i64; 
     zones
 }
 
+/// How many of `zones` are each zone, for the tiles of the view: the zone
+/// legend's tile counts, from the zones [`view_zones`] lists.
+pub fn tile_counts<'z>(zones: impl IntoIterator<Item = &'z str>) -> BTreeMap<&'z str, usize> {
+    let mut counts = BTreeMap::new();
+    for zone in zones {
+        *counts.entry(zone).or_default() += 1;
+    }
+    counts
+}
+
 /// The overlay tints: eight saturated colours that stay distinguishable
 /// from each other (they follow the Okabe–Ito colour-blind-safe set, with
 /// black replaced by indigo), drawn at [`TINT_ALPHA`] over the tile.
@@ -477,6 +487,32 @@ pub fn zone_use<'w>(plane: &'w Plane, id: &str) -> ZoneUse<'w> {
     usage
 }
 
+/// The zones of `plane` World would let be deleted, sorted by id: exactly
+/// those whose [`zone_use`] is [`ZoneUse::unused`], found in one pass over
+/// the plane's chunks rather than one per zone.
+pub fn unused_zones(plane: &Plane) -> Vec<&str> {
+    let listed: BTreeSet<&str> = plane
+        .chunks
+        .values()
+        .flat_map(|chunk| chunk.zones.palette.iter().map(String::as_str))
+        .collect();
+    let parents: BTreeSet<&str> = plane
+        .zones
+        .values()
+        .filter_map(|zone| zone.parent.as_deref())
+        .collect();
+    plane
+        .zones
+        .keys()
+        .map(String::as_str)
+        .filter(|id| {
+            !listed.contains(id)
+                && !parents.contains(id)
+                && plane.default_zone.as_deref() != Some(*id)
+        })
+        .collect()
+}
+
 /// Whether `ancestor` is `zone` itself or one of its ancestors. Unlike
 /// [`zone_path`] the walk has no depth bound, so a long chain is followed to
 /// its end; it stops at an unknown parent or a repeated zone.
@@ -676,6 +712,42 @@ mod tests {
             },
         );
         plane
+    }
+
+    #[test]
+    fn unused_zones_are_exactly_those_zone_use_finds_unused() {
+        let mut plane = with_cell(
+            plane(
+                vec![
+                    zone("root", None, None),
+                    zone("child", Some("root"), None),
+                    zone("painted", None, None),
+                    zone("listed", None, None),
+                    zone("spare", None, None),
+                    zone("other", None, None),
+                ],
+                Some("other"),
+            ),
+            0,
+            "painted",
+        );
+        // A palette entry no cell uses still keeps its zone.
+        plane = with_cell(plane, 1, "listed");
+        if let Some(chunk) = plane.chunks.get_mut(&(0, 1, 0)) {
+            chunk.zones.cells.fill(0);
+        }
+        let expected: Vec<&str> = plane
+            .zones
+            .keys()
+            .map(String::as_str)
+            .filter(|id| zone_use(&plane, id).unused())
+            .collect();
+        assert_eq!(expected, ["child", "spare"]);
+        assert_eq!(unused_zones(&plane), expected);
+        assert_eq!(
+            tile_counts(["a", "b", "a"]),
+            BTreeMap::from([("a", 2), ("b", 1)])
+        );
     }
 
     #[test]

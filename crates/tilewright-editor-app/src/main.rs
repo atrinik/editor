@@ -80,13 +80,24 @@ fn main() {
             drop(window);
             println!("window=created-and-destroyed pixels={width}x{height}");
         }
+        command if tilewright_editor_observe::cli::COMMANDS.contains(&command) => {
+            use std::io::Write as _;
+            let arguments: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
+            let outcome = tilewright_editor_observe::cli::run(command, &arguments);
+            // A closed pipe is not an error of the command.
+            let _ = std::io::stdout().write_all(outcome.stdout.as_bytes());
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().write_all(outcome.stderr.as_bytes());
+            std::process::exit(outcome.code.into());
+        }
         _ => usage(),
     }
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: tilewright-editor [version | open ROOT | headless ROOT | window | prototype (use provision helper)]"
+        "usage: tilewright-editor [version | open ROOT | headless ROOT | window | prototype (use provision helper)]\n{}",
+        tilewright_editor_observe::cli::USAGE
     );
     std::process::exit(2);
 }

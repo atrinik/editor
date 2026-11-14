@@ -1,0 +1,11 @@
+format: tilewright.editor-catalog/1
+revision: <revision>
+catalog:
+  status: absent
+match: none
+prototypes: (none)
+prototypes_more: 0
+terrain_palette: (none)
+terrain_palette_more: 0
+zone_palette: (none)
+zone_palette_more: 0

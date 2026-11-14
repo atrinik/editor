@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 tilewright-editor-commands.workspace = true
 tilewright-editor-document.workspace = true
+tilewright-editor-observe.workspace = true
 tilewright-editor-preview.workspace = true
 tilewright-editor-ui.workspace = true
 tilewright-editor-recovery.workspace = true

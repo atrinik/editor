@@ -71,7 +71,7 @@ const PORTAL_LEGEND: &str = "Dark badge: portal object";
 /// The widest a toolbar button gets, whatever its label measures.
 const TOOLBAR_BUTTON_MAXIMUM: u32 = 96;
 /// Most anchors listed for one selected tile.
-const MAXIMUM_TILE_ANCHORS: usize = 8;
+const MAXIMUM_TILE_ANCHORS: usize = anchors::MAXIMUM_TILE_ANCHORS;
 /// Most anchors in Anchor mode's list, like the zone list.
 const MAXIMUM_LISTED_ANCHORS: usize = tilewright_editor_ui::inspector::MAX_CHOICES;
 const NO_PALETTE_MATCH: &str = "No prototype matches the filter.";
@@ -1068,12 +1068,7 @@ impl Application {
         let Some(source) = world.planes().get(plane) else {
             return;
         };
-        let here: Vec<&str> = source
-            .anchors
-            .iter()
-            .filter(|(_, anchor)| anchor.layer == layer && anchor.at == at)
-            .map(|(id, _)| id.as_str())
-            .collect();
+        let here = anchors::tile_anchors(source, layer, at);
         if here.is_empty() {
             rows.push(("Anchors here: none".into(), None, true, false));
             return;
@@ -1392,10 +1387,7 @@ impl Application {
             self.brush_rows(rows);
         }
         let tiles = self.view_zone_tiles();
-        let mut counts = std::collections::BTreeMap::<&str, usize>::new();
-        for (_, zone) in tiles.iter() {
-            *counts.entry(zone.as_str()).or_default() += 1;
-        }
+        let counts = zones::tile_counts(tiles.iter().map(|(_, zone)| zone.as_str()));
         let tints = self.zone_tints();
         let (plane, _, _) = catalog.view();
         let plane = world.planes().get(plane);

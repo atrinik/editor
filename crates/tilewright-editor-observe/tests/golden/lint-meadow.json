@@ -1,0 +1,24 @@
+{
+  "format": "tilewright.editor-lint/1",
+  "revision": "<revision>",
+  "catalog": {
+    "status": "absent"
+  },
+  "counts": {
+    "error": 1,
+    "warning": 0,
+    "info": 0
+  },
+  "findings": [
+    {
+      "code": "catalog.absent",
+      "severity": "error",
+      "location": {
+        "path": "preview.jsonc"
+      },
+      "message": "The world has no editor catalog, so the desktop editor's editing entry point cannot open it; open and the read-only commands still read it.",
+      "detail": null
+    }
+  ],
+  "findings_more": 0
+}

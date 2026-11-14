@@ -1,0 +1,36 @@
+{
+  "format": "tilewright.editor-tile/1",
+  "revision": "<revision>",
+  "tile": {
+    "plane": "meadow",
+    "layer": 3,
+    "x": 100,
+    "y": -100
+  },
+  "chunk": null,
+  "ground": [
+    {
+      "grid": "ground",
+      "value": null
+    },
+    {
+      "grid": "detail",
+      "value": null
+    },
+    {
+      "grid": "edge",
+      "value": null
+    }
+  ],
+  "height": null,
+  "zone": null,
+  "catalog": {
+    "status": "absent"
+  },
+  "objects": [],
+  "objects_more": 0,
+  "anchors": [],
+  "anchors_more": 0,
+  "arrivals": [],
+  "arrivals_more": 0
+}

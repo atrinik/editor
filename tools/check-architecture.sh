@@ -11,10 +11,11 @@ jq -e '
   deps("tilewright-editor-document") == ["tilewright-editor-testkit","tilewright-source"] and
   deps("tilewright-editor-commands") == ["tempfile","tilewright-edit","tilewright-editor-document","tilewright-editor-testkit","tilewright-source"] and
   deps("tilewright-editor-ui") == ["getrandom","serde_json","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-preview","tilewright-editor-project","tilewright-editor-testkit","tilewright-jsonc","tilewright-source","unicode-segmentation"] and
+  deps("tilewright-editor-observe") == ["serde_json","tempfile","tilewright-editor-document","tilewright-editor-preview","tilewright-editor-testkit","tilewright-editor-ui","tilewright-source"] and
   deps("tilewright-editor-preview") == ["serde_json","sha2","tempfile","tilewright-jsonc","tilewright-render-api","tilewright-render-resources","tilewright-render-testkit","tilewright-render-world","tilewright-scene","tilewright-source"] and
   deps("tilewright-editor-testkit") == ["serde_json","sha2","tilewright-editor-project","tilewright-source"] and
   deps("tilewright-editor-recovery") == ["sha2","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-testkit","tilewright-source"] and
-  deps("tilewright-editor") == ["png","pollster","sdl3","serde_json","sha2","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-preview","tilewright-editor-recovery","tilewright-editor-testkit","tilewright-editor-ui","tilewright-render-api","tilewright-render-resources","tilewright-render-sdl3","tilewright-render-testkit","tilewright-render-ui","tilewright-render-wgpu","tilewright-render-world","tilewright-scene","tilewright-source"] and
+  deps("tilewright-editor") == ["png","pollster","sdl3","serde_json","sha2","tempfile","tilewright-edit","tilewright-editor-commands","tilewright-editor-document","tilewright-editor-observe","tilewright-editor-preview","tilewright-editor-recovery","tilewright-editor-testkit","tilewright-editor-ui","tilewright-render-api","tilewright-render-resources","tilewright-render-sdl3","tilewright-render-testkit","tilewright-render-ui","tilewright-render-wgpu","tilewright-render-world","tilewright-scene","tilewright-source"] and
   ([.packages[].name | select(test("(client|protocol|server)"; "i"))] | length == 0) and
   all(.packages[].dependencies[];
     (.source // "") as $source |
@@ -28,5 +29,19 @@ if grep -RnE --include='*.rs' --exclude-dir=tests --exclude=tests.rs \
   'std::(fs|net|process::Command)|tokio::|fn[[:space:]]+(parse|serialize|write|save)[[:space:]]*\(' \
   crates >/dev/null; then
   echo "editor source duplicates a forbidden parser/writer or direct I/O authority" >&2
+  exit 1
+fi
+
+# The read-only reports never reach an editing session, history, recovery
+# or provisioning: not even through the ui crate that exports them. A
+# missing source directory fails rather than passing an empty search.
+test -d crates/tilewright-editor-observe/src || {
+  echo "missing crates/tilewright-editor-observe/src" >&2
+  exit 1
+}
+if grep -RnE --include='*.rs' \
+  '\b(Session|History|DurableRecovery|RecoveryStore)\b|tilewright_edit::|tilewright_editor_(commands|recovery)|provision' \
+  crates/tilewright-editor-observe/src | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' >/dev/null; then
+  echo "the read-only observe crate reaches editing, history, recovery or provisioning" >&2
   exit 1
 fi

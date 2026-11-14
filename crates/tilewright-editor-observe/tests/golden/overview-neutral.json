@@ -1,0 +1,156 @@
+{
+  "format": "tilewright.editor-overview/1",
+  "revision": "<revision>",
+  "profile": {
+    "id": "sample.meadow",
+    "version": "1",
+    "projection": {
+      "kind": "top_down",
+      "tile_size": 32
+    },
+    "render_layers": ["floor", "edge", "item"],
+    "render_layers_more": 0,
+    "ground_layers": ["floor", "edge"],
+    "terrain_layer": "floor",
+    "terrains": ["sand", "grass"],
+    "terrains_more": 0,
+    "layer_height": null
+  },
+  "definitions": 23,
+  "plane_count": 1,
+  "planes": [
+    {
+      "id": "main",
+      "title": "Authored geometric meadow",
+      "kind": "shared",
+      "chunk_size": 32,
+      "default_zone": "meadow",
+      "zones": 3,
+      "anchors": 2,
+      "stairwells": 0,
+      "chunks": 2,
+      "objects": 5,
+      "carried": 0,
+      "portals": 2,
+      "layers": [
+        {
+          "layer": 0,
+          "chunks": 2,
+          "bounds": [-32, 0, 64, 32]
+        }
+      ],
+      "layers_more": 0
+    }
+  ],
+  "planes_more": 0,
+  "catalog": {
+    "status": "loaded",
+    "view": {
+      "plane": "main",
+      "layer": 0,
+      "bounds": [0, 0, 8, 6]
+    },
+    "presentation": "authored",
+    "view_tiles_with_zone": 48,
+    "view_zones": [
+      {
+        "id": "meadow",
+        "tiles": 36
+      },
+      {
+        "id": "meadow.pond",
+        "tiles": 4
+      },
+      {
+        "id": "path",
+        "tiles": 8
+      }
+    ],
+    "view_zones_more": 0,
+    "prototypes": 23,
+    "resources": 23,
+    "grants": {
+      "movable_uids": ["marker_1"],
+      "movable_uids_more": 0,
+      "fields": [
+        {
+          "uid": "marker_1",
+          "field": "label"
+        }
+      ],
+      "fields_more": 0,
+      "terrain": [
+        {
+          "grid": "floor",
+          "values": ["grass", "sand"],
+          "values_more": 0
+        }
+      ],
+      "terrain_more": 0,
+      "objects": [
+        {
+          "proto": "bush",
+          "layer": "item",
+          "fields": ["label"],
+          "fields_more": 0,
+          "defaults": [],
+          "defaults_more": 0,
+          "portal": false
+        },
+        {
+          "proto": "crate",
+          "layer": "item",
+          "fields": ["label"],
+          "fields_more": 0,
+          "defaults": [],
+          "defaults_more": 0,
+          "portal": false
+        },
+        {
+          "proto": "gate",
+          "layer": "item",
+          "fields": [],
+          "fields_more": 0,
+          "defaults": [],
+          "defaults_more": 0,
+          "portal": true
+        },
+        {
+          "proto": "lamp",
+          "layer": "item",
+          "fields": ["label"],
+          "fields_more": 0,
+          "defaults": [],
+          "defaults_more": 0,
+          "portal": false
+        },
+        {
+          "proto": "marker",
+          "layer": "item",
+          "fields": ["label"],
+          "fields_more": 0,
+          "defaults": [],
+          "defaults_more": 0,
+          "portal": false
+        },
+        {
+          "proto": "stone",
+          "layer": "item",
+          "fields": ["label"],
+          "fields_more": 0,
+          "defaults": ["label", "settings"],
+          "defaults_more": 0,
+          "portal": false
+        }
+      ],
+      "objects_more": 0,
+      "zones": {
+        "paint": true,
+        "manage": true
+      },
+      "anchors": {
+        "edit": true
+      }
+    }
+  }
+}

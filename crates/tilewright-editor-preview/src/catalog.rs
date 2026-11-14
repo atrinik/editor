@@ -100,6 +100,24 @@ impl PreviewCatalog {
     pub const fn editing(&self) -> &EditingCapabilities {
         &self.editing
     }
+    /// The catalog's prototypes in id order: each with the id of the
+    /// resource it is drawn with and its anchor, `ground` or `standing`.
+    pub fn prototypes(&self) -> impl Iterator<Item = (&str, &str, &'static str)> {
+        self.prototypes.iter().map(|(proto, (resource, anchor))| {
+            (
+                proto.as_str(),
+                resource.as_str(),
+                match anchor {
+                    Anchor::Ground => "ground",
+                    Anchor::Standing => "standing",
+                },
+            )
+        })
+    }
+    /// How many resources the catalog declares.
+    pub fn resource_count(&self) -> usize {
+        self.resources.len()
+    }
     /// Whether `uid` names a top-level object in this view's plane and
     /// spatial layer whose tile lies inside the view bounds. Per-prototype
     /// grants reach only such objects; per-uid grants keep their own reach.

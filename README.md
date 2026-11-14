@@ -40,10 +40,10 @@ renderer release ------> scene/preview adapter ----------+
 
 The world toolkit owns source syntax, lossless documents, schemas, catalogs,
 diagnostics, compilers, semantic diffs, and atomic file transactions. The
-renderer owns scenes and GPU resources. The eight editor crates own application
+renderer owns scenes and GPU resources. The nine editor crates own application
 composition, project/tab and safe path state, document adaptation,
-commands/history, UI panels/tools, preview integration, and deterministic test
-fakes. None owns a parser, serializer, filesystem writer, renderer, network
+commands/history, UI panels/tools, preview integration, read-only observation
+reports, and deterministic test fakes. None owns a parser, serializer, filesystem writer, renderer, network
 service, or server lifecycle.
 
 The editor opens world source trees with tilewright-world's `tilewright-source`
@@ -90,6 +90,21 @@ cargo run --locked --package tilewright-editor -- headless crates/tilewright-edi
 SDL_VIDEO_DRIVER=dummy cargo run --locked --package tilewright-editor -- window
 python3 tools/provision-prototype.py --world crates/tilewright-editor-testkit/fixtures/prototype-neutral --destination /absolute/private/new-session --editor target/debug/tilewright-editor
 tools/validate.sh
+```
+
+## Read-only commands
+
+`overview`, `tile`, `catalog` and `lint` describe a world without a window or
+an editing session (tested on Linux and Windows), as text or, with `--json`, as one
+bounded JSON document. World text in their output is data, escaped in both
+forms. See [the read-only commands](docs/CLI.md) for the output shapes,
+limits and exit codes.
+
+```sh
+cargo run --locked --package tilewright-editor -- overview crates/tilewright-editor-testkit/fixtures/prototype-neutral
+cargo run --locked --package tilewright-editor -- tile --json crates/tilewright-editor-testkit/fixtures/prototype-neutral main 0 7 0
+cargo run --locked --package tilewright-editor -- catalog --match grass crates/tilewright-editor-testkit/fixtures/prototype-neutral
+cargo run --locked --package tilewright-editor -- lint crates/tilewright-editor-testkit/fixtures/prototype-neutral
 ```
 
 `tools/validate.sh` checks formatting, Clippy-as-errors, all tests/docs,

@@ -1,0 +1,38 @@
+format: tilewright.editor-overview/1
+revision: <revision>
+profile:
+  id: meadow-example
+  version: 1.0.0
+  projection:
+    kind: top_down
+    tile_size: 32
+  render_layers: [ground, detail, edge, item]
+  render_layers_more: 0
+  ground_layers: [ground, detail, edge]
+  terrain_layer: ground
+  terrains: [water, sand, grass]
+  terrains_more: 0
+  layer_height: none
+definitions: 14
+plane_count: 1
+planes:
+  - id: meadow
+    title: Meadow
+    kind: shared
+    chunk_size: 32
+    default_zone: none
+    zones: 0
+    anchors: 0
+    stairwells: 0
+    chunks: 1
+    objects: 0
+    carried: 0
+    portals: 0
+    layers:
+      - layer: 0
+        chunks: 1
+        bounds: [0, 0, 32, 32]
+    layers_more: 0
+planes_more: 0
+catalog:
+  status: absent

@@ -1,0 +1,55 @@
+{
+  "format": "tilewright.editor-tile/1",
+  "revision": "<revision>",
+  "tile": {
+    "plane": "main",
+    "layer": 0,
+    "x": 7,
+    "y": 3
+  },
+  "chunk": {
+    "path": "planes/main/layers/0/0_0.jsonc",
+    "at": [0, 0]
+  },
+  "ground": [
+    {
+      "grid": "floor",
+      "value": "sand"
+    },
+    {
+      "grid": "edge",
+      "value": null
+    }
+  ],
+  "height": 0,
+  "zone": {
+    "id": "meadow",
+    "from_default": true,
+    "path": ["meadow"],
+    "name": "Quiet meadow"
+  },
+  "catalog": {
+    "status": "loaded",
+    "in_view": true
+  },
+  "objects": [],
+  "objects_more": 0,
+  "anchors": [
+    {
+      "id": "arrival",
+      "portals": 1
+    }
+  ],
+  "anchors_more": 0,
+  "arrivals": [
+    {
+      "uid": "gate_east",
+      "plane": "main",
+      "layer": 0,
+      "at": [7, 0],
+      "carried": false,
+      "via": "anchor"
+    }
+  ],
+  "arrivals_more": 0
+}

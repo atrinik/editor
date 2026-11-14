@@ -1,0 +1,37 @@
+{
+  "format": "tilewright.editor-lint/1",
+  "revision": "<revision>",
+  "catalog": {
+    "status": "loaded"
+  },
+  "counts": {
+    "error": 0,
+    "warning": 0,
+    "info": 2
+  },
+  "findings": [
+    {
+      "code": "preview.effects-neutral",
+      "severity": "info",
+      "location": {
+        "plane": "main",
+        "layer": 0
+      },
+      "message": "Preview v1 uses neutral effects and one-tile footprints; profile fields are retained without inferred rendering behavior.",
+      "detail": null
+    },
+    {
+      "code": "anchor.unreferenced",
+      "severity": "info",
+      "location": {
+        "plane": "main",
+        "anchor": "lookout",
+        "layer": 0,
+        "at": [-2, 0]
+      },
+      "message": "No portal names this anchor; scripts or saves outside the world may still use its id.",
+      "detail": null
+    }
+  ],
+  "findings_more": 0
+}

@@ -727,3 +727,26 @@ fn a_carried_portal_badges_its_holders_tile() {
     assert!(tiles.contains(&[1, 4]), "{tiles:?}");
     assert_eq!(tiles.len(), 3);
 }
+
+#[test]
+fn tile_anchors_and_target_tiles_resolve_as_the_world_holds_them() {
+    let document = WorldDocument::open(&fixture_world("prototype-neutral")).unwrap();
+    let world = document.world();
+    let plane = &world.planes()["main"];
+    assert_eq!(anchors::tile_anchors(plane, 0, [7, 3]), ["arrival"]);
+    assert!(anchors::tile_anchors(plane, 1, [7, 3]).is_empty());
+    assert!(anchors::tile_anchors(plane, 0, [7, 2]).is_empty());
+    let targets: Vec<_> = anchors::portals(world)
+        .iter()
+        .map(|holder| anchors::target_tile(world, &holder.target))
+        .collect();
+    assert_eq!(
+        targets,
+        [Some(("main", 0, [7, 3])), Some(("main", 0, [-2, 2]))]
+    );
+    let missing = anchors::Target::Anchor {
+        plane: "main",
+        anchor: "nowhere",
+    };
+    assert_eq!(anchors::target_tile(world, &missing), None);
+}

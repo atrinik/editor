@@ -29,6 +29,12 @@ try {
     # The packaged sample must open as a World with the packaged binary.
     & "$Stage/bin/tilewright-editor.exe" open "$Stage/samples/prototype-neutral" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "the packaged sample does not open" }
+    # The read-only commands need no editing support: the packaged sample's
+    # catalog and art load, and lint finds no error in it.
+    & "$Stage/bin/tilewright-editor.exe" overview --json "$Stage/samples/prototype-neutral" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "overview of the packaged sample failed" }
+    & "$Stage/bin/tilewright-editor.exe" lint "$Stage/samples/prototype-neutral" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "lint of the packaged sample failed" }
     syft "$Stage/bin/tilewright-editor.exe" --source-name tilewright-editor --source-version $Version --output "cyclonedx-json=$Stage/sbom.cdx.json"
     $Sbom = Get-Content "$Stage/sbom.cdx.json" -Raw | ConvertFrom-Json
     if ($Sbom.components.Count -lt 10) { throw "binary SBOM is incomplete" }

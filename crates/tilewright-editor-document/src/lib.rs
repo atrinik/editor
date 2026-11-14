@@ -240,8 +240,10 @@ impl fmt::Display for Summary {
 /// showing itself: a control character, such as those that move the cursor,
 /// retitle the window or write the clipboard; a line or paragraph
 /// separator; or a bidirectional formatting character, which can reorder
-/// what is shown.
-fn unprintable(character: char) -> bool {
+/// what is shown. [`terminal_field`] escapes exactly these characters;
+/// other writers, such as JSON output, escape the same set.
+#[must_use]
+pub fn unprintable(character: char) -> bool {
     character.is_control()
         || matches!(
             character,
