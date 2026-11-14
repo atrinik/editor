@@ -39,7 +39,12 @@ fn fixture() -> (tempfile::TempDir, Session) {
         PreviewLimits::default(),
     )
     .unwrap();
-    let mut session = Session::new(History::new(document), catalog, resources);
+    let mut session = Session::new(
+        History::new(document),
+        catalog,
+        resources,
+        tilewright_editor_ui::Actor::new("editor:prototype").unwrap(),
+    );
     session.set_uid_source(Box::new(SeededUidSource::new(9)));
     (dir, session)
 }

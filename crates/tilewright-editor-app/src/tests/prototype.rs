@@ -68,7 +68,12 @@ fn application_with_source(prepare: impl FnOnce(&Path)) -> (tempfile::TempDir, A
     .unwrap();
     let evidence = Evidence::new(SourceRoot::new(&temporary.path().join("evidence"))).unwrap();
     let app = Application {
-        session: Session::new(History::new(document), catalog, resources),
+        session: Session::new(
+            History::new(document),
+            catalog,
+            resources,
+            tilewright_editor_ui::Actor::new("editor:prototype").unwrap(),
+        ),
         recovery,
         evidence,
         view,

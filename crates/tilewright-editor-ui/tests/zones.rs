@@ -33,7 +33,12 @@ fn open(root: &Path) -> Session {
         PreviewLimits::default(),
     )
     .unwrap();
-    Session::new(History::new(document), catalog, resources)
+    Session::new(
+        History::new(document),
+        catalog,
+        resources,
+        tilewright_editor_ui::Actor::new("editor:prototype").unwrap(),
+    )
 }
 fn fixture_with(configure: impl FnOnce(&Path)) -> (tempfile::TempDir, Session) {
     let dir = tempfile::tempdir().unwrap();
@@ -208,7 +213,7 @@ fn zone_painting_needs_the_paint_grant() {
             &mut records,
         )
         .unwrap_err()
-        .0;
+        .to_string();
     assert!(refused.contains("editing.zones.paint"), "{refused}");
     // The tool refuses the gesture too, before anything is prepared.
     let mut tools = zone_tools(&ungranted, ZoneChoice::Zone("path".into()), 0);
@@ -264,7 +269,7 @@ fn zone_painting_needs_the_view_a_defined_zone_a_change_and_no_pending_change() 
             &mut records,
         )
         .unwrap_err()
-        .0;
+        .to_string();
     assert!(refused.contains("unknown zone"), "{refused}");
     // Another plane or layer than the active view is refused.
     let mut elsewhere = zone_action(&session, vec![[1, 0]], Some("path"));
@@ -284,7 +289,7 @@ fn zone_painting_needs_the_view_a_defined_zone_a_change_and_no_pending_change() 
             &mut records,
         )
         .unwrap_err()
-        .0;
+        .to_string();
     assert!(refused.contains("changes no cell"), "{refused}");
     // Emptying cells that are already empty changes nothing either.
     assert!(
@@ -308,7 +313,7 @@ fn zone_painting_needs_the_view_a_defined_zone_a_change_and_no_pending_change() 
             &mut records,
         )
         .unwrap_err()
-        .0;
+        .to_string();
     assert!(refused.contains("Accept or Cancel"), "{refused}");
     assert_eq!(session.history().pending().unwrap().inverse(), inverse);
     // And no stroke begins while it is pending.
@@ -578,13 +583,21 @@ fn the_live_preview_is_exactly_the_cells_the_zone_release_prepares() {
         .extend_stroke(&cell(7, 5), session.generation())
         .unwrap();
     let stroke = tools.stroke().unwrap().clone();
-    let refused = session.stroke_changes(&stroke).unwrap_err().0;
+    let refused = session
+        .stroke_changes(&stroke)
+        .unwrap_err()
+        .message()
+        .to_owned();
     let action = tools
         .finish_stroke(session.generation(), false)
         .unwrap()
         .unwrap();
     assert_eq!(
-        session.dispatch(action, &mut records).unwrap_err().0,
+        session
+            .dispatch(action, &mut records)
+            .unwrap_err()
+            .message()
+            .to_owned(),
         refused
     );
     assert!(records.0.is_empty());
@@ -750,7 +763,7 @@ fn zone_strokes_and_the_overlay_leave_tiles_of_missing_chunks_alone() {
             &mut records,
         )
         .unwrap_err()
-        .0;
+        .to_string();
     assert!(
         refused.contains("map chunks that do not exist") && !refused.contains("already has"),
         "{refused}"

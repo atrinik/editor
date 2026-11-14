@@ -38,7 +38,12 @@ fn fixture_with(configure: impl FnOnce(&Path)) -> (tempfile::TempDir, Session) {
     .unwrap();
     (
         dir,
-        Session::new(History::new(document), catalog, resources),
+        Session::new(
+            History::new(document),
+            catalog,
+            resources,
+            tilewright_editor_ui::Actor::new("editor:prototype").unwrap(),
+        ),
     )
 }
 fn tools_for(session: &Session, zone: &str) -> ToolState {

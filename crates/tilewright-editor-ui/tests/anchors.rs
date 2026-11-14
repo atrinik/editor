@@ -37,7 +37,12 @@ fn open(root: &Path) -> Session {
         PreviewLimits::default(),
     )
     .unwrap();
-    Session::new(History::new(document), catalog, resources)
+    Session::new(
+        History::new(document),
+        catalog,
+        resources,
+        tilewright_editor_ui::Actor::new("editor:prototype").unwrap(),
+    )
 }
 fn fixture_with(configure: impl FnOnce(&Path)) -> (tempfile::TempDir, Session) {
     let dir = tempfile::tempdir().unwrap();
