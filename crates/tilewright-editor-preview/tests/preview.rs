@@ -542,7 +542,12 @@ fn optional_object_grants_parse_strictly_and_their_absence_changes_nothing() {
             layer: "item".into(),
             fields: ["label".to_owned()].into(),
             defaults: Vec::new(),
+            portal: false,
         }
+    );
+    assert!(
+        !catalog.can_edit_portal(&world, "marker_1"),
+        "no portal member"
     );
     assert!(editing.objects["grass"].fields.is_empty());
     assert!(catalog.in_active_view(&world, "marker_1"));
@@ -897,4 +902,39 @@ fn object_defaults_values_share_one_64_kib_budget_per_entry() {
     assert_eq!(total, 65536);
     assert!(load(fits + 1, "ab").is_err());
     assert!(load(fits, "abc").is_err());
+}
+
+#[test]
+fn the_optional_portal_member_is_a_strict_flag_and_its_absence_changes_nothing() {
+    let (dir, root, world, original) = fixture(false, false);
+    let limits = PreviewLimits::default();
+    let load = |objects: Value| {
+        let mut catalog = original.clone();
+        catalog["editing"]["objects"] = objects;
+        put(dir.path(), "preview.jsonc", &catalog.to_string());
+        loader::load(&root, &world, limits)
+    };
+    // Without the member, and with `false`, the entry grants what it did.
+    for objects in [
+        json!([{"proto": "marker", "layer": "item"}]),
+        json!([{"proto": "marker", "layer": "item", "portal": false}]),
+    ] {
+        let (catalog, _) = load(objects).unwrap();
+        assert!(!catalog.editing().objects["marker"].portal);
+        assert!(catalog.can_delete(&world, "marker_1"));
+        assert!(!catalog.can_edit_portal(&world, "marker_1"));
+    }
+    let (catalog, _) = load(json!([{"proto": "marker", "layer": "item", "portal": true}])).unwrap();
+    assert!(catalog.editing().objects["marker"].portal);
+    assert!(catalog.can_edit_portal(&world, "marker_1"));
+    assert!(!catalog.can_edit_portal(&world, "unknown_uid"));
+    for objects in [
+        json!([{"proto": "marker", "layer": "item", "portal": 1}]),
+        json!([{"proto": "marker", "layer": "item", "portal": "true"}]),
+        json!([{"proto": "marker", "layer": "item", "portal": null}]),
+        json!([{"proto": "marker", "layer": "item", "portal": {"edit": true}}]),
+        json!([{"proto": "marker", "layer": "item", "portals": true}]),
+    ] {
+        assert!(load(objects.clone()).is_err(), "{objects}");
+    }
 }

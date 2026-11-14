@@ -20,9 +20,9 @@ use tilewright_editor_preview::{
 use tilewright_editor_recovery::{DurableRecovery, RecoveryLimits};
 use tilewright_editor_ui::brush::StrokeTarget;
 use tilewright_editor_ui::inspector::{self, SelectionSummary};
-use tilewright_editor_ui::tools::{self, ToolMode, ToolState, ZoneChoice};
+use tilewright_editor_ui::tools::{self, PortalStep, ToolMode, ToolState, ZoneChoice};
 use tilewright_editor_ui::{Action, Session, SessionPhase};
-use tilewright_editor_ui::{anchors, zones};
+use tilewright_editor_ui::{anchors, portals, zones};
 use tilewright_render_api::{
     BackendPreference, FrameOutput, RenderRequest, Renderer, TargetDescriptor, TargetKind,
 };
@@ -31,7 +31,7 @@ use tilewright_render_wgpu::WgpuRenderer;
 use tilewright_scene::SemanticId;
 use tilewright_source::SourceRoot;
 
-const HELP: &str = "Select / Move / Terrain / Place (P) / Zone (N) / Anchor (K) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | O shows zones and badges | Zone list: name, parent, new, delete | Anchors: new, move, delete | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
+const HELP: &str = "Select / Move / Terrain / Place (P) / Zone (N) / Anchor (K) | / filters the palette | click a tile places | Delete removes selection | drag paints | [ ] brush size | B brush shape | O shows zones and badges | Zone list: name, parent, new, delete | Anchors: new, move, delete | Object portal: anchor, tile, typed, clear | Enter accept | Esc cancel | Z undo | Y redo | WASD pan | +/- zoom | Q quit";
 /// Status when an overlay is wanted but the cells' places in the World's
 /// draw order could not be computed for this view.
 const OVERLAY_UNAVAILABLE: &str = "Zone overlay and stroke preview unavailable for this view.";
@@ -106,6 +106,13 @@ const DEMO_NEW_ANCHOR: &str = "camp";
 const DEMO_ANCHOR_TILE: [i64; 2] = [2, 3];
 const DEMO_ANCHOR_MOVE: [i64; 2] = [3, 4];
 const DEMO_NAMED_ANCHOR: &str = "arrival";
+/// The scripted portal editing: the gate retargeted to another anchor, the
+/// gate whose target is picked by click and then cleared, and the tile
+/// picked.
+const DEMO_RETARGETED_GATE: &str = "gate_east";
+const DEMO_TARGET_ANCHOR: &str = "lookout";
+const DEMO_PICKED_GATE: &str = "gate_west";
+const DEMO_PORTAL_TILE: [i64; 2] = [4, 3];
 
 /// The zones of the in-view tiles for one World revision and frame.
 struct ZoneView {
@@ -1819,8 +1826,9 @@ impl Application {
         ));
     }
 
-    /// The selected object's portal target, read-only: a location, or an
-    /// anchor and where it is. Portal editing is not in this version.
+    /// The selected object's portal: where it leads, and with the
+    /// catalog's `portal` grant the ways to set or clear it: an anchor from
+    /// a list, a tile picked in the view, a typed location, or none.
     fn portal_rows(
         &self,
         rows: &mut UiRows,
@@ -1828,15 +1836,79 @@ impl Application {
         uid: &str,
         plane: &str,
     ) {
+        let ready = self.blocked.is_none() && self.session.can_prepare();
         let world = self.session.world();
-        let Some(portal) = world.object(uid).and_then(|object| object.portal.as_ref()) else {
+        let granted = self.session.catalog().can_edit_portal(world, uid);
+        let portal = world.object(uid).and_then(|object| object.portal.as_ref());
+        let target = portal.map(|portal| anchors::resolve(plane, portal));
+        self.portal_target_rows(rows, fits, target.as_ref(), granted);
+        if !granted {
             return;
-        };
-        rows.push(("Portal target (read-only):".into(), None, true, false));
-        match anchors::resolve(plane, portal) {
-            anchors::Target::Location { plane, layer, at } => rows.push((
+        }
+        let step = self
+            .tools
+            .portal_step()
+            .filter(|(object, _)| *object == uid)
+            .map(|(_, step)| step);
+        let listing = step == Some(PortalStep::Anchors);
+        rows.push((
+            if listing {
+                "Target an anchor: hide the list".into()
+            } else {
+                "Target an anchor".into()
+            },
+            Some(Control::PortalAnchors),
+            ready,
+            listing,
+        ));
+        if listing {
+            self.portal_anchor_rows(rows, fits, uid, target.as_ref(), ready);
+        }
+        let picking = step == Some(PortalStep::PickTile);
+        rows.push((
+            if picking {
+                "Click a tile in the view (Esc ends)".into()
+            } else {
+                "Target a tile in view".into()
+            },
+            Some(Control::PortalPick),
+            ready,
+            picking,
+        ));
+        rows.push((
+            "Type a location".into(),
+            Some(Control::PortalLocation),
+            ready,
+            self.tools.portal_draft() == Some(uid),
+        ));
+        rows.push((
+            if portal.is_some() {
+                "Clear portal".into()
+            } else {
+                "Clear portal: it has none".into()
+            },
+            Some(Control::PortalClear),
+            ready && portal.is_some(),
+            false,
+        ));
+    }
+
+    /// Where the selected object's portal leads: `Portal: none` (only when
+    /// its portal may be edited), a location, or an anchor and its place.
+    fn portal_target_rows(
+        &self,
+        rows: &mut UiRows,
+        fits: &mut Vec<(usize, IdText)>,
+        target: Option<&anchors::Target<'_>>,
+        granted: bool,
+    ) {
+        let world = self.session.world();
+        match target {
+            None if granted => rows.push(("Portal: none".into(), None, true, false)),
+            None => {}
+            Some(&anchors::Target::Location { plane, layer, at }) => rows.push((
                 format!(
-                    "{}, layer {layer}, ({}, {})",
+                    "Portal: to {}, layer {layer}, ({}, {})",
                     anchors::short(plane),
                     at[0],
                     at[1]
@@ -1845,12 +1917,16 @@ impl Application {
                 true,
                 false,
             )),
-            anchors::Target::Anchor { plane, anchor } => {
+            Some(&anchors::Target::Anchor { plane, anchor }) => {
                 id_row(
                     rows,
                     fits,
                     anchor,
-                    vec![("Anchor ".into(), String::new())],
+                    // The next row names its plane, layer and tile.
+                    vec![
+                        ("Portal: to anchor ".into(), String::new()),
+                        ("Portal: ".into(), String::new()),
+                    ],
                     None,
                     true,
                     false,
@@ -1873,6 +1949,91 @@ impl Application {
                     );
                 rows.push((location, None, true, false));
             }
+        }
+    }
+
+    /// The anchors the selected object's portal may target: a hint naming
+    /// the object, the real total, then the anchors grouped by plane, the
+    /// view's plane first, at most 256. The one the portal names is marked.
+    fn portal_anchor_rows(
+        &self,
+        rows: &mut UiRows,
+        fits: &mut Vec<(usize, IdText)>,
+        uid: &str,
+        current: Option<&anchors::Target<'_>>,
+        ready: bool,
+    ) {
+        let world = self.session.world();
+        id_row(
+            rows,
+            fits,
+            uid,
+            vec![
+                ("Portal of ".into(), ": choose an anchor".into()),
+                ("Portal of ".into(), String::new()),
+            ],
+            None,
+            true,
+            false,
+        );
+        let (listed, total) = portals::target_anchors(world, self.session.catalog());
+        rows.push((
+            match total {
+                0 => "No anchor in the world".into(),
+                1 => "1 anchor in the world".into(),
+                _ => format!("{total} anchors in the world"),
+            },
+            None,
+            true,
+            false,
+        ));
+        if total > listed.len() {
+            rows.push((
+                format!("First {} anchors shown", listed.len()),
+                None,
+                true,
+                false,
+            ));
+        }
+        let mut shown_plane = None;
+        for found in listed {
+            if shown_plane != Some(found.plane) {
+                shown_plane = Some(found.plane);
+                id_row(
+                    rows,
+                    fits,
+                    found.plane,
+                    vec![("Plane ".into(), ":".into())],
+                    None,
+                    true,
+                    false,
+                );
+            }
+            let [x, y] = found.at;
+            let named = current
+                == Some(&anchors::Target::Anchor {
+                    plane: found.plane,
+                    anchor: found.anchor,
+                });
+            id_row(
+                rows,
+                fits,
+                found.anchor,
+                vec![
+                    (
+                        String::new(),
+                        format!(" = layer {} ({x}, {y})", found.layer),
+                    ),
+                    (String::new(), format!(" ({x}, {y})")),
+                    (String::new(), String::new()),
+                ],
+                Some(Control::PortalAnchor {
+                    plane: found.plane.into(),
+                    anchor: found.anchor.into(),
+                }),
+                ready && !named,
+                named,
+            );
         }
     }
 
@@ -2096,6 +2257,13 @@ impl Application {
         }
         if let Some([x, y]) = self.tools.anchor_draft() {
             return format!("New anchor id at ({x}, {y}); Enter reviews");
+        }
+        if let Some(uid) = self.tools.portal_draft() {
+            let variants = vec![
+                ("Portal of ".into(), ": [plane] layer x y".into()),
+                ("Portal of ".into(), String::new()),
+            ];
+            return crate::workspace_render::fit_id(&mut self.text, uid, &variants, width, 22);
         }
         let (zone, variants) = match self.tools.zone_draft_target() {
             None => return "Ctrl+A selects / Enter reviews".into(),
@@ -2391,6 +2559,22 @@ impl Application {
         }
     }
 
+    /// What an open portal step asks for, naming the object.
+    fn portal_status(&self) -> Option<String> {
+        let (uid, step) = self.tools.portal_step()?;
+        (self.session.status().phase == SessionPhase::Ready).then(|| match step {
+            PortalStep::PickTile => format!(
+                "Click a tile in the view: the portal of {} leads there.",
+                anchors::short(uid)
+            ),
+            PortalStep::Anchors => format!(
+                "Choose an anchor in the sidebar for the portal of {}.",
+                anchors::short(uid)
+            ),
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn status_label(&self) -> String {
         if self.blocked.is_some() || self.session.status().phase == SessionPhase::Blocked {
             return "Editing blocked. Recovery details below.".into();
@@ -2426,13 +2610,22 @@ impl Application {
             return "Input not applied. Details below.".into();
         }
         if self.preview_omitted {
-            return "Zone overlay left out: too many cells for one frame.".into();
+            // Badges show with the zones, and alone in Anchor mode.
+            return if self.tools.zones_visible() {
+                "Zone overlay and badges left out: too many cells for one frame."
+            } else {
+                "Anchor and portal badges left out: too many for one frame."
+            }
+            .into();
         }
         if self.overlay_unavailable() {
             return OVERLAY_UNAVAILABLE.into();
         }
         if self.session.status().phase == SessionPhase::Pending && !self.source_review().complete {
             return REVIEW_LIMIT_MESSAGE.into();
+        }
+        if let Some(status) = self.portal_status() {
+            return status;
         }
         match self.session.status().phase {
             SessionPhase::Ready if self.session.status().applied == Some(true) => {
@@ -2610,6 +2803,12 @@ impl Application {
             | Control::AnchorMove
             | Control::AnchorDelete => self.anchor_control(control),
             Control::ApplyDraft if self.tools.anchor_draft().is_some() => self.apply_anchor_draft(),
+            Control::PortalAnchors
+            | Control::PortalAnchor { .. }
+            | Control::PortalPick
+            | Control::PortalLocation
+            | Control::PortalClear => self.portal_control(control),
+            Control::ApplyDraft if self.tools.portal_draft().is_some() => self.apply_portal_draft(),
             Control::PaletteFilter => self.tools.focus_filter().map_err(|error| error.to_string()),
             // Enter in the focused filter keeps its text and releases focus;
             // the filter is never reviewed.
@@ -2813,6 +3012,104 @@ impl Application {
         self.action(action)
     }
 
+    /// The selected object's portal rows. Edits leave as Session actions;
+    /// the Session checks the grant, the object's view, the revision and
+    /// the target again.
+    fn portal_control(&mut self, control: Control) -> Result<()> {
+        let unavailable = self.blocked.is_some() || !self.session.can_prepare();
+        let expected = self.session.history().document().revision();
+        let (world, catalog) = (self.session.world(), self.session.catalog());
+        let selection = self.session.selection();
+        let action = match control {
+            Control::PortalAnchors | Control::PortalPick => {
+                let step = if control == Control::PortalAnchors {
+                    PortalStep::Anchors
+                } else {
+                    PortalStep::PickTile
+                };
+                return self
+                    .tools
+                    .toggle_portal_step(world, catalog, selection, step, expected, unavailable)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+            }
+            Control::PortalLocation => {
+                return self
+                    .tools
+                    .begin_portal_location(world, catalog, selection, expected, unavailable)
+                    .map_err(|error| error.to_string());
+            }
+            Control::PortalAnchor { plane, anchor } => self.tools.portal_anchor_action(
+                world,
+                catalog,
+                selection,
+                (&plane, &anchor),
+                unavailable,
+            ),
+            Control::PortalClear => {
+                self.tools
+                    .clear_portal_action(world, catalog, selection, expected, unavailable)
+            }
+            _ => return Ok(()),
+        }
+        .map_err(|error| error.to_string())?;
+        self.action(action)
+    }
+
+    /// A click on the view while the portal pick step is open: the tile
+    /// under it, through the exact cell mask, becomes the target. A miss
+    /// keeps the step open.
+    fn pick_portal_target(&mut self, x: u32, y: u32) -> Result<()> {
+        loader::revalidate(
+            self.session.history().document().source(),
+            self.session.catalog(),
+            self.session.resources(),
+            PreviewLimits::default(),
+        )
+        .map_err(|error| error.to_string())?;
+        let cell = self
+            .prepared
+            .pick(self.view.frame_revision, x, y, true)
+            .map_err(|error| error.to_string())?
+            .ok_or("no tile at this pixel: click a tile of the view, or press Esc")?;
+        let unavailable = self.blocked.is_some() || !self.session.can_prepare();
+        let action = self
+            .tools
+            .portal_pick_action(
+                self.session.world(),
+                self.session.catalog(),
+                self.session.selection(),
+                &cell,
+                unavailable,
+            )
+            .map_err(|error| error.to_string())?;
+        self.action(action)
+    }
+
+    /// Review the open typed portal location: its glyphs must all be in
+    /// the font, as for field drafts, then it becomes one Session action.
+    fn apply_portal_draft(&mut self) -> Result<()> {
+        let snapshot = self.tools.draft_snapshot().ok_or("no draft")?;
+        let layout = self
+            .text
+            .layout(&snapshot.display_text, 18.0, None)
+            .map_err(|error| error.to_string())?;
+        if !layout.missing_glyphs().is_empty() {
+            return Err("missing font glyphs: review blocked; draft preserved".into());
+        }
+        let unavailable = self.blocked.is_some() || !self.session.can_prepare();
+        let action = self
+            .tools
+            .portal_location_action(
+                self.session.world(),
+                self.session.catalog(),
+                self.session.selection(),
+                unavailable,
+            )
+            .map_err(|error| error.to_string())?;
+        self.action(action)
+    }
+
     /// Review the open zone draft: its glyphs must all be in the font, as
     /// for field drafts, then it becomes one Session action.
     fn apply_zone_draft(&mut self) -> Result<()> {
@@ -2907,6 +3204,10 @@ impl Application {
                 Capability::Field => !catalog.editable_fields(world, uid).is_empty(),
                 Capability::Delete => catalog.can_delete(world, uid),
             };
+            // The scripted move and deletion leave the objects whose portal
+            // the portal step edits alone.
+            let granted = granted
+                && (capability == Capability::Field || !catalog.can_edit_portal(world, uid));
             if !granted {
                 return None;
             }
@@ -3199,6 +3500,81 @@ impl Application {
         self.capture("anchor-deleted")
     }
 
+    /// Select placed object `uid` through the exact object mask, in Select
+    /// mode.
+    fn select_object(&mut self, uid: &str) -> Result<()> {
+        let frame = self.frame(false)?;
+        let hit = self
+            .prepared
+            .picks
+            .iter()
+            .find_map(|(id, key)| match key {
+                SelectionKey::Object { uid: found } if found == uid => pixel_for(&frame, *id),
+                _ => None,
+            })
+            .ok_or("demonstration object is not in the object mask")?;
+        self.tools.set_mode(ToolMode::Select);
+        self.click(hit.0, hit.1)
+    }
+
+    /// In the open pick step, click tile `at` through the exact cell mask.
+    fn pick_portal_tile(&mut self, [x, y]: [i64; 2]) -> Result<()> {
+        let frame = self.frame(true)?;
+        let hit = self
+            .prepared
+            .cell_picks
+            .iter()
+            .find_map(|(id, key)| match key {
+                SelectionKey::Cell { x: cx, y: cy, .. } if (*cx, *cy) == (x, y) => {
+                    pixel_for(&frame, *id)
+                }
+                _ => None,
+            })
+            .ok_or("demonstration portal tile is not in the cell mask")?;
+        self.pick_portal_target(hit.0, hit.1)
+    }
+
+    /// Portals: select a gate, open its anchor list and retarget it to
+    /// another anchor; select the other gate and pick a target tile by
+    /// click, first its own tile (reviewed with a warning, then cancelled)
+    /// and then another one; then clear that portal. Every edit is
+    /// reviewed and accepted through the ordinary controls.
+    fn portal_demo(&mut self) -> Result<()> {
+        self.select_object(DEMO_RETARGETED_GATE)?;
+        self.capture("portal")?;
+        self.control(Control::PortalAnchors)?;
+        self.capture("portal-anchors")?;
+        self.control(Control::PortalAnchor {
+            plane: self.session.catalog().view().0.into(),
+            anchor: DEMO_TARGET_ANCHOR.into(),
+        })?;
+        self.capture("portal-retarget")?;
+        self.action(Action::Accept)?;
+        self.capture("portal-retargeted")?;
+        self.select_object(DEMO_PICKED_GATE)?;
+        let own = self
+            .session
+            .world()
+            .object(DEMO_PICKED_GATE)
+            .and_then(|object| object.at)
+            .map(|[x, y]| [i64::from(x), i64::from(y)])
+            .ok_or("the demonstration gate is not placed")?;
+        self.control(Control::PortalPick)?;
+        self.capture("portal-pick")?;
+        self.pick_portal_tile(own)?;
+        self.capture("portal-tile-warning")?;
+        self.action(Action::Cancel)?;
+        self.control(Control::PortalPick)?;
+        self.pick_portal_tile(DEMO_PORTAL_TILE)?;
+        self.capture("portal-tile")?;
+        self.action(Action::Accept)?;
+        self.capture("portal-tile-set")?;
+        self.control(Control::PortalClear)?;
+        self.capture("portal-clear")?;
+        self.action(Action::Accept)?;
+        self.capture("portal-cleared")
+    }
+
     fn demo_step(&mut self, step: usize) -> Result<bool> {
         match step {
             0 => {
@@ -3276,14 +3652,15 @@ impl Application {
                 self.zone_manage_demo()?;
             }
             12 if self.session.catalog().editing().anchors.edit => self.anchor_demo()?,
-            13 => return Ok(true),
+            13 if grants_portals(self.session.catalog().editing()) => self.portal_demo()?,
+            14 => return Ok(true),
             _ => {}
         }
         Ok(false)
     }
 
     fn demo_all(&mut self) -> Result<()> {
-        for step in 0..14 {
+        for step in 0..15 {
             if self.demo_step(step)? {
                 break;
             }
@@ -3695,6 +4072,11 @@ fn grants_fields(editing: &tilewright_editor_preview::EditingCapabilities) -> bo
             .any(|grant| !grant.fields.is_empty())
 }
 
+/// Whether any `editing.objects` entry grants portal editing.
+fn grants_portals(editing: &tilewright_editor_preview::EditingCapabilities) -> bool {
+    editing.objects.values().any(|grant| grant.portal)
+}
+
 /// Labels are logged after successful presentation; this does not own native handles.
 fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
     let editing = app.session.catalog().editing();
@@ -3704,6 +4086,7 @@ fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
         || (step == 10 && !editing.zones.paint)
         || (step == 11 && !(editing.zones.paint && editing.zones.manage))
         || (step == 12 && !editing.anchors.edit)
+        || (step == 13 && !grants_portals(editing))
     {
         None
     } else {
@@ -3721,6 +4104,7 @@ fn demo_phase_label(app: &Application, step: usize) -> Option<&'static str> {
             "zones",
             "zone-manage",
             "anchors",
+            "portals",
         ]
         .get(step)
         .copied()
@@ -4216,6 +4600,7 @@ fn native_pointer_selection(
                 .map_err(|error| error.to_string())
         }
         Hit::Control(control) => app.control(control),
+        Hit::World(x, y) if app.tools.portal_picking() => app.pick_portal_target(x, y),
         Hit::World(x, y) => {
             app.tools.cancel();
             if matches!(app.tools.mode(), ToolMode::Terrain | ToolMode::Zone) {
@@ -4316,7 +4701,12 @@ fn native_key(app: &mut Application, key: Keycode) -> Result<()> {
         }
         return Ok(());
     }
-    // Esc clears a palette filter before it cancels a pending edit.
+    // Esc ends an open portal step, then clears a palette filter, before
+    // it cancels a pending edit.
+    if key == Keycode::Escape && app.tools.retire_portal() {
+        app.presented_generation = None;
+        return Ok(());
+    }
     if key == Keycode::Escape && app.tools.clear_filter() {
         app.presented_generation = None;
         return Ok(());
@@ -4544,7 +4934,18 @@ fn badge_overlay(app: &Application) -> Vec<tilewright_scene::Quad> {
         return Vec::new();
     }
     let facts = app.anchor_view();
-    crate::workspace_render::badge_overlay(&app.prepared, &facts.anchor_tiles, &facts.portal_tiles)
+    let shape = match app.session.world().profile().projection {
+        tilewright_source::Projection::Isometric { .. } => {
+            crate::workspace_render::CellShape::Diamond
+        }
+        tilewright_source::Projection::TopDown { .. } => crate::workspace_render::CellShape::Square,
+    };
+    crate::workspace_render::badge_overlay(
+        &app.prepared,
+        &facts.anchor_tiles,
+        &facts.portal_tiles,
+        shape,
+    )
 }
 
 /// Compose the cached prepared World with `overlay` and the interface. If
@@ -4580,11 +4981,12 @@ fn compose_with_preview(
 }
 
 fn workspace_presentation(app: &mut Application) -> Result<crate::workspace_render::Presentation> {
-    // Zone tints first, then badges, so the badges and the stroke preview
-    // draw over the tints: copies of two
-    // overlays in the same (depth, painter order) slot are ordered only by
-    // the order they are passed here, the first getting the lower semantic
-    // identities and drawing first.
+    // Zone tints and the stroke preview take the World's cell slots: each
+    // copy draws right after its tile's terrain, and where a zone tint and
+    // a preview mark share a slot they draw in the order passed here, so
+    // the preview, passed last, draws over the tint. Badges take no cell
+    // slot: they sit in their own slot after the last World quad, above
+    // every tile and object, whatever order they are passed in.
     let mut overlay = zone_overlay(app);
     overlay.extend(badge_overlay(app));
     overlay.extend(stroke_overlay(app));

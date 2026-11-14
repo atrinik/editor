@@ -139,7 +139,7 @@ fn slash_typing_enter_and_escape_order_through_real_sdl_events() {
     );
     assert_eq!(
         row_text(&mut app, "Place palette").as_deref(),
-        Some("Place palette: 1 of 5 match")
+        Some("Place palette: 1 of 6 match")
     );
     assert_eq!(
         app.status_label(),
@@ -198,7 +198,7 @@ fn slash_typing_enter_and_escape_order_through_real_sdl_events() {
     press(&mut app, &mut input, Keycode::Escape).unwrap();
     assert_eq!(app.tools.palette_filter(), "");
     assert_eq!(app.session.history().pending().unwrap().sealed(), sealed);
-    assert_eq!(palette_rows(&mut app).len(), 5);
+    assert_eq!(palette_rows(&mut app).len(), 6);
     // Keypad divide focuses like `/`; a focused Esc on a non-empty filter
     // clears the text and releases focus without cancelling the diff.
     acknowledge_ui(&mut app);
@@ -267,12 +267,20 @@ fn a_thumbnail_click_chooses_its_row_and_never_reaches_the_world_mask() {
         .into_iter()
         .map(|(text, ..)| text)
         .collect();
-    assert_eq!(rows, ["crate / item", "lamp / item", "marker / item"]);
+    assert_eq!(
+        rows,
+        [
+            "crate / item",
+            "gate / item",
+            "lamp / item",
+            "marker / item"
+        ]
+    );
 
     let objects = app.prepared.mask(app.view.frame_revision, false).unwrap();
-    // Three palette rows and the pinned "Placing" row (bush, hidden).
+    // Four palette rows and the pinned "Placing" row (bush, hidden).
     let thumbnails = thumbnail_quads(&mut app);
-    assert_eq!(thumbnails.len(), 4);
+    assert_eq!(thumbnails.len(), 5);
     assert!(thumbnails.iter().all(|quad| !quad.pickable));
     let widget = app
         .ui

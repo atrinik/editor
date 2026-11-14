@@ -326,6 +326,7 @@ pub fn badge_overlay(
     prepared: &PreparedPreview,
     anchors: &BTreeSet<[i64; 2]>,
     portals: &BTreeSet<[i64; 2]>,
+    shape: CellShape,
 ) -> Vec<Quad> {
     let (depth, painter_order) = prepared
         .scene
@@ -364,19 +365,42 @@ pub fn badge_overlay(
         for quads in cells.into_values() {
             let badge = shrink(quads, corner);
             // The outline first: copies in one slot draw in the order passed.
-            badges.extend(grow(&badge, BADGE_OUTLINE).into_iter().map(|quad| Quad {
-                color: outline,
-                ..quad
-            }));
+            badges.extend(
+                grow(&badge, BADGE_OUTLINE, shape)
+                    .into_iter()
+                    .map(|quad| Quad {
+                        color: outline,
+                        ..quad
+                    }),
+            );
             badges.extend(badge);
         }
     }
     badges
 }
 
-/// `quads` scaled about the centre of their bounds so they reach `width`
-/// further out on each side.
-fn grow(quads: &[Quad], width: f32) -> Vec<Quad> {
+/// What a cell shows: its reference art fills the whole cell in a top-down
+/// view, and is the diamond inscribed in the cell's bounds (corners at the
+/// midpoints of their sides) in an isometric one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellShape {
+    Square,
+    Diamond,
+}
+
+/// `quads`, the parts of one cell, scaled uniformly about the centre of
+/// their union bounds so that every edge of the whole cell's visible shape
+/// (see [`CellShape`]) moves at least `width` outward, measured
+/// perpendicular to the edge. The shape is taken once from the union bounds,
+/// never per part: on bent isometric ground a cell is a mesh of sub-quads,
+/// whose own small shapes would blow the factor up. An edge at distance `d`
+/// from the centre moves `(f - 1) d`; with half-extents `a` and `b`, the
+/// nearest edge is `min(a, b)` away for a square and `a b / hypot(a, b)` for
+/// the diamond, and `f = 1 + width / nearest` moves it exactly `width`. On a
+/// square tile the outline is `width` on every side; on a diamond it is
+/// `width` across each slanted edge (wider along the axes, about 2.2 times
+/// horizontally on a 2:1 diamond).
+fn grow(quads: &[Quad], width: f32, shape: CellShape) -> Vec<Quad> {
     let points = || quads.iter().flat_map(|quad| quad.positions);
     let (Some(left), Some(right), Some(top), Some(bottom)) = (
         points().map(|p| p[0]).reduce(f32::min),
@@ -387,21 +411,22 @@ fn grow(quads: &[Quad], width: f32) -> Vec<Quad> {
         return Vec::new();
     };
     let centre = [f32::midpoint(left, right), f32::midpoint(top, bottom)];
-    let factor = |extent: f32| {
-        if extent > 0.0 {
-            (extent + 2.0 * width) / extent
-        } else {
-            1.0
-        }
+    let (a, b) = ((right - left) / 2.0, (bottom - top) / 2.0);
+    let nearest = match shape {
+        CellShape::Square => a.min(b),
+        CellShape::Diamond => a * b / a.hypot(b),
     };
-    let (fx, fy) = (factor(right - left), factor(bottom - top));
+    if nearest.is_nan() || nearest <= f32::EPSILON {
+        return quads.to_vec();
+    }
+    let factor = 1.0 + width / nearest;
     quads
         .iter()
         .map(|quad| Quad {
             positions: quad.positions.map(|p| {
                 [
-                    centre[0] + fx * (p[0] - centre[0]),
-                    centre[1] + fy * (p[1] - centre[1]),
+                    centre[0] + factor * (p[0] - centre[0]),
+                    centre[1] + factor * (p[1] - centre[1]),
                 ]
             }),
             ..*quad

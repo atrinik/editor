@@ -31,8 +31,14 @@ at `(7,3)`, in view, and `lookout` on layer 0 at `(-2,0)`, left of the view.
 Two `gate` objects carry the sample's portals: `gate_east` at `(7,0)` leads to
 the anchor `arrival`, and `gate_west` at `(0,3)` to the location `(-2,2)` on
 layer 0 of the same plane. The gate is a 16x32 standing prototype (two slate
-posts under a lintel, open between them) that no editing grant reaches, so
-the scripted move, field edit and deletion still take the markers. The catalog
+posts under a lintel, open between them). Its `editing.objects` entry names no
+field and grants `portal: true`, so a gate's portal can be set, changed or
+cleared; like every entry it also lets gates be moved, deleted and placed. The
+scripted move and deletion leave objects whose portal is editable alone, so
+they still take the markers. The scripted demonstration then retargets
+`gate_east` to `lookout`, picks the tile `(0,3)` under `gate_west` (reviewed
+with a warning, then cancelled) and then `(4,3)` as its target, and clears
+that portal. The catalog
 grants `editing.anchors` `{edit: true}`; the scripted demonstration creates
 the anchor `camp` on `(2,3)`, moves it to `(3,4)`, shows that `arrival` cannot
 be deleted while `gate_east` names it, and deletes `camp`.
@@ -43,13 +49,14 @@ Chunk `[-1,0]` contains ground at x=-2/-1 and the marker `marker_negative` at
 The catalog grants movement and the `label` field to `marker_1` by uid, and
 grants the `marker`, `stone`, `bush`, `crate` and `lamp` prototypes through
 `editing.objects` (render layer `item`, field name `label`): every such object
-inside the view bounds can be deleted, moved and relabelled, and all five can
+inside the view bounds can be deleted, moved and relabelled, and all five (and
+the `gate`) can
 be placed, so the Place palette offers a real choice and its search has
 something to narrow. The `stone` entry has `defaults`: a placed stone
 gets the label `New stone` and `settings` `{active: false, visits: 0}`; a placed
 marker gets no fields. The scripted demonstration places a stone on the empty
-tile `(6,1)`, then filters the palette with `A` (crate, lamp and marker
-match) and places a crate on the empty tile `(2,1)`. Prototype grants reach only the active view, so
+tile `(6,1)`, then filters the palette with `A` (crate, gate, lamp and
+marker match) and places a crate on the empty tile `(2,1)`. Prototype grants reach only the active view, so
 `marker_negative` stays read-only with the default bounds.
 
 From the repository root:

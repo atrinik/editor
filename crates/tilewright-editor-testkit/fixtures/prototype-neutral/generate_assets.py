@@ -102,8 +102,9 @@ def image(name):
 def outputs():
     resources, assets = [], []
     placeable = ['marker', 'stone', 'bush', 'crate', 'lamp']
-    # The gate is not placeable: it carries the sample's portals and no
-    # editing grant reaches it.
+    # The gate carries the sample's portals. Its editing grant names no
+    # field and grants portal editing; like every editing.objects entry it
+    # also lets a gate be moved, deleted and placed.
     standing = placeable + ['gate']
     names = ['grass', 'sand'] + placeable + ['grass_edge_' + str(i) for i in range(1, 16)] + ['gate']
     result = {}
@@ -128,7 +129,8 @@ def outputs():
                                          dict(proto='stone', layer='item', fields=['label'],
                                               defaults=dict(label='New stone',
                                                             settings=dict(active=False, visits=0)))]
-                                + [dict(proto=n, layer='item', fields=['label']) for n in ('bush', 'crate', 'lamp')],
+                                + [dict(proto=n, layer='item', fields=['label']) for n in ('bush', 'crate', 'lamp')]
+                                + [dict(proto='gate', layer='item', portal=True)],
                                 zones=dict(paint=True, manage=True),
                                 anchors=dict(edit=True)))
     result[ROOT / 'preview.jsonc'] = (json.dumps(catalog, indent=2) + '\n').encode()

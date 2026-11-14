@@ -108,7 +108,7 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         assert!(!app.demo_step(step).unwrap());
     }
     let selected_before_zones = app.session.selection().cloned();
-    for step in 10..14 {
+    for step in 10..15 {
         if app.demo_step(step).unwrap() {
             break;
         }
@@ -131,7 +131,7 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
     let placed = next_uid();
     let stone = app.session.world().object(&placed).unwrap();
     assert_eq!((stone.proto.as_str(), stone.at), ("stone", Some([6, 1])));
-    // The search step types "A", which keeps crate, lamp and marker,
+    // The search step types "A", which keeps crate, gate, lamp and marker,
     // chooses the first match and places it on (2,1) with the next uid;
     // that object ends selected.
     let searched = next_uid();
@@ -180,7 +180,29 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
             at: [7, 3]
         }
     );
-    assert_eq!(app.session.history().depths(), (13, 0));
+    // The portal step retargets gate_east to `lookout`, sets gate_west's
+    // target by a click on (4, 3) and clears it: three more changes. The
+    // first pick, on the gate's own tile, was reviewed and cancelled.
+    assert_eq!(
+        app.session
+            .world()
+            .object(super::DEMO_RETARGETED_GATE)
+            .unwrap()
+            .portal,
+        Some(tilewright_source::Portal::Anchor {
+            plane: None,
+            anchor: super::DEMO_TARGET_ANCHOR.into()
+        })
+    );
+    assert_eq!(
+        app.session
+            .world()
+            .object(super::DEMO_PICKED_GATE)
+            .unwrap()
+            .portal,
+        None
+    );
+    assert_eq!(app.session.history().depths(), (16, 0));
     for phase in [
         "before",
         "pending",
@@ -215,6 +237,16 @@ fn full_neutral_script_reselects_after_commits_and_edits_field_and_empty_cell() 
         "anchor-delete-refused",
         "anchor-delete",
         "anchor-deleted",
+        "portal",
+        "portal-anchors",
+        "portal-retarget",
+        "portal-retargeted",
+        "portal-pick",
+        "portal-tile-warning",
+        "portal-tile",
+        "portal-tile-set",
+        "portal-clear",
+        "portal-cleared",
     ] {
         assert!(
             temporary
@@ -1968,6 +2000,7 @@ fn p_a_palette_row_and_a_tile_click_review_one_placement_that_accepts_and_undoes
         [
             ("bush / item".to_owned(), true),
             ("crate / item".to_owned(), false),
+            ("gate / item".to_owned(), false),
             ("lamp / item".to_owned(), false),
             ("marker / item".to_owned(), false),
             ("stone / item".to_owned(), false)
@@ -2066,3 +2099,6 @@ mod zone_manage;
 
 #[path = "anchors.rs"]
 mod anchors;
+
+#[path = "portals.rs"]
+mod portals;

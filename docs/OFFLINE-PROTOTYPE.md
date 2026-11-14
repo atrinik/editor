@@ -420,7 +420,9 @@ mode (the toolbar's Anchor, or K) shows them:
   that holds an object with a portal, its own or one carried in its
   inventory, a small dark badge in its last corner (top right). Each badge has
   a 1 px outline of the other tone, so the light one reads on light ground and
-  the dark one on dark ground. A badge is the tile's own exact cell shape
+  the dark one on dark ground; the outline is at least 1 px measured across
+  each edge, the slanted edges of an isometric diamond included. A badge is
+  the tile's own exact cell shape
   scaled down toward that corner. Badges are markers, not tints: they are
   drawn over objects, above all World content (after the last World quad,
   below the interface), so an object on the tile, even one that covers the
@@ -443,9 +445,9 @@ mode (the toolbar's Anchor, or K) shows them:
 - **Inspector.** A click in Anchor mode selects the tile under the pointer
   through the exact cell mask, objects standing on it included. In every mode
   a selected tile lists its anchors and how many portals name each, and a
-  selected object with a portal shows its target, read-only: a plane, layer
-  and tile, or an anchor id and where that anchor is. A portal without a
-  `plane` member targets its own object's plane.
+  selected object with a portal shows its target: a plane, layer and tile, or
+  an anchor id and where that anchor is (see Portals for editing it). A
+  portal without a `plane` member targets its own object's plane.
 
 Editing needs the catalog's optional `editing.anchors` member, `{"edit":
 true}`: a capability flag, never a list of anchor ids, so the catalog keeps
@@ -478,8 +480,8 @@ again whatever the window offered, and World's validation stands behind it.
   entry, expecting its exact canonical JSON; deleting the last anchor leaves
   an empty `anchors` array.
 - **Ids are fixed in this version.** Nothing renames an anchor. To get the
-  same effect, create a new anchor and point the portals at it, once portal
-  editing exists (the next change), then delete the old one.
+  same effect, create a new anchor, point the portals at it (see Portals),
+  then delete the old one.
 
 The review notes compare the anchors before and after, so Undo and Redo are
 described too: "Creates anchor camp on layer 0 at (2, 3).", "Moves anchor
@@ -488,7 +490,97 @@ lead to the new tile (1 portal: object gate_east on main layer 0 (7, 0))." or
 "No portal in the world names it.", and "Deletes anchor camp (layer 0, (3,
 4)); no portal in the world names it.". A move or a delete also warns,
 without blocking Accept, that scripts or saves outside the world may refer to
-the anchor id. Editing portals is not part of this version.
+the anchor id. The counts, the lists of naming objects, the Delete row and
+the badges follow the World shown: a pending portal change moves them
+before it is accepted.
+
+### Portals
+
+A portal is the `portal` member of one object: `{"plane"?, "layer", "at"}`
+leads to a tile, `{"plane"?, "anchor"}` to an anchor, and without `plane` it
+leads into the object's own plane. Portals are one-ended: a way back is
+another object with its own portal, so a target tile with no way back is
+normal and nothing warns about it. Portals are edited one object at a time.
+
+Select the object (in Select or Move mode a click picks it). The inspector
+says where its portal leads: "Portal: none", "Portal: to main, layer 0, (-2,
+2)", or "Portal: to anchor arrival" with the anchor's plane, layer and tile on
+the next row ("Not defined in its plane" when the plane lacks it). With the
+grant it then offers four rows; each edit is one World transaction on the
+object, addressed by its uid, with one recovery record when accepted and
+byte-exact Undo and Redo:
+
+- **Target an anchor** opens a list under it: a hint naming the object, the
+  number of anchors in the whole world, then the anchors grouped by plane, the
+  view's plane first and the others in id order, each with its layer and tile.
+  At most 256 are listed; then "First 256 anchors shown" follows the real
+  total. Ids are elided in the middle when a row is too narrow. The anchor the
+  portal names already is marked and disabled. A row prepares the change.
+- **Target a tile in view** starts a pick step: the row reads "Click a tile
+  in the view (Esc ends)" and the status line names the object. The next
+  click on the view picks the tile under it through the exact cell mask,
+  objects on it included, and prepares a portal to that tile on the view's
+  spatial layer; the object stays selected. A click that hits no tile keeps
+  the step open; Esc or pressing the row again ends it.
+- **Type a location** opens a one-line draft: `layer x y` for the object's
+  own plane, or `plane layer x y`; spaces or commas separate the values. The
+  plane must exist, the layer is a 32-bit integer and x and y are integers
+  within plus or minus 2^53 - 1, as World accepts. An error (and a target
+  where the portal already leads) keeps the draft open with its text.
+- **Clear portal** prepares its removal; disabled when there is none.
+
+The written portal leaves `plane` out when the target is in the object's own
+plane, as the format defaults it, and names it otherwise. Setting a portal on
+an object without one is an absent `test` of `["portal"]` and a `set` that
+adds the member at the end of the object; changing it is one `set` expecting
+the committed portal's canonical JSON; clearing it is one `remove` expecting
+it. World removes a last member with the separator before it, and a comment
+between them goes with it; the rest of the file stays byte for byte.
+
+An open list, pick step or typed draft is for one object and one World. It
+ends with the next action of any kind (a choice, Accept, Cancel, Undo, Redo,
+Reopen, another selection, Clear, deleting the object), a click on the view
+outside a pick step, Esc, another step or draft, and a mode switch, so none
+can act on an object that changed or is gone. The rows are disabled while a
+change is pending.
+
+The review notes compare every object's portal before and after, so Undo and
+Redo are described too: "gate_east now leads to anchor lookout (main, layer
+0, (-2, 0)); it led to anchor arrival (main, layer 0, (7, 3)).", "gate_west
+now has a portal to main, layer 0, (4, 3).", "gate_west no longer has a
+portal; it led to main, layer 0, (4, 3).". World checks that a target plane
+and a target anchor exist, but not that a location target has a map chunk or
+ground, so the review warns, never refuses, using the warnings' own review
+allowance:
+
+- "Warning: gate_west's portal target is in a map chunk that does not exist;
+  World does not check portal targets."
+- "Warning: gate_west's portal target has no ground on the floor grid; World
+  does not check portal targets." The grid is the one tiles are picked on when
+  the view opens: the first grid the catalog grants terrain editing on, else
+  the profile's first ground grid.
+- "Warning: gate_west's portal leads to the tile the object stands on." (for
+  anchor targets too).
+
+A location on another plane or layer is checked the same way in the loaded
+World, which holds every plane, and the review adds that the view cannot
+show it.
+
+Editing needs `"portal": true` on the `editing.objects` entry of the object's
+prototype. It reaches the same objects as that entry's deletion and moves:
+top-level objects of the active view (the catalog's plane and spatial layer,
+inside the view bounds). The target may be anywhere. An entry without
+`portal`, or with `false`, grants no portal editing and the object shows its
+target only; a catalog without `editing.objects` loads and behaves as before.
+The Session checks again whatever the window offered: the grant, that the
+object is placed (not carried in an inventory) and in the view, that no
+change is pending, the source revision, that the target plane exists, that a
+target anchor exists in that plane, and that the portal does not already
+lead there; World's validation stands behind it, and a World refusal leaves
+nothing pending. Objects without a uid cannot be selected, so their portals
+are not editable here; neither are carried objects' portals or those of
+objects on other planes or layers. Creating a pair of portals in one step is
+not offered: set each end on its own object.
 
 ### Placing objects
 
@@ -614,7 +706,17 @@ pending; `anchor-created`), selects (3,4) and moves `camp` there
 (`anchor-move`, pending), shows that `arrival`, which the portal of
 `gate_east` names, cannot be deleted (`anchor-delete-refused`: the Delete row
 disabled under the object that names it), and deletes `camp`
-(`anchor-delete`, pending; `anchor-deleted`). It is a deterministic scripted demonstration,
+(`anchor-delete`, pending; `anchor-deleted`). When an `editing.objects`
+entry grants `portal`, it then selects `gate_east` (`portal`), opens its
+anchor list (`portal-anchors`) and retargets it to `lookout`
+(`portal-retarget`, pending; `portal-retargeted`); selects `gate_west`,
+starts the pick step (`portal-pick`) and clicks the gate's own tile
+(`portal-tile-warning`: pending with the own-tile warning, then cancelled),
+starts it again and clicks (4,3) (`portal-tile`, pending;
+`portal-tile-set`), and clears that portal (`portal-clear`, pending;
+`portal-cleared`). The scripted move and deletion earlier take objects whose
+portal is not editable, so the gates are left for this step. It is a
+deterministic scripted demonstration,
 not a claim of human input. `--reference` produces composed workspace CPU
 reference evidence and
 must be reported separately from an actual visible native window run. Native

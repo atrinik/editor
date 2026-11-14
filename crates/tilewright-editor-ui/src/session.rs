@@ -13,7 +13,23 @@ use tilewright_source::{FieldValue, World};
 use crate::uid::{OsUidSource, UidSource};
 
 mod anchor_edit;
+mod portal_edit;
 mod zone_edit;
+
+/// Where a portal set by [`Action::SetPortal`] leads. The plane is always
+/// named here; the written portal leaves `plane` out when it is the
+/// object's own plane, because the format defaults it to that plane.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PortalTarget {
+    /// Anchor `anchor` of plane `plane`.
+    Anchor { plane: String, anchor: String },
+    /// Plane tile `at` of spatial layer `layer` in plane `plane`.
+    Location {
+        plane: String,
+        layer: i32,
+        at: [i64; 2],
+    },
+}
 
 #[derive(Clone, Debug)]
 pub enum Action {
@@ -149,6 +165,17 @@ pub enum Action {
     DeleteAnchor {
         plane: String,
         anchor: String,
+        expected: [u8; 32],
+    },
+    /// Set (`Some`) or clear (`None`) the portal of placed object `uid`,
+    /// which must be a top-level object of the active view whose prototype
+    /// the catalog grants `portal: true`. One `set` (after an absent test
+    /// when the object has none) or `remove` of its `portal` member, each
+    /// expecting the committed value. The target may be anywhere; its plane
+    /// and, for an anchor target, the anchor must exist.
+    SetPortal {
+        uid: String,
+        target: Option<PortalTarget>,
         expected: [u8; 32],
     },
     Accept,
@@ -696,6 +723,11 @@ impl Session {
             lines.extend(crate::zones::notes(committed, pending.sealed()));
             lines.extend(crate::zones::definition_notes(committed, pending.world()));
             lines.extend(crate::anchors::notes(committed, pending.world()));
+            lines.extend(crate::portals::notes(
+                committed,
+                pending.world(),
+                &self.catalog,
+            ));
             lines.extend(crate::removal::warnings(committed, pending.sealed()));
             lines
         });
@@ -750,6 +782,7 @@ impl Session {
                     | Action::CreateAnchor { .. }
                     | Action::MoveAnchor { .. }
                     | Action::DeleteAnchor { .. }
+                    | Action::SetPortal { .. }
                     | Action::Undo
                     | Action::Redo
             )
@@ -950,6 +983,11 @@ impl Session {
             action @ (Action::CreateAnchor { .. }
             | Action::MoveAnchor { .. }
             | Action::DeleteAnchor { .. }) => self.edit_anchors(&action),
+            Action::SetPortal {
+                uid,
+                target,
+                expected,
+            } => self.edit_portal(&uid, target.as_ref(), expected),
             Action::Accept => self.accept(recovery),
             Action::Cancel => {
                 self.history.cancel();

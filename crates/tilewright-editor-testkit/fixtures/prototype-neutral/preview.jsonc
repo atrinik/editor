@@ -425,6 +425,11 @@
         "fields": [
           "label"
         ]
+      },
+      {
+        "proto": "gate",
+        "layer": "item",
+        "portal": true
       }
     ],
     "zones": {

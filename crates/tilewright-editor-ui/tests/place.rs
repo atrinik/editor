@@ -112,7 +112,7 @@ fn placement_needs_a_grant_and_a_tile_of_the_active_view() {
     let (_dir, mut session) = fixture();
     assert_eq!(
         object_palette(session.catalog()),
-        ["bush", "crate", "lamp", "marker", "stone"]
+        ["bush", "crate", "gate", "lamp", "marker", "stone"]
     );
     // Prototypes without a grant, mapped or not, are refused.
     for proto in ["grass", "unknown"] {
@@ -587,7 +587,7 @@ fn the_place_tool_builds_one_action_from_a_picked_tile_and_a_granted_choice() {
     });
     assert_eq!(
         object_palette(without_stone.catalog()),
-        ["bush", "crate", "lamp", "marker"]
+        ["bush", "crate", "gate", "lamp", "marker"]
     );
     assert!(
         tools
