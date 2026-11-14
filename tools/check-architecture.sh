@@ -31,3 +31,12 @@ if grep -RnE --include='*.rs' --exclude-dir=tests --exclude=tests.rs \
   echo "editor source duplicates a forbidden parser/writer or direct I/O authority" >&2
   exit 1
 fi
+
+# The read-only reports never reach an editing session, history, recovery
+# or provisioning: not even through the ui crate that exports them.
+if grep -RnE --include='*.rs' \
+  '\b(Session|History|DurableRecovery|RecoveryStore)\b|tilewright_edit::|tilewright_editor_(commands|recovery)|provision' \
+  crates/tilewright-editor-observe/src | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' >/dev/null; then
+  echo "the read-only observe crate reaches editing, history, recovery or provisioning" >&2
+  exit 1
+fi

@@ -123,7 +123,8 @@ fn catalog_of_the_fixtures() {
 #[test]
 fn lint_of_the_fixtures() {
     check("lint", "prototype-neutral", &[], "lint-neutral", 0);
-    check("lint", "meadow", &[], "lint-meadow", 0);
+    // No catalog: the editing entry point cannot open it.
+    check("lint", "meadow", &[], "lint-meadow", cli::EXIT_FINDINGS);
 }
 
 #[test]

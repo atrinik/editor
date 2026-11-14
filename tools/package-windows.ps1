@@ -29,7 +29,7 @@ try {
     # The packaged sample must open as a World with the packaged binary.
     & "$Stage/bin/tilewright-editor.exe" open "$Stage/samples/prototype-neutral" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "the packaged sample does not open" }
-    # The read-only commands run on every platform: the packaged sample's
+    # The read-only commands need no editing support: the packaged sample's
     # catalog and art load, and lint finds no error in it.
     & "$Stage/bin/tilewright-editor.exe" overview --json "$Stage/samples/prototype-neutral" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "overview of the packaged sample failed" }

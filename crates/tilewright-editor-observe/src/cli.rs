@@ -75,6 +75,9 @@ fn request<'a>(command: &str, arguments: &'a [OsString]) -> Result<Request<'a>, 
                     .next()
                     .and_then(|text| text.to_str())
                     .ok_or_else(|| usage("--match needs UTF-8 text"))?;
+                if text.starts_with("--") {
+                    return Err(usage("--match TEXT may not start with --"));
+                }
                 if text.len() > MAXIMUM_MATCH_BYTES {
                     return Err(usage(&format!(
                         "--match takes at most {MAXIMUM_MATCH_BYTES} bytes"

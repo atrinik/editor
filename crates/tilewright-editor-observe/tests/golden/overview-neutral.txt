@@ -7,6 +7,7 @@ profile:
     kind: top_down
     tile_size: 32
   render_layers: [floor, edge, item]
+  render_layers_more: 0
   ground_layers: [floor, edge]
   terrain_layer: floor
   terrains: [sand, grass]

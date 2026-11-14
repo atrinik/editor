@@ -949,18 +949,18 @@ impl Session {
                 let location = world
                     .object_location(&uid)
                     .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown UID location"))?;
-                let (plane, layer, _) = self.catalog.view();
-                if location.path.len() != 1 || location.plane != plane || location.chunk.0 != layer
-                {
-                    // The catalog refuses carried `movable_uids` when it loads
-                    // and revalidates before every dispatch, so a carried
-                    // object cannot reach this check today; it stays coded
-                    // like every other carried target.
-                    let code = if location.path.len() == 1 {
-                        RefusalCode::ScopeOutsideView
-                    } else {
-                        RefusalCode::TargetUnsupported
-                    };
+                // The catalog refuses carried `movable_uids` when it loads
+                // and revalidates before every dispatch, so a carried object
+                // cannot reach this check today; it stays coded like every
+                // other carried target.
+                let code = match crate::grants::move_scope(&self.catalog, location) {
+                    crate::grants::MoveScope::InView => None,
+                    crate::grants::MoveScope::OtherPlaneOrLayer => {
+                        Some(RefusalCode::ScopeOutsideView)
+                    }
+                    crate::grants::MoveScope::Carried => Some(RefusalCode::TargetUnsupported),
+                };
+                if let Some(code) = code {
                     return Err(refuse(
                         code,
                         "only placed objects in the active spatial layer can move",

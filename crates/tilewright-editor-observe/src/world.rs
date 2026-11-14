@@ -161,3 +161,34 @@ pub fn load_failure(diagnostics: &[Diagnostic]) -> Map {
             },
         )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::load_failure;
+    use crate::limits::{MAXIMUM_OUTPUT_BYTES, MAXIMUM_TEXT_CHARACTERS};
+    use crate::node::{to_json, to_text};
+    use tilewright_source::Diagnostic;
+
+    #[test]
+    fn the_largest_load_failure_fits_the_budget() {
+        // World's most diagnostics, each with the longest path and message
+        // of characters that print as 12-byte escapes.
+        let text: String = std::iter::repeat_n('\u{e0041}', MAXIMUM_TEXT_CHARACTERS + 1).collect();
+        let diagnostics: Vec<Diagnostic> = (0..tilewright_editor_document::MAXIMUM_DIAGNOSTICS)
+            .map(|_| Diagnostic {
+                path: text.clone(),
+                start: usize::MAX,
+                end: usize::MAX,
+                line: usize::MAX,
+                column: usize::MAX,
+                code: "source.a_long_diagnostic_code_name_of_world",
+                message: text.clone(),
+            })
+            .collect();
+        let report = load_failure(&diagnostics);
+        let json = to_json(&report);
+        assert!(json.len() <= MAXIMUM_OUTPUT_BYTES, "{}", json.len());
+        assert!(to_text(&report).len() <= MAXIMUM_OUTPUT_BYTES);
+        assert!(json.contains("\"diagnostics_more\": 128"));
+    }
+}

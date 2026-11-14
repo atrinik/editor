@@ -6,7 +6,7 @@ use crate::limits::{MAXIMUM_ARRIVALS, MAXIMUM_FIELDS, MAXIMUM_TILE_ANCHORS, MAXI
 use crate::node::{Map, Node};
 use crate::world::{Observed, target_node};
 use tilewright_editor_preview::PreviewCatalog;
-use tilewright_editor_ui::{anchors, zones};
+use tilewright_editor_ui::{anchors, grants, zones};
 use tilewright_source::{FieldValue, Object, World};
 
 pub const FORMAT: &str = "tilewright.editor-tile/1";
@@ -158,7 +158,7 @@ fn object_node(
             .with("fields_more", Node::count(0))
             .into(),
         (Some(catalog), Some(uid)) => Map::new()
-            .with("move", catalog.can_move(world, uid))
+            .with("move", grants::can_move(world, catalog, uid))
             .with("delete", catalog.can_delete(world, uid))
             .with("portal", catalog.can_edit_portal(world, uid))
             .bounded(

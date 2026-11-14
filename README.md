@@ -95,7 +95,7 @@ tools/validate.sh
 ## Read-only commands
 
 `overview`, `tile`, `catalog` and `lint` describe a world without a window or
-an editing session, on every platform, as text or, with `--json`, as one
+an editing session (tested on Linux and Windows), as text or, with `--json`, as one
 bounded JSON document. World text in their output is data, escaped in both
 forms. See [the read-only commands](docs/CLI.md) for the output shapes,
 limits and exit codes.

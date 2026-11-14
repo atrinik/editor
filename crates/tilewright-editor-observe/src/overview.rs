@@ -3,8 +3,8 @@
 
 //! `overview`: what a world holds and what its catalog grants.
 use crate::limits::{
-    MAXIMUM_FIELDS, MAXIMUM_GRANTS, MAXIMUM_LAYERS, MAXIMUM_PLANES, MAXIMUM_TERRAINS,
-    MAXIMUM_VIEW_ZONES,
+    MAXIMUM_FIELDS, MAXIMUM_GRANTS, MAXIMUM_LAYERS, MAXIMUM_PLANES, MAXIMUM_RENDER_LAYERS,
+    MAXIMUM_TERRAINS, MAXIMUM_VIEW_ZONES,
 };
 use crate::node::{Map, Node};
 use crate::world::Observed;
@@ -34,9 +34,11 @@ pub fn report(observed: &Observed) -> Map {
         .text("id", &summary.profile)
         .text("version", &summary.profile_version)
         .with("projection", projection)
-        .ids(
+        .bounded(
             "render_layers",
-            profile.render_layers.iter().map(String::as_str),
+            &profile.render_layers,
+            MAXIMUM_RENDER_LAYERS,
+            |layer| Node::Text(layer.clone()),
         )
         .ids(
             "ground_layers",

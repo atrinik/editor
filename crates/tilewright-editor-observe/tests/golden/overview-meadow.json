@@ -9,6 +9,7 @@
       "tile_size": 32
     },
     "render_layers": ["ground", "detail", "edge", "item"],
+    "render_layers_more": 0,
     "ground_layers": ["ground", "detail", "edge"],
     "terrain_layer": "ground",
     "terrains": ["water", "sand", "grass"],

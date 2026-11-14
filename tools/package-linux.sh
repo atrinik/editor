@@ -40,7 +40,7 @@ python3 tools/prepare-font-pack.py stage --root . --font-pack "${font_pack}" \
 # load.
 "${stage}/tilewright-editor-${version}/bin/tilewright-editor" open \
   "${stage}/tilewright-editor-${version}/samples/prototype-neutral" >/dev/null
-# The read-only commands run on every platform: the packaged sample's catalog
+# The read-only commands need no editing support: the packaged sample's catalog
 # and art load, and lint finds no error in it.
 "${stage}/tilewright-editor-${version}/bin/tilewright-editor" overview --json \
   "${stage}/tilewright-editor-${version}/samples/prototype-neutral" >/dev/null

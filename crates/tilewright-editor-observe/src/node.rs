@@ -127,8 +127,8 @@ impl Map {
     }
 
     /// Adds a list of at most `maximum` items and the member `<key>_more`
-    /// with how many were left out. Items past the bound are counted, not
-    /// built.
+    /// with how many were left out. `item` runs only for the items listed;
+    /// the rest are only counted, so callers build nodes in `item`.
     #[must_use]
     pub fn bounded<T>(
         mut self,
@@ -155,11 +155,36 @@ impl Map {
     }
 }
 
+/// Whether the printers write `character` as an escape rather than as
+/// itself. This is the one definition of the escaped set:
+///
+/// - everything [`unprintable`] matches: every control character (C0, DEL
+///   and C1), U+2028 and U+2029, and the bidirectional formatting
+///   characters U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to
+///   U+2069;
+/// - and invisible or format characters a reader would not see: U+00AD
+///   (soft hyphen), U+180E, U+200B to U+200F, U+2060 to U+2064, U+FEFF,
+///   U+FFF9 to U+FFFB and the tag characters U+E0000 to U+E007F.
+///
+/// Variation selectors are not escaped: they change how a character is
+/// drawn, not what text says.
+pub fn escaped(character: char) -> bool {
+    unprintable(character)
+        || matches!(
+            character,
+            '\u{ad}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{feff}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{e0000}'..='\u{e007f}'
+        )
+}
+
 /// The JSON form: one document, two-space indented, ending with a newline.
-/// Every character [`unprintable`] matches, which covers every control
-/// character (C0, DEL and C1) and the line, paragraph and bidirectional
-/// formatting characters, is written as a `\u` escape, so the document is
-/// safe to print as it is.
+/// Every [`escaped`] character is written as a `\u` escape (a UTF-16
+/// surrogate pair above U+FFFF), so the document is safe to print as it is.
 pub fn to_json(root: &Map) -> String {
     let mut output = String::new();
     map_json(root, 0, &mut output);
@@ -174,13 +199,33 @@ pub fn json_string(text: &str, output: &mut String) {
         match character {
             '"' => output.push_str("\\\""),
             '\\' => output.push_str("\\\\"),
-            character if unprintable(character) => {
-                let _ = write!(output, "\\u{:04x}", u32::from(character));
+            character if escaped(character) => {
+                let mut units = [0; 2];
+                for unit in character.encode_utf16(&mut units) {
+                    let _ = write!(output, "\\u{unit:04x}");
+                }
             }
             character => output.push(character),
         }
     }
     output.push('"');
+}
+
+/// `text` as one field of the text form: every [`escaped`] character
+/// written as its `\u{...}` escape, then [`terminal_field`] over the rest.
+pub fn text_field(text: &str) -> String {
+    let marked: String = text.chars().fold(
+        String::with_capacity(text.len()),
+        |mut marked, character| {
+            if escaped(character) && !unprintable(character) {
+                marked.extend(character.escape_unicode());
+            } else {
+                marked.push(character);
+            }
+            marked
+        },
+    );
+    terminal_field(&marked)
 }
 
 fn indent(depth: usize, output: &mut String) {
@@ -250,7 +295,7 @@ fn node_json(node: &Node, depth: usize, output: &mut String) {
 
 /// The text form: one `name: value` line per member, nested members
 /// indented, list items marked `- `. Every string value is one escaped
-/// field ([`terminal_field`]), so world text cannot add, forge or reorder
+/// field ([`text_field`]), so world text cannot add, forge or reorder
 /// lines, and the whole is passed through [`terminal_safe`] as a backstop.
 pub fn to_text(root: &Map) -> String {
     let mut output = String::new();
@@ -265,7 +310,7 @@ fn scalar_text(node: &Node) -> String {
         Node::Integer(value) => value.to_string(),
         Node::Number(value) => format!("{value:?}"),
         Node::Text(text) if text.is_empty() => "\"\"".into(),
-        Node::Text(text) => terminal_field(text),
+        Node::Text(text) => text_field(text),
         Node::List(items) => format!(
             "[{}]",
             items.iter().map(scalar_text).collect::<Vec<_>>().join(", ")
@@ -345,6 +390,28 @@ mod tests {
             text,
             "name: a\"b\\c\\u{a}\\u{1b}[2J\\u{7f}\\u{85}\\u{2028}\\u{202e}d\ntile: [-2, 3]\nitems:\n  - id: x\n    n: 2\n  - id: y\nnothing: (none)\n"
         );
+    }
+
+    #[test]
+    fn invisible_characters_are_escaped_and_astral_ones_as_surrogate_pairs() {
+        // A tag character, BOM, zero-width space, soft hyphen, word joiner
+        // and an annotation anchor are escaped; a variation selector is not.
+        let text = "a\u{e0041}\u{feff}\u{200b}\u{ad}\u{2060}\u{fff9}\u{180e}\u{fe0f}b";
+        let json = to_json(&Map::new().text("v", text));
+        assert!(
+            json.contains(r#""v": "a\udb40\udc41\ufeff\u200b\u00ad\u2060\ufff9\u180e"#),
+            "{json}"
+        );
+        assert!(json.contains("\u{fe0f}b\""), "{json}");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["v"], text);
+        let shown = to_text(&Map::new().text("v", text));
+        assert_eq!(
+            shown,
+            "v: a\\u{e0041}\\u{feff}\\u{200b}\\u{ad}\\u{2060}\\u{fff9}\\u{180e}\u{fe0f}b\n"
+        );
+        assert!(!super::escaped('\u{fe0f}'));
+        assert!(super::escaped('\u{e007f}') && !super::escaped('\u{e0080}'));
     }
 
     #[test]

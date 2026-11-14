@@ -19,9 +19,11 @@ pub const FORMAT: &str = "tilewright.editor-lint/1";
 /// How much a finding matters. Only errors change the exit code.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Severity {
-    /// The desktop editor cannot open or show the world as it is.
+    /// The desktop editor's editing entry point (`prototype`, started by
+    /// the provisioning helper) cannot open or show the world as it is.
+    /// `open ROOT` and these read-only commands only need World to load it.
     Error,
-    /// Probably a mistake, but the world loads and the editor opens it.
+    /// Probably a mistake, but the editing entry point opens the world.
     Warning,
     /// Worth knowing; nothing is wrong.
     Info,
@@ -67,13 +69,19 @@ pub fn findings(observed: &Observed) -> Vec<Finding> {
     let world = observed.world();
     let mut found = Vec::new();
     match &observed.catalog {
-        Catalog::Absent => {}
+        Catalog::Absent => found.push(Finding {
+            code: "catalog.absent",
+            severity: Severity::Error,
+            location: Map::new().text("path", "preview.jsonc"),
+            message: "The world has no editor catalog, so the desktop editor's editing entry point cannot open it; open and the read-only commands still read it.".into(),
+            detail: None,
+        }),
         Catalog::Invalid(problem) => found.push(Finding {
             code: "catalog.invalid",
             severity: Severity::Error,
             location: Map::new().text("path", "preview.jsonc"),
             message:
-                "The editor catalog does not load, so the desktop editor cannot open this world."
+                "The editor catalog does not load, so the editing entry point cannot open this world."
                     .into(),
             detail: Some(problem.clone()),
         }),
@@ -105,7 +113,7 @@ pub fn findings(observed: &Observed) -> Vec<Finding> {
                     code: "preview.unprepared",
                     severity: Severity::Error,
                     location: view(),
-                    message: "The catalog's view cannot be prepared for display, so the desktop editor cannot open this world.".into(),
+                    message: "The catalog's view cannot be prepared for display, so the desktop editor's editing entry point cannot open this world.".into(),
                     detail: Some(error.to_string()),
                 }),
             }

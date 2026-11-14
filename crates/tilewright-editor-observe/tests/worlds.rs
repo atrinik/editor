@@ -302,19 +302,31 @@ fn every_list_is_bounded_and_counts_what_it_leaves_out() {
         overview["planes"].as_array().unwrap().len(),
         limits::MAXIMUM_PLANES
     );
-    assert_eq!(more(&overview, "planes"), 71 - 64);
+    assert_eq!(
+        more(&overview, "planes"),
+        71 - limits::MAXIMUM_PLANES as u64
+    );
     let main = &overview["planes"][0];
     assert_eq!(main["id"], "main");
-    assert_eq!(more(main, "layers"), 71 - 64);
+    assert_eq!(more(main, "layers"), 71 - limits::MAXIMUM_LAYERS as u64);
     let grants = &overview["catalog"]["grants"];
-    assert_eq!(more(grants, "movable_uids"), 71 - 64);
-    assert_eq!(more(&grants["terrain"][0], "values"), 302 - 64);
+    assert_eq!(
+        more(grants, "movable_uids"),
+        71 - limits::MAXIMUM_GRANTS as u64
+    );
+    assert_eq!(
+        more(&grants["terrain"][0], "values"),
+        302 - limits::MAXIMUM_GRANTS as u64
+    );
 
     let (tile, printed) = json_of("tile", &root, &["main", "0", "0", "0"], 0);
     assert!(printed.len() <= limits::MAXIMUM_OUTPUT_BYTES);
-    assert_eq!(more(&tile, "objects"), 70 - 16);
+    assert_eq!(
+        more(&tile, "objects"),
+        70 - limits::MAXIMUM_TILE_OBJECTS as u64
+    );
     let first = &tile["objects"][0];
-    assert_eq!(more(first, "fields"), 21 - 16);
+    assert_eq!(more(first, "fields"), 21 - limits::MAXIMUM_FIELDS as u64);
     assert_eq!(first["fields"][1]["value_clipped"], true);
     assert_eq!(
         first["fields"][1]["value"]
@@ -325,14 +337,30 @@ fn every_list_is_bounded_and_counts_what_it_leaves_out() {
         limits::MAXIMUM_TEXT_CHARACTERS
     );
     assert_eq!(more(&tile, "anchors"), 10 - 8);
-    assert_eq!(more(&tile, "arrivals"), 70 - 8);
+    assert_eq!(
+        more(&tile, "arrivals"),
+        70 - limits::MAXIMUM_ARRIVALS as u64
+    );
 
     let (catalog, printed) = json_of("catalog", &root, &[], 0);
     assert!(printed.len() <= limits::MAXIMUM_OUTPUT_BYTES);
-    assert_eq!(more(&catalog, "prototypes"), 323 - 256);
-    assert_eq!(more(&catalog, "terrain_palette"), 302 - 256);
-    assert_eq!(more(&catalog, "zone_palette"), 303 - 256);
+    assert_eq!(
+        more(&catalog, "prototypes"),
+        323 - limits::MAXIMUM_PROTOTYPES as u64
+    );
+    assert_eq!(
+        more(&catalog, "terrain_palette"),
+        302 - limits::MAXIMUM_TERRAIN_CHOICES as u64
+    );
+    assert_eq!(
+        more(&catalog, "zone_palette"),
+        303 - limits::MAXIMUM_ZONES as u64
+    );
     let (matched, _) = json_of("catalog", &root, &["--match", "CROWD_ZONE_29"], 0);
+    assert_eq!(
+        run("catalog", &[root.to_str().unwrap(), "--match", "--json"]).code,
+        cli::EXIT_USAGE
+    );
     // crowd_zone_290 to crowd_zone_299.
     assert_eq!(matched["zone_palette"].as_array().unwrap().len(), 10);
     assert_eq!(matched["prototypes"].as_array().unwrap().len(), 0);
@@ -502,4 +530,244 @@ fn the_commands_leave_the_world_tree_exactly_as_it_was() {
             );
         }
     }
+}
+
+#[test]
+fn a_per_uid_move_grant_outside_the_view_layer_is_not_reported_as_allowed() {
+    let (_directory, root) = neutral_copy();
+    let mut chunk = read_json(&root, "planes/main/layers/0/-1_0.jsonc");
+    chunk["layer"] = json!(1);
+    chunk["objects"] = json!([{"uid": "far_1", "at": [5, 5], "proto": "marker", "layer": "item"}]);
+    store_json(&root, "planes/main/layers/1/-1_0.jsonc", &chunk);
+    edit(&root, "preview.jsonc", |catalog| {
+        catalog["editing"]["movable_uids"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("far_1"));
+    });
+    let (tile, _) = json_of("tile", &root, &["main", "1", "-27", "5"], 0);
+    let object = &tile["objects"][0];
+    assert_eq!(object["uid"], "far_1");
+    assert_eq!(
+        object["allowed"],
+        json!({"move": false, "delete": false, "portal": false, "fields": [], "fields_more": 0})
+    );
+    // The same grant in the view's layer is a move.
+    let (tile, _) = json_of("tile", &root, &["main", "0", "3", "2"], 0);
+    assert_eq!(tile["objects"][0]["allowed"]["move"], true);
+}
+
+#[test]
+fn objects_without_a_uid_and_carried_portals_are_reported() {
+    let (_directory, root) = neutral_copy();
+    edit(&root, "planes/main/layers/0/-1_0.jsonc", |chunk| {
+        let objects = chunk["objects"].as_array_mut().unwrap();
+        // Outside the view, so the view still prepares.
+        objects.push(json!({"at": [10, 10], "proto": "marker", "layer": "item"}));
+        objects.push(json!({
+            "uid": "bag_1", "at": [12, 12], "proto": "crate", "layer": "item",
+            "inventory": [{"proto": "marker", "inventory": [
+                {"uid": "inner_1", "proto": "marker", "portal": {"layer": 0, "at": [-20, 12]}}
+            ]}]
+        }));
+    });
+    edit(&root, "preview.jsonc", |catalog| {
+        catalog["editing"]["movable_uids"] = json!(["marker_1", "bag_1"]);
+    });
+    let (tile, _) = json_of("tile", &root, &["main", "0", "-22", "10"], 0);
+    let object = &tile["objects"][0];
+    assert_eq!(object["uid"], Value::Null);
+    assert_eq!(
+        object["allowed"],
+        json!({"move": false, "delete": false, "portal": false, "fields": [], "fields_more": 0})
+    );
+    let (tile, _) = json_of("tile", &root, &["main", "0", "-20", "12"], 0);
+    let bag = &tile["objects"][0];
+    assert_eq!(bag["uid"], "bag_1");
+    assert_eq!(bag["inventory"], 1);
+    assert_eq!(bag["carried"], 2);
+    // A per-uid grant, but on chunk -1_0 of the view's layer: it moves.
+    assert_eq!(bag["allowed"]["move"], true);
+    assert_eq!(tile["arrivals"].as_array().unwrap().len(), 1);
+    assert_eq!(tile["arrivals"][0]["uid"], "inner_1");
+    assert_eq!(tile["arrivals"][0]["carried"], true);
+    assert_eq!(tile["arrivals"][0]["at"], json!([-20, 12]));
+    let (lint, _) = json_of("lint", &root, &[], 0);
+    let own: Vec<&Value> = lint["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["code"] == "portal.target_own_tile")
+        .collect();
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0]["location"]["uid"], "inner_1");
+    assert_eq!(own[0]["location"]["carried"], true);
+    assert_eq!(
+        own[0]["location"]["path"],
+        "planes/main/layers/0/-1_0.jsonc"
+    );
+}
+
+/// An identifier of World's longest, 128 characters, ending in `tag`.
+fn long_id(prefix: char, tag: usize) -> String {
+    let tag = format!("{tag:04}");
+    format!("{prefix}{}{tag}", "x".repeat(127 - tag.len()))
+}
+
+/// Planes past the plane bound, with the longest ids and widest titles,
+/// each with layers past the layer bound.
+fn widest_planes(root: &Path, text: &str) {
+    let root = root.to_path_buf();
+    // Planes with the longest ids and titles, each with every layer full.
+    let mut chunk = read_json(&root, "planes/main/layers/0/-1_0.jsonc");
+    chunk["objects"] = json!([]);
+    edit(&root, "world.jsonc", |world| {
+        for index in 0..=limits::MAXIMUM_PLANES {
+            let id = long_id('q', index);
+            world["planes"].as_array_mut().unwrap().push(json!(id));
+            store_json(
+                &root,
+                &format!("planes/{id}/plane.jsonc"),
+                &json!({"format": "tilewright.plane/1", "id": id, "title": text, "kind": "shared", "chunk_size": 32, "default_zone": long_id('z', 0)}),
+            );
+            store_json(
+                &root,
+                &format!("planes/{id}/zones.jsonc"),
+                &json!({"format": "tilewright.zones/1", "zones": [{"id": long_id('z', 0), "name": text}]}),
+            );
+            chunk["plane"] = json!(id);
+            for layer in 0..=limits::MAXIMUM_LAYERS {
+                chunk["layer"] = json!(layer);
+                store_json(
+                    &root,
+                    &format!("planes/{id}/layers/{layer}/-1_0.jsonc"),
+                    &chunk,
+                );
+            }
+        }
+    });
+}
+
+/// The neutral fixture with every list of every report past its bound, the
+/// longest ids World allows and free text that prints at its widest.
+fn widest() -> (tempfile::TempDir, PathBuf) {
+    let (directory, root) = neutral_copy();
+    // 256 tag characters: each prints as a 12-byte JSON escape, the most.
+    let text: String = std::iter::repeat_n('\u{e0041}', limits::MAXIMUM_TEXT_CHARACTERS).collect();
+    // Field names are at most 64 characters.
+    let field_names: Vec<String> = (0..=limits::MAXIMUM_FIELDS)
+        .map(|i| format!("f{}{i:04}", "x".repeat(59)))
+        .collect();
+    edit(&root, "profile/profile.jsonc", |profile| {
+        let layers = profile["render_layers"].as_array_mut().unwrap();
+        for index in 0..=limits::MAXIMUM_RENDER_LAYERS {
+            layers.push(json!(long_id('r', index)));
+        }
+    });
+    edit(&root, "profile/schema/object.jsonc", |schema| {
+        for name in &field_names {
+            schema["fields"][name] = json!({"type": "string"});
+        }
+    });
+    let mut catalog = read_json(&root, "preview.jsonc");
+    let protos: Vec<String> = (0..=limits::MAXIMUM_PROTOTYPES)
+        .map(|i| long_id('p', i))
+        .collect();
+    let defaults: serde_json::Map<String, Value> = field_names
+        .iter()
+        .map(|name| (name.clone(), json!("x")))
+        .collect();
+    for proto in &protos {
+        store_json(
+            &root,
+            &format!("defs/proto/{proto}.jsonc"),
+            &json!({"format": "tilewright.def/1", "type": "proto", "id": proto, "fields": {}}),
+        );
+        catalog["prototypes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"proto": proto, "resource": "marker", "anchor": "standing"}));
+        catalog["editing"]["terrain"][0]["values"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(proto));
+        catalog["editing"]["objects"].as_array_mut().unwrap().push(
+            json!({"proto": proto, "layer": "item", "fields": field_names, "defaults": defaults}),
+        );
+    }
+    // Objects on tile (0, 0) with the longest uids and every field full.
+    let fields: serde_json::Map<String, Value> = field_names
+        .iter()
+        .map(|name| (name.clone(), json!(text)))
+        .collect();
+    let mut objects = Vec::new();
+    for index in 0..=limits::MAXIMUM_GRANTS {
+        let uid = long_id('u', index);
+        objects.push(json!({
+            "uid": uid, "at": [0, 0], "proto": protos[0], "layer": "item", "fields": fields,
+            "portal": {"plane": long_id('q', 0), "layer": 0, "at": [0, 0]}
+        }));
+        catalog["editing"]["movable_uids"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(uid));
+    }
+    store_json(&root, "preview.jsonc", &catalog);
+    edit(&root, MAIN_CHUNK, |chunk| {
+        chunk["objects"].as_array_mut().unwrap().extend(objects);
+    });
+    edit(&root, "planes/main/zones.jsonc", |zones| {
+        for index in 0..=limits::MAXIMUM_FINDINGS {
+            zones["zones"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"id": long_id('z', index), "name": text}));
+        }
+    });
+    edit(&root, "planes/main/plane.jsonc", |plane| {
+        plane["title"] = json!(text);
+    });
+    widest_planes(&root, &text);
+    (directory, root)
+}
+
+#[test]
+fn reports_at_every_bound_with_the_longest_ids_and_text_fit_the_budget() {
+    let (_directory, root) = widest();
+    for (command, extra) in [
+        ("overview", &[][..]),
+        ("tile", &["main", "0", "0", "0"][..]),
+        ("catalog", &[][..]),
+        ("lint", &[][..]),
+    ] {
+        for json in [true, false] {
+            let mut arguments = vec![root.to_str().unwrap()];
+            if json {
+                arguments.push("--json");
+            }
+            arguments.extend_from_slice(extra);
+            let outcome = run(command, &arguments);
+            assert_eq!(outcome.code, 0, "{command}: {}", outcome.stderr);
+            eprintln!("{command} json={json}: {} bytes", outcome.stdout.len());
+            assert!(outcome.stdout.len() <= limits::MAXIMUM_OUTPUT_BYTES);
+        }
+    }
+    // Every list really is full.
+    let (tile, _) = json_of("tile", &root, &["main", "0", "0", "0"], 0);
+    assert!(more(&tile, "objects") > 0 && more(&tile["objects"][0], "fields") > 0);
+    let (catalog, _) = json_of("catalog", &root, &[], 0);
+    assert!(more(&catalog, "prototypes") > 0 && more(&catalog, "zone_palette") > 0);
+    let long = catalog["prototypes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["proto"].as_str().unwrap().len() == 128)
+        .unwrap();
+    assert!(more(long, "fields") > 0 && more(long, "defaults") > 0);
+    let (overview, _) = json_of("overview", &root, &[], 0);
+    assert!(more(&overview, "planes") > 0 && more(&overview["planes"][1], "layers") > 0);
+    assert!(more(&overview["profile"], "render_layers") > 0);
+    assert!(more(&overview["catalog"]["grants"], "objects") > 0);
+    let (lint, _) = json_of("lint", &root, &[], 0);
+    assert!(more(&lint, "findings") > 0);
 }
