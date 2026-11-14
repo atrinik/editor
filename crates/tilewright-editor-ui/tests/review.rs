@@ -154,7 +154,7 @@ fn warnings_come_first_and_long_excerpts_split_into_256_byte_rows() {
             OMITTED,
             r#"- [...] {\u{a}      "at": [\u{a}        1,\u{a}        4\u{a}      ],\u{a}      "fields": {\u{a}        "label": "Spare marker"\u{a}      },\u{a}      "layer": "item",\u{a}      "proto": "marker",\u{a}      "uid": "marker_2"\u{a}    },\u{a}    {\u{a}      "at": [\"#,
             r#"+ [...] {\u{a}      "at": [\u{a}        7,\u{a}        0\u{a}      ],\u{a}   [...]"#,
-            r#"- u{a}        7,\u{a}        0\u{a}      ],\u{a}   [...]"#,
+            r"- u{a}        7,\u{a}        0\u{a}      ],\u{a}   [...]",
         ])
     );
 }
@@ -182,7 +182,7 @@ fn a_long_change_is_cut_into_rows_of_at_most_256_escaped_bytes() {
         vec![
             HEADER.to_owned(),
             OMITTED.to_owned(),
-            format!(r#"- [...] {start}Trail marker{end} [...]"#),
+            format!(r"- [...] {start}Trail marker{end} [...]"),
             format!("+ [...] {start}{}", "x".repeat(228)),
             format!("+ {}", "x".repeat(256)),
             format!("+ {}{end} [...]", "x".repeat(116)),
