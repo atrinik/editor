@@ -1011,3 +1011,89 @@ fn pending_blocked_and_failed_publication_have_their_own_codes() {
         RefusalCode::ReopenBlocked
     );
 }
+
+#[test]
+fn an_ungranted_prototype_is_grant_missing_even_when_carried() {
+    let dir = fixture_with(|root| {
+        edit_json(root, "preview.jsonc", |catalog| {
+            catalog["editing"]["objects"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|grant| grant["proto"] != "lamp");
+        });
+        edit_json(root, CHUNK, |chunk| {
+            chunk["objects"][0]["inventory"] =
+                json!([{"uid": "carried_lamp", "proto": "lamp", "fields": {"label": "Lamp"}}]);
+        });
+    });
+    let mut session = open(dir.path(), AGENT_ACTOR);
+    let mut records = Records::default();
+    let expected = revision(&session);
+    for action in [
+        Action::Move {
+            uid: "carried_lamp".into(),
+            x: 1,
+            y: 1,
+            expected,
+        },
+        Action::SetField {
+            uid: "carried_lamp".into(),
+            field: "label".into(),
+            value: json!("Moved"),
+            expected,
+        },
+        Action::Remove {
+            uid: "carried_lamp".into(),
+            expected,
+        },
+    ] {
+        let kind = edit_kind(&action).unwrap();
+        assert_eq!(
+            refused(&mut session, action, &mut records),
+            RefusalCode::GrantMissing,
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn a_per_uid_move_needs_an_object_in_the_active_plane_and_layer() {
+    let dir = fixture_with(|root| {
+        edit_json(root, "world.jsonc", |world| {
+            world["planes"] = json!(["main", "other"]);
+        });
+        let directory = root.join("planes/other/layers/0");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            root.join("planes/other/plane.jsonc"),
+            r#"{"format":"tilewright.plane/1","id":"other","kind":"shared","chunk_size":32}"#,
+        )
+        .unwrap();
+        fs::write(
+            directory.join("0_0.jsonc"),
+            json!({"format": "tilewright.chunk/1", "plane": "other", "layer": 0,
+                "chunk": [0, 0], "objects": [{"uid": "elsewhere_marker", "at": [1, 1],
+                "proto": "marker", "layer": "item"}]})
+            .to_string(),
+        )
+        .unwrap();
+        edit_json(root, "preview.jsonc", |catalog| {
+            catalog["editing"]["movable_uids"] = json!(["marker_1", "elsewhere_marker"]);
+        });
+    });
+    let mut session = open(dir.path(), AGENT_ACTOR);
+    let mut records = Records::default();
+    let expected = revision(&session);
+    let to_view = |uid: &str| Action::Move {
+        uid: uid.into(),
+        x: 1,
+        y: 1,
+        expected,
+    };
+    assert_eq!(
+        refused(&mut session, to_view("elsewhere_marker"), &mut records),
+        RefusalCode::ScopeOutsideView
+    );
+    // Granted per uid, the placed object in the view still moves.
+    session.dispatch(to_view("marker_1"), &mut records).unwrap();
+}

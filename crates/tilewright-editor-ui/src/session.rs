@@ -952,6 +952,10 @@ impl Session {
                 let (plane, layer, _) = self.catalog.view();
                 if location.path.len() != 1 || location.plane != plane || location.chunk.0 != layer
                 {
+                    // The catalog refuses carried `movable_uids` when it loads
+                    // and revalidates before every dispatch, so a carried
+                    // object cannot reach this check today; it stays coded
+                    // like every other carried target.
                     let code = if location.path.len() == 1 {
                         RefusalCode::ScopeOutsideView
                     } else {

@@ -7,13 +7,12 @@ use std::fmt;
 
 use crate::{RefusalCode, SessionError};
 
-/// A transaction actor, such as `editor:prototype`, `human:<name>` or
-/// `agent:<client>`. Valid when non-empty, at most
-/// [`Actor::MAXIMUM_CHARACTERS`] characters (the transaction format's
-/// limit) and made only of printable ASCII (space included) and Unicode
-/// letters and digits. That leaves out control characters and every
-/// invisible or format character (bidirectional overrides, zero-width
-/// characters), so an actor built from a client's name reads as it is.
+/// A transaction actor, such as `editor:prototype`, `human:<login>` or
+/// `agent:<client>`: 1 to [`Actor::MAXIMUM_CHARACTERS`] characters of
+/// printable ASCII (U+0020 to U+007E), not starting or ending with a
+/// space. Printable ASCII reads the same on every display: no control,
+/// invisible, combining or right-to-left character can hide in it. A
+/// display name in other scripts belongs elsewhere.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Actor(String);
 
@@ -23,8 +22,9 @@ impl Actor {
 
     /// # Errors
     /// Refuses, with [`RefusalCode::ActorInvalid`], an empty actor, one
-    /// longer than [`Actor::MAXIMUM_CHARACTERS`] characters, or one with a
-    /// character outside the safe set.
+    /// longer than [`Actor::MAXIMUM_CHARACTERS`] characters, one with a
+    /// character outside printable ASCII, or one that starts or ends with
+    /// a space.
     pub fn new(text: impl Into<String>) -> Result<Self, SessionError> {
         let text = text.into();
         let refused = |reason: &str| {
@@ -36,19 +36,15 @@ impl Actor {
         if text.is_empty() {
             return refused("it is empty");
         }
-        if text.chars().count() > Self::MAXIMUM_CHARACTERS {
+        if !text.bytes().all(|byte| matches!(byte, b' '..=b'~')) {
+            return refused("use printable ASCII only (U+0020 to U+007E)");
+        }
+        // Printable ASCII has one byte per character.
+        if text.len() > Self::MAXIMUM_CHARACTERS {
             return refused("it has more than 256 characters");
         }
-        if text.chars().any(char::is_control) {
-            return refused("it contains a control character");
-        }
-        if !text
-            .chars()
-            .all(|c| matches!(c, ' '..='~') || c.is_alphanumeric())
-        {
-            return refused(
-                "use printable ASCII and Unicode letters and digits only (no invisible or format characters)",
-            );
+        if text.starts_with(' ') || text.ends_with(' ') {
+            return refused("it starts or ends with a space");
         }
         Ok(Self(text))
     }
@@ -71,33 +67,33 @@ mod tests {
     use crate::RefusalCode;
 
     #[test]
-    fn actors_are_bounded_non_empty_and_free_of_controls() {
-        assert_eq!(
-            Actor::new("editor:prototype").unwrap().as_str(),
-            "editor:prototype"
-        );
-        assert!(Actor::new("é".repeat(256)).is_ok());
+    fn actors_are_one_to_256_printable_ascii_characters_without_edge_spaces() {
         for text in [
-            "human:Zoë Ångström",
-            "agent:client-1.2 (test)",
-            "human:日本",
+            "editor:prototype",
+            "agent:claude-code/1.2",
+            "human:zoe rose",
+            "~",
         ] {
-            assert!(Actor::new(text).is_ok(), "{text}");
+            assert_eq!(Actor::new(text).unwrap().as_str(), text);
         }
+        assert!(Actor::new("x".repeat(256)).is_ok());
         for text in [
             String::new(),
             "x".repeat(257),
-            "agent:\nname".into(),
-            "agent:\u{7f}".into(),
-            "agent:\u{9b}".into(),
+            "human:Zoë".into(),
+            "human:\u{3164}".into(),
             "agent:\u{202e}reversed".into(),
             "agent:zero\u{200b}width".into(),
             "agent:\u{feff}".into(),
-            "agent:\u{2028}".into(),
             "agent:\u{a0}".into(),
+            "agent:\nname".into(),
+            "agent:\u{7f}".into(),
+            " agent:leading".into(),
+            "agent:trailing ".into(),
+            " ".into(),
         ] {
-            let refused = Actor::new(text).unwrap_err();
-            assert_eq!(refused.code(), RefusalCode::ActorInvalid);
+            let refused = Actor::new(text.clone()).unwrap_err();
+            assert_eq!(refused.code(), RefusalCode::ActorInvalid, "{text:?}");
             assert!(refused.message().starts_with("actor refused: "));
         }
     }

@@ -55,8 +55,9 @@ refusal_codes! {
     SelectionStale => "selection.stale",
     /// The catalog does not grant this edit.
     GrantMissing => "grant.missing",
-    /// The target is outside the catalog's active view, or is not a placed
-    /// object of it.
+    /// The target is outside the catalog's active view, or, for zone
+    /// management and anchor deletion, outside the view's plane. Carried
+    /// objects are [`RefusalCode::TargetUnsupported`].
     ScopeOutsideView => "scope.outside_view",
     /// The named object, plane, zone, anchor, grid or field does not exist.
     TargetUnknown => "target.unknown",

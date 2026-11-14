@@ -26,10 +26,10 @@ bypass anything the desktop app enforces. See
   first to disable its Accept button, but the engine does not rely on it.
 - **The actor.** `Session::new` takes an `Actor`, the `actor` of every
   transaction the session prepares: non-empty, at most 256 characters (the
-  transaction format's limit), and made only of printable ASCII (space
-  included) and Unicode letters and digits, so no control, invisible or
-  format character (such as a bidirectional override) can hide in it; for example
-  `editor:prototype` (the desktop app), `human:<name>` or `agent:<client>`.
+  transaction format's limit) of printable ASCII (U+0020 to U+007E), not
+  starting or ending with a space, so no control, invisible, combining or
+  right-to-left character can hide in it or change how it reads; for example
+  `editor:prototype` (the desktop app), `human:<login>` or `agent:<client>`.
   A redo replays the accepted edit with its actor. An undo replays World's
   inverse of it, which records no actor. Transaction text alone therefore
   does not attribute every step: later work on proposals must record the
@@ -55,12 +55,18 @@ plane tile; zone and anchor actions by plane and id. `Select` and
 `ClearSelection` only change what the desktop app highlights; an accepted
 placement selects the new object.
 
-Per-prototype grants (`editing.objects`, terrain, zones, anchors, portals)
-apply only in the catalog's active view, and only to placed objects, not to
-objects carried in an inventory (refused with the code target.unsupported).
-Per-uid grants (`movable_uids` and `fields`) are not view-scoped: they apply
-to their object wherever it is, though a move's destination must still be in
-the view.
+Per-prototype object grants (`editing.objects`: moving, fields, deletion,
+placement and portals of objects), terrain and zone painting, and anchor
+creation and moves apply only in the catalog's active view: its plane,
+spatial layer and tile bounds. Zone management and anchor deletion apply to
+the view's plane, whatever the bounds. Per-prototype object grants cover
+placed objects only; an object carried in an inventory is refused with the
+code target.unsupported.
+
+Per-uid grants (`movable_uids` and `fields`) are not bounded by the view's
+tiles. A per-uid field edit applies to its object wherever it is. A per-uid
+move still needs a placed (not carried) object in the active plane and
+spatial layer, and a destination inside the view.
 
 ## Refusal codes
 
@@ -79,7 +85,7 @@ Messages are for people and may be reworded; codes are stable.
 | `catalog.refused` | The editor catalog or its resources no longer verify. |
 | `selection.stale` | A selection names a stale frame or an unknown semantic key. |
 | `grant.missing` | The catalog does not grant this edit. |
-| `scope.outside_view` | The target is outside the active view, or is not a placed object of it. |
+| `scope.outside_view` | The target is outside the active view, or for zone management and anchor deletion outside the view's plane. |
 | `target.unknown` | The named object, plane, zone, anchor, grid or field does not exist. |
 | `target.exists` | A new id is already used. |
 | `target.in_use` | The target is still referenced and cannot be deleted. |
@@ -89,7 +95,7 @@ Messages are for people and may be reworded; codes are stable.
 | `input.invalid` | The action's input is malformed, for example unordered stroke cells. |
 | `input.budget` | The action's input exceeds a value, length or count budget. |
 | `change.none` | The action would change nothing. |
-| `actor.invalid` | The actor is empty, too long, or has a character outside printable ASCII and Unicode letters and digits. |
+| `actor.invalid` | The actor is empty, too long, has a character outside printable ASCII, or starts or ends with a space. |
 | `world.refused` | World refused the prepared transaction; nothing is pending. |
 | `review.incomplete` | The pending change's review is incomplete, so Accept is refused. |
 | `history.full` | History has no room for another step. |
