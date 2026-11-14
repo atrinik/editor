@@ -365,7 +365,7 @@ fn every_list_is_bounded_and_counts_what_it_leaves_out() {
     assert_eq!(matched["zone_palette"].as_array().unwrap().len(), 10);
     assert_eq!(matched["prototypes"].as_array().unwrap().len(), 0);
 
-    let (lint, printed) = json_of("lint", &root, &[], 0);
+    let (lint, printed) = json_of("lint", &root, &[], cli::EXIT_FINDINGS);
     assert!(printed.len() <= limits::MAXIMUM_OUTPUT_BYTES);
     assert_eq!(
         lint["findings"].as_array().unwrap().len(),
@@ -373,9 +373,11 @@ fn every_list_is_bounded_and_counts_what_it_leaves_out() {
     );
     // 70 own-tile portals, 300 unused zones, 11 unreferenced anchors and
     // the preview's own note.
+    // The crowded world is over the editing budget too.
+    assert_eq!(lint["counts"]["error"], 1);
     assert_eq!(lint["counts"]["warning"], 70);
     assert_eq!(lint["counts"]["info"], 300 + 11 + 1);
-    assert_eq!(more(&lint, "findings"), 70 + 312 - 256);
+    assert_eq!(more(&lint, "findings"), 1 + 70 + 312 - 256);
 
     // The text forms are bounded the same way.
     for (command, extra) in [
@@ -387,7 +389,7 @@ fn every_list_is_bounded_and_counts_what_it_leaves_out() {
         let mut arguments = vec![root.to_str().unwrap()];
         arguments.extend_from_slice(extra);
         let text = run(command, &arguments);
-        assert_eq!(text.code, 0);
+        assert_eq!(text.code, u8::from(command == "lint"));
         assert!(text.stdout.len() <= limits::MAXIMUM_OUTPUT_BYTES);
     }
 }
@@ -747,7 +749,12 @@ fn reports_at_every_bound_with_the_longest_ids_and_text_fit_the_budget() {
             }
             arguments.extend_from_slice(extra);
             let outcome = run(command, &arguments);
-            assert_eq!(outcome.code, 0, "{command}: {}", outcome.stderr);
+            assert_eq!(
+                outcome.code,
+                u8::from(command == "lint"),
+                "{command}: {}",
+                outcome.stderr
+            );
             eprintln!("{command} json={json}: {} bytes", outcome.stdout.len());
             assert!(outcome.stdout.len() <= limits::MAXIMUM_OUTPUT_BYTES);
         }
@@ -768,6 +775,116 @@ fn reports_at_every_bound_with_the_longest_ids_and_text_fit_the_budget() {
     assert!(more(&overview, "planes") > 0 && more(&overview["planes"][1], "layers") > 0);
     assert!(more(&overview["profile"], "render_layers") > 0);
     assert!(more(&overview["catalog"]["grants"], "objects") > 0);
-    let (lint, _) = json_of("lint", &root, &[], 0);
+    let (lint, _) = json_of("lint", &root, &[], cli::EXIT_FINDINGS);
     assert!(more(&lint, "findings") > 0);
+}
+
+/// The neutral fixture with `count` more prototype definitions.
+fn with_definitions(count: usize) -> (tempfile::TempDir, PathBuf) {
+    let (directory, root) = neutral_copy();
+    for index in 0..count {
+        let proto = format!("extra_{index:03}");
+        store_json(
+            &root,
+            &format!("defs/proto/{proto}.jsonc"),
+            &json!({"format": "tilewright.def/1", "type": "proto", "id": proto, "fields": {}}),
+        );
+    }
+    (directory, root)
+}
+
+/// The World source files of a tree: every JSONC file but the catalog.
+fn world_files(root: &Path) -> usize {
+    snapshot(root)
+        .keys()
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonc")
+                && path.as_path() != Path::new("preview.jsonc")
+        })
+        .count()
+}
+
+#[test]
+fn lint_reports_a_world_over_the_editing_budget_and_everything_else() {
+    // The review's repro: 300 more definitions than the budget's files.
+    let (directory, root) = with_definitions(300);
+    let (before, beside) = (snapshot(&root), snapshot(directory.path()));
+    let (lint, printed) = json_of("lint", &root, &[], cli::EXIT_FINDINGS);
+    // Both loads only read.
+    assert_eq!(snapshot(&root), before);
+    assert_eq!(snapshot(directory.path()), beside);
+    let codes: Vec<&str> = lint["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|finding| finding["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            "world.over_editor_budget",
+            "preview.effects-neutral",
+            "anchor.unreferenced"
+        ]
+    );
+    assert_eq!(lint["findings"][0]["severity"], "error");
+    // As World reported them: the budget, and the files it then left unread.
+    assert_eq!(
+        lint["findings"][0]["location"]["codes"],
+        json!(["source.budget", "source.missing_file"])
+    );
+    assert_eq!(lint["counts"]["error"], 1);
+    let revision = |text: &str| {
+        let document = tilewright_editor_document::WorldDocument::open(&root).unwrap();
+        text.replace(
+            &tilewright_editor_document::revision_hex(&document.revision()),
+            "<revision>",
+        )
+    };
+    let text = run("lint", &[root.to_str().unwrap()]);
+    assert_eq!(text.code, cli::EXIT_FINDINGS);
+    for (name, actual) in [
+        ("lint-over-budget.json", &printed),
+        ("lint-over-budget.txt", &text.stdout),
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden")
+            .join(name);
+        let actual = revision(actual);
+        if std::env::var_os("TILEWRIGHT_UPDATE_GOLDEN").is_some() {
+            std::fs::write(&path, &actual).unwrap();
+            continue;
+        }
+        let expected = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\r\n", "\n");
+        assert_eq!(actual, expected, "golden {name} differs");
+    }
+    // The other commands load with World's default bounds and describe it.
+    let (overview, _) = json_of("overview", &root, &[], 0);
+    assert_eq!(overview["definitions"], 323);
+}
+
+#[test]
+fn a_world_just_inside_the_editing_budget_has_no_budget_finding() {
+    let files = tilewright_editor_document::prototype_load_options().maximum_files;
+    let base = world_files(&fixture_world("prototype-neutral"));
+    let (_inside, root) = with_definitions(files - base);
+    assert_eq!(world_files(&root), files);
+    let (lint, _) = json_of("lint", &root, &[], 0);
+    assert_eq!(lint["counts"]["error"], 0, "{lint}");
+    let (_outside, root) = with_definitions(files - base + 1);
+    let (lint, _) = json_of("lint", &root, &[], cli::EXIT_FINDINGS);
+    assert_eq!(lint["findings"][0]["code"], "world.over_editor_budget");
+}
+
+#[test]
+fn a_budgeted_load_that_succeeds_gives_the_world_the_default_load_gives() {
+    for name in ["prototype-neutral", "meadow"] {
+        let root = fixture_world(name);
+        let budgeted = tilewright_editor_document::WorldDocument::open_prototype(&root).unwrap();
+        let default = tilewright_editor_document::WorldDocument::open(&root).unwrap();
+        assert!(budgeted.world() == default.world(), "{name}");
+    }
 }

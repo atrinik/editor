@@ -26,8 +26,18 @@ a spatial layer (32-bit) and `X Y` are plane tile coordinates (64-bit).
 
 ## Read-only by construction
 
-The commands open the world with `WorldDocument::open` (World's default load
-bounds) and its editor catalog, `preview.jsonc`, with the preview loader.
+`overview`, `tile` and `catalog` open the world with `WorldDocument::open`
+(World's default load bounds), so they can describe a world the editing
+entry point refuses as over its load budget. `lint` first opens it with the
+editing entry point's budget (`WorldDocument::open_prototype`). If that
+succeeds, its World is the one the default load gives: both loads read the
+same files with the same parser and validation, and limits can only refuse
+a world, never change one (a test compares the two Worlds). If it fails and
+the default load succeeds, the budget alone refused the world: lint reports
+`world.over_editor_budget` and its other findings come from the default
+load. If both fail, the default load's diagnostics are the load failure, as
+for every other command. Each command then opens the editor catalog,
+`preview.jsonc`, with the preview loader.
 Nothing else is opened: no session, recovery store, provisioned copy,
 transaction or publication. The crate that builds the reports,
 `tilewright-editor-observe`, never constructs a `Session` and has no direct
@@ -114,7 +124,7 @@ The `catalog` member reports the editor catalog: `status` is `absent` (no
   takes at most 64 bytes.
 - `tilewright.editor-lint/1`: `counts` by severity and `findings`, each with a
   stable `code`, a `severity`, a `location` (some of `path`, `plane`,
-  `layer`, `tile`, `uid`, `carried`, `anchor`, `zone`, `grid`), a `message`
+  `layer`, `tile`, `uid`, `carried`, `anchor`, `zone`, `grid`, `codes`), a `message`
   this editor wrote and a `detail` quoting the loader when there is one.
 - `tilewright.editor-load-failure/1`: `problems` and `diagnostics` (path,
   line, column, byte span, code and message), when the world does not load.
@@ -144,6 +154,7 @@ wrong.
 
 | Code | Severity | Meaning |
 |---|---|---|
+| `world.over_editor_budget` | error | The prototype load budget refuses the world, which loads with World's default bounds. `location.codes` lists World's diagnostic codes for the budgeted load as World reported them, such as `source.budget` and the `source.missing_file` of the files it then left unread. |
 | `catalog.absent` | error | The world has no `preview.jsonc`. The editing entry point cannot open it; `open ROOT` and these commands can. |
 | `catalog.invalid` | error | `preview.jsonc` is there but does not load. |
 | `preview.unprepared` | error | The catalog's view cannot be prepared for display, for example an object in it whose prototype the catalog cannot draw. |
@@ -153,10 +164,6 @@ wrong.
 | `portal.target_no_ground` | warning | A location target has no ground on the pick grid. |
 | `anchor.unreferenced` | info | No portal names the anchor. |
 | `zone.unused` | info | No tile, chunk palette or child zone uses the zone and it is not the plane default. |
-
-Lint does not yet report a world over the prototype load budget: these
-commands load with World's default bounds, and telling whether the
-prototype budget holds would take a second load.
 
 The portal checks are the ones the desktop review shows when a portal is
 edited; the pick grid is the first grid the catalog grants terrain editing

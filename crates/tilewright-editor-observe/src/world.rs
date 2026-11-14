@@ -26,6 +26,17 @@ pub enum Catalog {
 pub struct Observed {
     pub document: WorldDocument,
     pub catalog: Catalog,
+    /// Only after [`Observed::open_for_lint`]: the World diagnostic codes,
+    /// sorted and without repeats, with which the editing entry point's
+    /// load budget refused a world that loads with World's default bounds.
+    /// `None` when the world fits the budget or was not checked.
+    pub over_editor_budget: Option<Vec<&'static str>>,
+}
+
+fn diagnostics(error: tilewright_editor_document::Error) -> Vec<Diagnostic> {
+    match error {
+        tilewright_editor_document::Error::Invalid(diagnostics) => diagnostics,
+    }
 }
 
 impl Observed {
@@ -35,9 +46,45 @@ impl Observed {
     /// # Errors
     /// World's diagnostics, when the world does not load.
     pub fn open(root: &Path) -> Result<Self, Vec<Diagnostic>> {
-        let document = WorldDocument::open(root).map_err(|error| match error {
-            tilewright_editor_document::Error::Invalid(diagnostics) => diagnostics,
-        })?;
+        let document = WorldDocument::open(root).map_err(diagnostics)?;
+        Ok(Self::with_catalog(document, None))
+    }
+
+    /// Opens the world as [`Observed::open`] does, but first with the
+    /// editing entry point's load budget
+    /// ([`tilewright_editor_document::prototype_load_options`]). The two
+    /// loads read the same files with the same parser and validation and
+    /// differ only in their limits, which can refuse a world but never
+    /// change one: when the budgeted load succeeds, its World is the one the
+    /// default load would give. When it fails and the default load
+    /// succeeds, the budget alone refused the world, and its diagnostic
+    /// codes are kept in [`Observed::over_editor_budget`]. When both fail,
+    /// the default load's diagnostics are the error, as for
+    /// [`Observed::open`].
+    ///
+    /// # Errors
+    /// World's diagnostics under default bounds, when the world does not
+    /// load.
+    pub fn open_for_lint(root: &Path) -> Result<Self, Vec<Diagnostic>> {
+        match WorldDocument::open_prototype(root) {
+            Ok(document) => Ok(Self::with_catalog(document, None)),
+            Err(error) => {
+                let mut codes: Vec<&'static str> = diagnostics(error)
+                    .iter()
+                    .map(|diagnostic| diagnostic.code)
+                    .collect();
+                codes.sort_unstable();
+                codes.dedup();
+                let document = WorldDocument::open(root).map_err(diagnostics)?;
+                Ok(Self::with_catalog(document, Some(codes)))
+            }
+        }
+    }
+
+    fn with_catalog(
+        document: WorldDocument,
+        over_editor_budget: Option<Vec<&'static str>>,
+    ) -> Self {
         let catalog = match document.source().exists("preview.jsonc") {
             Ok(false) => Catalog::Absent,
             Err(error) => Catalog::Invalid(error.to_string()),
@@ -50,7 +97,11 @@ impl Observed {
                 Err(error) => Catalog::Invalid(error.to_string()),
             },
         };
-        Ok(Self { document, catalog })
+        Self {
+            document,
+            catalog,
+            over_editor_budget,
+        }
     }
 
     pub fn world(&self) -> &World {

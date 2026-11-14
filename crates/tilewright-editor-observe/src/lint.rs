@@ -62,12 +62,37 @@ impl Finding {
     }
 }
 
+/// The finding for a world the editing entry point's load budget refuses,
+/// with the World diagnostic codes it refused with. Its text is all this
+/// editor's: the budget's numbers, never world text.
+fn over_budget(codes: &[&'static str]) -> Finding {
+    let budget = tilewright_editor_document::prototype_load_options();
+    Finding {
+        code: "world.over_editor_budget",
+        severity: Severity::Error,
+        location: Map::new().ids("codes", codes.iter().copied()),
+        message: format!(
+            "The editing entry point (prototype) refuses this world: its load budget is {} files, {} directory entries and {} bytes, and per document {} bytes, {} values and {} array items.",
+            budget.maximum_files,
+            budget.maximum_entries,
+            budget.maximum_total_bytes,
+            budget.limits.max_input_bytes,
+            budget.limits.max_values,
+            budget.limits.max_array_items,
+        ),
+        detail: None,
+    }
+}
+
 /// Every finding about `observed`, in a fixed order: the catalog, the
 /// prepared view, portals in World order, then anchors and zones by plane
 /// and id.
 pub fn findings(observed: &Observed) -> Vec<Finding> {
     let world = observed.world();
     let mut found = Vec::new();
+    if let Some(codes) = &observed.over_editor_budget {
+        found.push(over_budget(codes));
+    }
     match &observed.catalog {
         Catalog::Absent => found.push(Finding {
             code: "catalog.absent",

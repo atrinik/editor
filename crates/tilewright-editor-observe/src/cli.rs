@@ -115,7 +115,13 @@ pub fn run(command: &str, arguments: &[OsString]) -> Outcome {
     } else {
         None
     };
-    let observed = match Observed::open(Path::new(request.positional[0])) {
+    let root = Path::new(request.positional[0]);
+    let opened = if command == "lint" {
+        Observed::open_for_lint(root)
+    } else {
+        Observed::open(root)
+    };
+    let observed = match opened {
         Ok(observed) => observed,
         Err(diagnostics) => {
             let mut outcome = printed(&load_failure(&diagnostics), request.json, EXIT_NOT_LOADED);
