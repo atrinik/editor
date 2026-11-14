@@ -8,7 +8,7 @@
 //! something changes); World validates the result when it is prepared, and
 //! its refusal leaves nothing pending. World does not check that a
 //! location target has a chunk or ground: the review warns about that.
-use super::{PortalTarget, Session, SessionError, refuse};
+use super::{PortalTarget, RefusalCode, Session, SessionError, refuse};
 use crate::anchors::{Target, resolve};
 use serde_json::Value;
 
@@ -69,7 +69,9 @@ impl Session {
         expected: [u8; 32],
     ) -> Result<(), SessionError> {
         let world = self.history.document().world();
-        let object = world.object(uid).ok_or_else(|| refuse("unknown UID"))?;
+        let object = world
+            .object(uid)
+            .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown UID"))?;
         if !self
             .catalog
             .editing()
@@ -78,14 +80,16 @@ impl Session {
             .is_some_and(|grant| grant.portal)
         {
             return Err(refuse(
+                RefusalCode::GrantMissing,
                 "portal editing refused: the catalog does not grant portal editing for this object's prototype (editing.objects portal)",
             ));
         }
         let location = world
             .object_location(uid)
-            .ok_or_else(|| refuse("unknown UID location"))?;
+            .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown UID location"))?;
         if location.path.len() != 1 {
             return Err(refuse(
+                RefusalCode::TargetUnsupported,
                 "only placed objects can have their portal edited, not objects carried in an inventory",
             ));
         }
@@ -93,6 +97,7 @@ impl Session {
         // target may be anywhere.
         if !self.catalog.can_edit_portal(world, uid) {
             return Err(refuse(
+                RefusalCode::ScopeOutsideView,
                 "only placed objects in the active view can have their portal edited",
             ));
         }
@@ -106,8 +111,9 @@ impl Session {
         let address = format!("{{\"uid\": {}}}", string(uid));
         let operations = match target {
             None => {
-                let canonical =
-                    committed.ok_or_else(|| refuse("the object has no portal to clear"))?;
+                let canonical = committed.ok_or_else(|| {
+                    refuse(RefusalCode::ChangeNone, "the object has no portal to clear")
+                })?;
                 vec![format!(
                     "{{\"op\": \"remove\", \"object\": {address}, \"pointer\": [\"portal\"], \"expect\": {canonical}}}"
                 )]
@@ -116,12 +122,16 @@ impl Session {
                 let (PortalTarget::Anchor { plane, .. } | PortalTarget::Location { plane, .. }) =
                     target;
                 let source = world.planes().get(plane).ok_or_else(|| {
-                    refuse("unknown target plane: the world has no plane with this id")
+                    refuse(
+                        RefusalCode::TargetUnknown,
+                        "unknown target plane: the world has no plane with this id",
+                    )
                 })?;
                 if let PortalTarget::Anchor { anchor, .. } = target
                     && !source.anchors.contains_key(anchor)
                 {
                     return Err(refuse(
+                        RefusalCode::TargetUnknown,
                         "unknown anchor: it is not in the target plane's anchors.jsonc",
                     ));
                 }
@@ -129,7 +139,10 @@ impl Session {
                     .as_ref()
                     .is_some_and(|current| same(current, target))
                 {
-                    return Err(refuse("the portal already leads there"));
+                    return Err(refuse(
+                        RefusalCode::ChangeNone,
+                        "the portal already leads there",
+                    ));
                 }
                 let value = portal_text(own, target);
                 match committed {

@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 tilewright-editor-project.workspace = true
 tilewright-editor-commands.workspace = true
+tilewright-editor-document.workspace = true
 tilewright-editor-preview.workspace = true
 tilewright-source.workspace = true
 tilewright-edit.workspace = true
@@ -19,7 +20,6 @@ unicode-segmentation = "=1.13.3"
 getrandom = { version = "=0.4.3", default-features = false }
 
 [dev-dependencies]
-tilewright-editor-document.workspace = true
 tilewright-editor-testkit.workspace = true
 tempfile.workspace = true
 

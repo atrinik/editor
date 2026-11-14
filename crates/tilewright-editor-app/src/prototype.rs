@@ -39,13 +39,13 @@ const STROKE_INTERRUPTED: &str = "Brush stroke ended before release; nothing was
 
 type Result<T> = std::result::Result<T, String>;
 type UiRows = Vec<(String, Option<Control>, bool, bool)>;
-const MAXIMUM_REVIEW_BYTES: usize = 64 << 10;
-const REVIEW_CONTEXT_BYTES: usize = 24;
-const REVIEW_ROW_BYTES: usize = 256;
-/// Separate allowance for deletion warnings, which are already bounded.
-const REVIEW_WARNING_BYTES: usize = 16 << 10;
-const REVIEW_WARNINGS_OMITTED: &str = "Further warnings are omitted from this review.";
-const REVIEW_LIMIT_MESSAGE: &str = "Change exceeds the visible review limit. Cancel this edit.";
+// The review text and its completeness limits are the engine's; the app
+// lays the lines out.
+#[cfg(test)]
+use tilewright_editor_ui::review::{MAXIMUM_REVIEW_BYTES, append_change_review};
+use tilewright_editor_ui::review::{REVIEW_LIMIT_MESSAGE, Review};
+/// The actor of every transaction the desktop app prepares.
+const ACTOR: &str = "editor:prototype";
 const NOTHING_TO_PLACE: &str = "Place is unavailable: the catalog grants no prototype to place.";
 /// Sidebar row heights and the gap between rows, in logical pixels. Place
 /// palette rows are taller so their thumbnails stay legible.
@@ -193,11 +193,6 @@ enum Capability {
     Delete,
 }
 
-struct SourceReview {
-    lines: Vec<String>,
-    complete: bool,
-}
-
 struct Application {
     session: Session,
     recovery: DurableRecovery,
@@ -276,7 +271,8 @@ pub fn run(arguments: &[String]) -> Result<()> {
         PreviewLimits::default(),
     )
     .map_err(|error| error.to_string())?;
-    let mut session = Session::new(History::new(document), catalog, resources);
+    let actor = tilewright_editor_ui::Actor::new(ACTOR).map_err(|error| error.to_string())?;
+    let mut session = Session::new(History::new(document), catalog, resources, actor);
     if demo {
         // Scripted evidence is reproducible: its placements get the same uids
         // on every run. Interactive placement uses the OS random source.
@@ -2719,55 +2715,11 @@ impl Application {
     }
 
     fn diff_lines(&self) -> Vec<String> {
-        self.source_review().lines
+        self.source_review().lines.clone()
     }
 
-    fn source_review(&self) -> SourceReview {
-        let Some(plan) = self.session.history().pending() else {
-            return SourceReview {
-                lines: vec!["No pending changes. Edits are reviewed before saving.".into()],
-                complete: true,
-            };
-        };
-        let mut review = SourceReview {
-            lines: Vec::new(),
-            complete: true,
-        };
-        let mut remaining = MAXIMUM_REVIEW_BYTES;
-        // Deletion warnings come first, with their own allowance outside the
-        // diff budget: they inform the author and never block Accept.
-        let mut allowance = REVIEW_WARNING_BYTES;
-        for warning in self.session.pending_warnings() {
-            let warning = terminal_field(warning);
-            if warning.len() > allowance {
-                review.lines.push(REVIEW_WARNINGS_OMITTED.into());
-                break;
-            }
-            allowance -= warning.len();
-            review.lines.push(warning);
-        }
-        for (index, file) in plan.changed().enumerate() {
-            if index >= 32 {
-                review.complete = false;
-                break;
-            }
-            review
-                .lines
-                .push(format!("{} / source excerpt; scroll for more", file.path));
-            if !append_change_review(
-                &mut review.lines,
-                file.before.as_deref().unwrap_or("<absent>"),
-                file.after.as_deref().unwrap_or("<absent>"),
-                &mut remaining,
-            ) {
-                review.complete = false;
-                break;
-            }
-        }
-        if !review.complete {
-            review.lines.insert(0, REVIEW_LIMIT_MESSAGE.into());
-        }
-        review
+    fn source_review(&self) -> &Review {
+        self.session.review()
     }
 
     fn control(&mut self, control: Control) -> Result<()> {
@@ -3667,105 +3619,6 @@ impl Application {
         }
         Ok(())
     }
-}
-
-/// Read-only display ranges from exact prepared images; no source parsing or writing.
-fn changed_context(before: &str, after: &str) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
-    let mut prefix = before
-        .bytes()
-        .zip(after.bytes())
-        .take_while(|(a, b)| a == b)
-        .count();
-    while !before.is_char_boundary(prefix) || !after.is_char_boundary(prefix) {
-        prefix -= 1;
-    }
-    let mut suffix = before[prefix..]
-        .bytes()
-        .rev()
-        .zip(after[prefix..].bytes().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-    while !before.is_char_boundary(before.len() - suffix)
-        || !after.is_char_boundary(after.len() - suffix)
-    {
-        suffix -= 1;
-    }
-    let context = |text: &str| {
-        let mut start = prefix.saturating_sub(REVIEW_CONTEXT_BYTES);
-        while !text.is_char_boundary(start) {
-            start -= 1;
-        }
-        let mut end = (text.len() - suffix)
-            .saturating_add(REVIEW_CONTEXT_BYTES)
-            .min(text.len());
-        while !text.is_char_boundary(end) {
-            end += 1;
-        }
-        start..end
-    };
-    (context(before), context(after))
-}
-
-fn review_chunks(text: &str, range: std::ops::Range<usize>) -> Vec<String> {
-    let escaped = terminal_field(&text[range.clone()]);
-    let mut rows = Vec::new();
-    let mut start = 0;
-    while start < escaped.len() {
-        let mut end = (start + REVIEW_ROW_BYTES).min(escaped.len());
-        while !escaped.is_char_boundary(end) {
-            end -= 1;
-        }
-        let prefix = if start == 0 && range.start > 0 {
-            "[...] "
-        } else {
-            ""
-        };
-        let suffix = if end == escaped.len() && range.end < text.len() {
-            " [...]"
-        } else {
-            ""
-        };
-        rows.push(format!("{prefix}{}{suffix}", &escaped[start..end]));
-        start = end;
-    }
-    if rows.is_empty() {
-        rows.push("<empty>".into());
-    }
-    rows
-}
-
-fn append_change_review(
-    lines: &mut Vec<String>,
-    before: &str,
-    after: &str,
-    remaining: &mut usize,
-) -> bool {
-    let (old, new) = changed_context(before, after);
-    let bytes = old.len().saturating_add(new.len());
-    if bytes > *remaining {
-        return false;
-    }
-    let old_rows = review_chunks(before, old);
-    let new_rows = review_chunks(after, new);
-    let displayed = old_rows
-        .iter()
-        .chain(&new_rows)
-        .map(String::len)
-        .sum::<usize>();
-    if displayed > *remaining {
-        return false;
-    }
-    *remaining -= displayed;
-    lines.push("[...] marks unchanged source omitted from this excerpt.".into());
-    for index in 0..old_rows.len().max(new_rows.len()) {
-        if let Some(row) = old_rows.get(index) {
-            lines.push(format!("- {row}"));
-        }
-        if let Some(row) = new_rows.get(index) {
-            lines.push(format!("+ {row}"));
-        }
-    }
-    true
 }
 
 /// Push a row naming zone `id` and record how to fit it: `variants` are

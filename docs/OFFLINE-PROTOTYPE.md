@@ -107,7 +107,9 @@ interactive acceptance evidence.
 The source review panel shows change-centered before/after sections and can
 scroll. Unchanged omitted context is marked explicitly. Complete changed spans
 must fit the 64 KiB escaped-review budget and 32-file bound; an oversized review
-disables acceptance and retains the pending plan for cancellation. The complete
+disables acceptance and retains the pending plan for cancellation. The review
+text, these limits and the refusal of an incomplete Accept belong to the
+editing engine, not the window; see [the engine guide](ENGINE.md). The complete
 sealed source images remain authoritative. The terminal also prints a bounded
 planned source diff and diagnostics; the sealed plan retains the exact images.
 Selection uses exact reference-renderer semantic masks for the matching frame;

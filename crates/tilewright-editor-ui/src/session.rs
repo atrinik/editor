@@ -10,11 +10,26 @@ use tilewright_editor_preview::{
 };
 use tilewright_source::{FieldValue, World};
 
+use crate::Actor;
+use crate::review::{PendingSummary, REVIEW_LIMIT_MESSAGE, Review};
 use crate::uid::{OsUidSource, UidSource};
 
 mod anchor_edit;
 mod portal_edit;
+pub(crate) mod refusal;
 mod zone_edit;
+
+use refusal::refuse;
+pub use refusal::{RefusalCode, SessionError};
+
+/// A failure outside the action's input: a bug, not a refusal of it.
+fn internal(error: impl fmt::Display) -> SessionError {
+    SessionError::new(RefusalCode::Internal, error.to_string())
+}
+/// A source document that cannot be read or parsed.
+fn invalid_source(error: impl fmt::Display) -> SessionError {
+    SessionError::new(RefusalCode::SourceInvalid, error.to_string())
+}
 
 /// Where a portal set by [`Action::SetPortal`] leads. The plane is always
 /// named here; the written portal leaves `plane` out when it is the
@@ -220,18 +235,6 @@ impl fmt::Display for SessionStatus {
     }
 }
 
-#[derive(Debug)]
-pub struct SessionError(pub String);
-impl fmt::Display for SessionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for SessionError {}
-fn refuse(message: &str) -> SessionError {
-    SessionError(message.into())
-}
-
 /// Toolkit-canonical source spellings for the fixed coordinate guard layout.
 /// In particular, World's transaction comparisons distinguish `-0` from `0`.
 struct CoordinateGuards {
@@ -244,8 +247,7 @@ impl CoordinateGuards {
         text: String,
         limits: &tilewright_jsonc::Limits,
     ) -> Result<String, SessionError> {
-        let mut syntax = tilewright_jsonc::Document::parse(text, limits)
-            .map_err(|error| SessionError(error.to_string()))?;
+        let mut syntax = tilewright_jsonc::Document::parse(text, limits).map_err(internal)?;
         let guards = std::iter::once((2, "value", &self.old_at)).chain(
             self.changed_axes
                 .iter()
@@ -258,15 +260,23 @@ impl CoordinateGuards {
                 .get("operations")
                 .and_then(tilewright_jsonc::Value::as_array)
                 .filter(|operations| operations.len() == 3 + self.changed_axes.len())
-                .ok_or_else(|| refuse("invalid coordinate transaction guard layout"))?;
+                .ok_or_else(|| {
+                    refuse(
+                        RefusalCode::Internal,
+                        "invalid coordinate transaction guard layout",
+                    )
+                })?;
             let span = operations
                 .get(index)
                 .and_then(|operation| operation.get(key))
-                .ok_or_else(|| refuse("missing coordinate transaction guard"))?
+                .ok_or_else(|| {
+                    refuse(
+                        RefusalCode::Internal,
+                        "missing coordinate transaction guard",
+                    )
+                })?
                 .span();
-            syntax = syntax
-                .replace(span, value, limits)
-                .map_err(|error| SessionError(error.to_string()))?;
+            syntax = syntax.replace(span, value, limits).map_err(internal)?;
         }
         Ok(syntax.source().into())
     }
@@ -285,14 +295,24 @@ pub struct Session {
     /// Review notes and warnings for the pending transaction, refreshed
     /// after every dispatch; only dispatch changes the pending transaction.
     warnings: Vec<String>,
+    /// The review of the pending transaction, refreshed with `warnings`.
+    review: Review,
+    /// The actor of every transaction this session prepares.
+    actor: Actor,
     /// Material for the uids of placed objects.
     uids: Box<dyn UidSource>,
     /// The uid a pending placement adds; selected when it is accepted.
     placing: Option<String>,
 }
 impl Session {
-    pub fn new(history: History, catalog: PreviewCatalog, resources: ReadyResources) -> Self {
-        Self {
+    /// A session whose transactions all carry `actor`.
+    pub fn new(
+        history: History,
+        catalog: PreviewCatalog,
+        resources: ReadyResources,
+        actor: Actor,
+    ) -> Self {
+        let mut session = Self {
             history,
             catalog,
             resources,
@@ -307,9 +327,17 @@ impl Session {
                 recovery_descriptor: None,
             },
             warnings: Vec::new(),
+            review: Review::of(None, &[]),
+            actor,
             uids: Box::new(OsUidSource),
             placing: None,
-        }
+        };
+        session.refresh_review();
+        session
+    }
+    /// The actor of every transaction this session prepares.
+    pub fn actor(&self) -> &Actor {
+        &self.actor
     }
     /// Replace the uid source, for example with a deterministic one in tests
     /// and the scripted demonstration.
@@ -359,8 +387,25 @@ impl Session {
         self.generation = self
             .generation
             .checked_add(1)
-            .ok_or_else(|| refuse("frame generation exhausted"))?;
+            .ok_or_else(|| refuse(RefusalCode::Internal, "frame generation exhausted"))?;
         Ok(())
+    }
+    /// The review of the pending transaction, as a person sees it: its
+    /// notes and warnings, then a bounded excerpt of every changed file.
+    /// Accept is refused while it is incomplete.
+    pub fn review(&self) -> &Review {
+        &self.review
+    }
+    /// A bounded structured view of the pending transaction, or `None`
+    /// when nothing is pending.
+    pub fn pending_summary(&self) -> Option<PendingSummary<'_>> {
+        let pending = self.history.pending()?;
+        Some(PendingSummary::of(
+            self.history.document().revision(),
+            pending,
+            &self.review,
+            &self.warnings,
+        ))
     }
     /// Review notes for every object the pending transaction adds and
     /// warnings for every object it removes, judged against the committed
@@ -375,23 +420,52 @@ impl Session {
             &self.resources,
             PreviewLimits::default(),
         )
-        .map_err(|e| SessionError(e.to_string()))
+        .map_err(|e| SessionError::new(RefusalCode::CatalogRefused, e.to_string()))
     }
     fn verify_revision(&self, expected: [u8; 32]) -> Result<(), SessionError> {
         if expected != self.history.document().revision() {
-            return Err(refuse("stale source revision"));
+            return Err(refuse(RefusalCode::RevisionStale, "stale source revision"));
         }
         let current = self
             .history
             .document()
             .reload()
-            .map_err(|e| SessionError(e.to_string()))?;
+            .map_err(|e| SessionError::new(RefusalCode::SourceInvalid, e.to_string()))?;
         if current.revision() != expected {
             return Err(refuse(
+                RefusalCode::SourceChanged,
                 "external source change: inspect and reopen a fresh session",
             ));
         }
         Ok(())
+    }
+    /// Why a per-object grant refused `uid`: it does not exist, it is
+    /// carried in an inventory (per-prototype grants cover placed objects
+    /// only), its prototype is granted (`granted`) but it is outside the
+    /// active view, or nothing grants it. Per-uid grants are not
+    /// view-scoped and are checked by the caller.
+    fn object_grant_refusal(
+        &self,
+        uid: &str,
+        granted: impl FnOnce(&tilewright_editor_preview::ObjectGrant) -> bool,
+    ) -> RefusalCode {
+        let world = self.history.document().world();
+        let (Some(object), Some(location)) = (world.object(uid), world.object_location(uid)) else {
+            return RefusalCode::TargetUnknown;
+        };
+        if !self
+            .catalog
+            .editing()
+            .objects
+            .get(&object.proto)
+            .is_some_and(granted)
+        {
+            RefusalCode::GrantMissing
+        } else if location.path.len() != 1 {
+            RefusalCode::TargetUnsupported
+        } else {
+            RefusalCode::ScopeOutsideView
+        }
     }
     fn in_bounds(&self, x: i64, y: i64) -> bool {
         let (_, _, [min_x, min_y, w, h]) = self.catalog.view();
@@ -444,34 +518,47 @@ impl Session {
         let world = document.world();
         let location = world
             .object_location(uid)
-            .ok_or_else(|| refuse("unknown UID location"))?;
+            .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown UID location"))?;
         let chunk = world
             .planes()
             .get(&location.plane)
             .and_then(|plane| plane.chunks.get(&location.chunk))
-            .ok_or_else(|| refuse("missing authoritative object chunk"))?;
+            .ok_or_else(|| {
+                refuse(
+                    RefusalCode::SourceInvalid,
+                    "missing authoritative object chunk",
+                )
+            })?;
         let limits = document.load_options().limits;
         let limit = u64::try_from(limits.max_input_bytes)
-            .map_err(|_| refuse("source byte budget overflow"))?;
+            .map_err(|_| refuse(RefusalCode::Internal, "source byte budget overflow"))?;
         let bytes = document
             .source()
             .read(&chunk.path, limit)
-            .map_err(|error| SessionError(error.to_string()))?
-            .ok_or_else(|| refuse("object source chunk is missing"))?;
-        let text =
-            String::from_utf8(bytes).map_err(|_| refuse("object source chunk is not UTF-8"))?;
-        let syntax = tilewright_jsonc::Document::parse(text, &limits)
-            .map_err(|error| SessionError(error.to_string()))?;
+            .map_err(invalid_source)?
+            .ok_or_else(|| refuse(RefusalCode::SourceInvalid, "object source chunk is missing"))?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            refuse(
+                RefusalCode::SourceInvalid,
+                "object source chunk is not UTF-8",
+            )
+        })?;
+        let syntax = tilewright_jsonc::Document::parse(text, &limits).map_err(invalid_source)?;
         let mut object = syntax.root();
         for (depth, index) in location.path.iter().enumerate() {
             object = object
                 .get(if depth == 0 { "objects" } else { "inventory" })
                 .and_then(tilewright_jsonc::Value::as_array)
                 .and_then(|objects| objects.get(*index))
-                .ok_or_else(|| refuse("object source location changed"))?;
+                .ok_or_else(|| {
+                    refuse(RefusalCode::SourceChanged, "object source location changed")
+                })?;
         }
         if object.get("uid").and_then(tilewright_jsonc::Value::as_str) != Some(uid) {
-            return Err(refuse("object source UID changed"));
+            return Err(refuse(
+                RefusalCode::SourceChanged,
+                "object source UID changed",
+            ));
         }
         inspect(&syntax, object)
     }
@@ -484,15 +571,18 @@ impl Session {
         self.inspect_object_source(uid, |syntax, object| {
             let value = object
                 .get("at")
-                .ok_or_else(|| refuse("missing source coordinates"))?;
+                .ok_or_else(|| refuse(RefusalCode::SourceInvalid, "missing source coordinates"))?;
             let axes = value
                 .as_array()
                 .filter(|axes| axes.len() == 2)
-                .ok_or_else(|| refuse("invalid source coordinates"))?;
+                .ok_or_else(|| refuse(RefusalCode::SourceInvalid, "invalid source coordinates"))?;
             let mut changed_axes = Vec::new();
             for axis in 0..2 {
                 if axes[axis].as_i64() != Some(i64::from(old_at[axis])) {
-                    return Err(refuse("source coordinates changed"));
+                    return Err(refuse(
+                        RefusalCode::SourceChanged,
+                        "source coordinates changed",
+                    ));
                 }
                 if old_at[axis] != at[axis] {
                     changed_axes.push(syntax.canonical(&axes[axis]));
@@ -534,6 +624,7 @@ impl Session {
         let changes = self.terrain_changes(plane, layer, grid, cells, proto, true)?;
         if changes.is_empty() {
             return Err(refuse(
+                RefusalCode::ChangeNone,
                 "brush stroke changes no cell: every covered cell already has this terrain",
             ));
         }
@@ -553,12 +644,20 @@ impl Session {
         stroke: &crate::brush::Stroke,
     ) -> Result<Vec<[i64; 2]>, SessionError> {
         if !self.can_prepare() {
+            // The message predates the code; a blocked session says so by code.
+            let code = if self.status.phase == SessionPhase::Blocked || self.history.needs_reload()
+            {
+                RefusalCode::SessionBlocked
+            } else {
+                RefusalCode::PendingExists
+            };
             return Err(refuse(
+                code,
                 "review pending transaction: Accept or Cancel before another edit",
             ));
         }
         if stroke.expected() != self.history.document().revision() {
-            return Err(refuse("stale source revision"));
+            return Err(refuse(RefusalCode::RevisionStale, "stale source revision"));
         }
         let cells: Vec<[i64; 2]> = stroke.cells().collect();
         let changes = match stroke.target() {
@@ -589,22 +688,27 @@ impl Session {
         stroke_cells(cells)?;
         if !self.catalog.editing().zones.paint {
             return Err(refuse(
+                RefusalCode::GrantMissing,
                 "zone painting refused: the catalog does not grant editing.zones.paint",
             ));
         }
         let (p, l, _) = self.catalog.view();
         if plane != p || layer != l || !cells.iter().all(|&[x, y]| self.in_bounds(x, y)) {
-            return Err(refuse("zone painting is limited to the active view"));
+            return Err(refuse(
+                RefusalCode::ScopeOutsideView,
+                "zone painting is limited to the active view",
+            ));
         }
         let world = self.history.document().world();
         let plane = world
             .planes()
             .get(plane)
-            .ok_or_else(|| refuse("unknown plane"))?;
+            .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown plane"))?;
         if let Some(zone) = zone
             && !plane.zones.contains_key(zone)
         {
             return Err(refuse(
+                RefusalCode::TargetUnknown,
                 "unknown zone: it is not in this plane's zones.jsonc",
             ));
         }
@@ -613,6 +717,7 @@ impl Session {
             .any(|&[x, y]| crate::zones::chunk_exists(plane, layer, x, y))
         {
             return Err(refuse(
+                RefusalCode::ChangeNone,
                 "zone stroke changes no cell: the covered tiles are in map chunks that do not exist",
             ));
         }
@@ -629,6 +734,7 @@ impl Session {
             .collect();
         if changes.is_empty() {
             return Err(refuse(
+                RefusalCode::ChangeNone,
                 "zone stroke changes no cell: every covered cell already has this zone",
             ));
         }
@@ -644,17 +750,20 @@ impl Session {
         skip_unchanged: bool,
     ) -> Result<Vec<TerrainChange<'w>>, SessionError> {
         let (p, l, _) = self.catalog.view();
-        if plane != p
-            || layer != l
-            || !self
-                .catalog
-                .editing()
-                .terrain
-                .get(grid)
-                .is_some_and(|values| values.contains(proto))
-            || !cells.iter().all(|&[x, y]| self.in_bounds(x, y))
-        {
-            return Err(refuse("terrain capability or bounds refused"));
+        let in_view = plane == p && layer == l && cells.iter().all(|&[x, y]| self.in_bounds(x, y));
+        let granted = self
+            .catalog
+            .editing()
+            .terrain
+            .get(grid)
+            .is_some_and(|values| values.contains(proto));
+        if !in_view || !granted {
+            let code = if granted {
+                RefusalCode::ScopeOutsideView
+            } else {
+                RefusalCode::GrantMissing
+            };
+            return Err(refuse(code, "terrain capability or bounds refused"));
         }
         let world = self.history.document().world();
         let index = world
@@ -662,11 +771,11 @@ impl Session {
             .ground_layers
             .iter()
             .position(|g| g == grid)
-            .ok_or_else(|| refuse("unknown ground grid"))?;
+            .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown ground grid"))?;
         let mut changes = Vec::new();
         for &[x, y] in cells {
             let local = usize::try_from(y.rem_euclid(32) * 32 + x.rem_euclid(32))
-                .map_err(|_| refuse("cell overflow"))?;
+                .map_err(|_| refuse(RefusalCode::Internal, "cell overflow"))?;
             let before = world
                 .planes()
                 .get(plane)
@@ -697,7 +806,7 @@ impl Session {
         coordinates: Option<&CoordinateGuards>,
     ) -> Result<(), SessionError> {
         self.verify_revision(expected)?;
-        let text = json!({"format":"tilewright.transaction/1","title":"Editor semantic action","actor":"editor:prototype","operations":operations}).to_string();
+        let text = json!({"format":"tilewright.transaction/1","title":"Editor semantic action","actor":self.actor.as_str(),"operations":operations}).to_string();
         let text = if let Some(coordinates) = coordinates {
             coordinates.apply(text, &self.history.document().load_options().limits)?
         } else {
@@ -706,7 +815,7 @@ impl Session {
         // History seals the complete consulted file base and enforces full World revision.
         self.history
             .prepare(expected, "editor:action", &text)
-            .map_err(|e| SessionError(e.to_string()))?;
+            .map_err(|e| SessionError::history(&e))?;
         self.status.phase = SessionPhase::Pending;
         self.status.message = "Pending World diff; Accept publishes, Cancel writes nothing".into();
         self.invalidate_frame()
@@ -717,20 +826,7 @@ impl Session {
         recovery: &mut impl RecoveryStore,
     ) -> Result<(), SessionError> {
         let result = self.dispatch_inner(action, recovery);
-        self.warnings = self.history.pending().map_or_else(Vec::new, |pending| {
-            let committed = self.history.document().world();
-            let mut lines = crate::insertion::notes(committed, pending.sealed());
-            lines.extend(crate::zones::notes(committed, pending.sealed()));
-            lines.extend(crate::zones::definition_notes(committed, pending.world()));
-            lines.extend(crate::anchors::notes(committed, pending.world()));
-            lines.extend(crate::portals::notes(
-                committed,
-                pending.world(),
-                &self.catalog,
-            ));
-            lines.extend(crate::removal::warnings(committed, pending.sealed()));
-            lines
-        });
+        self.refresh_review();
         if self.history.pending().is_none() {
             self.placing = None;
         }
@@ -748,6 +844,25 @@ impl Session {
         }
         result
     }
+    /// Recompute the notes, warnings and review of the pending transaction.
+    /// Only dispatch changes the pending transaction, so this runs after it.
+    fn refresh_review(&mut self) {
+        self.warnings = self.history.pending().map_or_else(Vec::new, |pending| {
+            let committed = self.history.document().world();
+            let mut lines = crate::insertion::notes(committed, pending.sealed());
+            lines.extend(crate::zones::notes(committed, pending.sealed()));
+            lines.extend(crate::zones::definition_notes(committed, pending.world()));
+            lines.extend(crate::anchors::notes(committed, pending.world()));
+            lines.extend(crate::portals::notes(
+                committed,
+                pending.world(),
+                &self.catalog,
+            ));
+            lines.extend(crate::removal::warnings(committed, pending.sealed()));
+            lines
+        });
+        self.review = Review::of(self.history.pending(), &self.warnings);
+    }
     #[allow(clippy::too_many_lines)]
     fn dispatch_inner(
         &mut self,
@@ -759,6 +874,7 @@ impl Session {
         }
         if self.status.phase == SessionPhase::Blocked || self.history.needs_reload() {
             return Err(refuse(
+                RefusalCode::SessionBlocked,
                 "session blocked: inspect recovery and reopen explicitly",
             ));
         }
@@ -788,6 +904,7 @@ impl Session {
             )
         {
             return Err(refuse(
+                RefusalCode::PendingExists,
                 "review pending transaction: Accept or Cancel before another edit",
             ));
         }
@@ -802,7 +919,10 @@ impl Session {
             Action::Select { generation, key } => {
                 self.verify_revision(self.history.document().revision())?;
                 if generation != self.generation || !self.valid_key(&key) {
-                    return Err(refuse("stale frame or unknown semantic selection"));
+                    return Err(refuse(
+                        RefusalCode::SelectionStale,
+                        "stale frame or unknown semantic selection",
+                    ));
                 }
                 self.selection = Some(key);
                 Ok(())
@@ -814,17 +934,35 @@ impl Session {
                 expected,
             } => {
                 let world = self.history.document().world();
-                if !self.catalog.can_move(world, &uid) || !self.in_bounds(x, y) {
-                    return Err(refuse("movement capability or bounds refused"));
+                let code = if self.catalog.can_move(world, &uid) {
+                    // Granted: only the destination can be outside the view.
+                    (!self.in_bounds(x, y)).then_some(RefusalCode::ScopeOutsideView)
+                } else {
+                    Some(self.object_grant_refusal(&uid, |_| true))
+                };
+                if let Some(code) = code {
+                    return Err(refuse(code, "movement capability or bounds refused"));
                 }
-                let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
+                let object = world
+                    .object(&uid)
+                    .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown UID"))?;
                 let location = world
                     .object_location(&uid)
-                    .ok_or_else(|| refuse("unknown UID location"))?;
+                    .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown UID location"))?;
                 let (plane, layer, _) = self.catalog.view();
                 if location.path.len() != 1 || location.plane != plane || location.chunk.0 != layer
                 {
+                    // The catalog refuses carried `movable_uids` when it loads
+                    // and revalidates before every dispatch, so a carried
+                    // object cannot reach this check today; it stays coded
+                    // like every other carried target.
+                    let code = if location.path.len() == 1 {
+                        RefusalCode::ScopeOutsideView
+                    } else {
+                        RefusalCode::TargetUnsupported
+                    };
                     return Err(refuse(
+                        code,
                         "only placed objects in the active spatial layer can move",
                     ));
                 }
@@ -833,13 +971,23 @@ impl Session {
                         .planes()
                         .get(&location.plane)
                         .and_then(|plane| plane.chunks.get(&location.chunk))
-                        .ok_or_else(|| refuse("missing authoritative object chunk"))?;
-                    let old_at = object
-                        .at
-                        .ok_or_else(|| refuse("placed object has no coordinates"))?;
+                        .ok_or_else(|| {
+                            refuse(
+                                RefusalCode::SourceInvalid,
+                                "missing authoritative object chunk",
+                            )
+                        })?;
+                    let old_at = object.at.ok_or_else(|| {
+                        refuse(
+                            RefusalCode::TargetUnsupported,
+                            "placed object has no coordinates",
+                        )
+                    })?;
                     let at = [
-                        u16::try_from(x.rem_euclid(32)).map_err(|_| refuse("local x overflow"))?,
-                        u16::try_from(y.rem_euclid(32)).map_err(|_| refuse("local y overflow"))?,
+                        u16::try_from(x.rem_euclid(32))
+                            .map_err(|_| refuse(RefusalCode::Internal, "local x overflow"))?,
+                        u16::try_from(y.rem_euclid(32))
+                            .map_err(|_| refuse(RefusalCode::Internal, "local y overflow"))?,
                     ];
                     let index = location.path[0];
                     // World 0.2 forbids object-relative set of `at`. A document
@@ -876,12 +1024,20 @@ impl Session {
                 bounded_value(&value)?;
                 let world = self.history.document().world();
                 if !self.catalog.can_edit_field(world, &uid, &field) {
-                    return Err(refuse("field capability or value budget refused"));
+                    return Err(refuse(
+                        self.object_grant_refusal(&uid, |grant| grant.fields.contains(&field)),
+                        "field capability or value budget refused",
+                    ));
                 }
                 if world.profile().object_fields.field(&field).is_none() {
-                    return Err(refuse("field absent from authoritative schema"));
+                    return Err(refuse(
+                        RefusalCode::TargetUnknown,
+                        "field absent from authoritative schema",
+                    ));
                 }
-                let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
+                let object = world
+                    .object(&uid)
+                    .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown UID"))?;
                 if object.fields.is_empty() {
                     self.verify_revision(expected)?;
                     if self.inspect_object_source(&uid, |_, object| {
@@ -949,15 +1105,19 @@ impl Session {
             }
             Action::Remove { uid, expected } => {
                 let world = self.history.document().world();
-                let object = world.object(&uid).ok_or_else(|| refuse("unknown UID"))?;
+                let object = world
+                    .object(&uid)
+                    .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown UID"))?;
                 if !self.catalog.editing().objects.contains_key(&object.proto) {
                     return Err(refuse(
+                        RefusalCode::GrantMissing,
                         "deletion capability refused: the catalog does not grant this object's prototype",
                     ));
                 }
                 // The same active-view scope as every per-prototype grant.
                 if !self.catalog.can_delete(world, &uid) {
                     return Err(refuse(
+                        self.object_grant_refusal(&uid, |_| true),
                         "only placed objects in the active view can be deleted",
                     ));
                 }
@@ -988,7 +1148,14 @@ impl Session {
                 target,
                 expected,
             } => self.edit_portal(&uid, target.as_ref(), expected),
-            Action::Accept => self.accept(recovery),
+            Action::Accept => {
+                // The engine's own gate: a front end cannot accept a change
+                // whose review was cut short, whatever it displays.
+                if !self.review.complete {
+                    return Err(refuse(RefusalCode::ReviewIncomplete, REVIEW_LIMIT_MESSAGE));
+                }
+                self.accept(recovery)
+            }
             Action::Cancel => {
                 self.history.cancel();
                 self.revalidate_selection();
@@ -1003,7 +1170,7 @@ impl Session {
                 } else {
                     self.history.prepare_redo()
                 };
-                result.map_err(|e| SessionError(e.to_string()))?;
+                result.map_err(|e| SessionError::history(&e))?;
                 self.status.phase = SessionPhase::Pending;
                 self.status.message = "History transaction pending; review and Accept".into();
                 self.invalidate_frame()
@@ -1023,10 +1190,14 @@ impl Session {
         expected: [u8; 32],
     ) -> Result<(), SessionError> {
         let grant = self.catalog.editing().objects.get(proto).ok_or_else(|| {
-            refuse("placement capability refused: the catalog does not grant this prototype")
+            refuse(
+                RefusalCode::GrantMissing,
+                "placement capability refused: the catalog does not grant this prototype",
+            )
         })?;
         if !self.catalog.tile_in_active_view(plane, layer, x, y) {
             return Err(refuse(
+                RefusalCode::ScopeOutsideView,
                 "objects can only be placed on tiles of the active view",
             ));
         }
@@ -1035,7 +1206,7 @@ impl Session {
         let uid = crate::uid::unused_uid(self.uids.as_mut(), |uid| {
             world.object_location(uid).is_some()
         })
-        .map_err(|error| SessionError(error.to_string()))?;
+        .map_err(|error| SessionError::new(RefusalCode::UidUnavailable, error.to_string()))?;
         // Written as text so the placed object keeps this member order in
         // source: uid, prototype, render layer, then the defaults in catalog
         // order. Every value is JSON-encoded; defaults are canonical JSON.
@@ -1064,13 +1235,19 @@ impl Session {
             encode(plane)
         );
         let text = format!(
-            "{{\"format\":\"tilewright.transaction/1\",\"title\":\"Editor semantic action\",\"actor\":\"editor:prototype\",\"operations\":[{operation}]}}"
+            "{{\"format\":\"tilewright.transaction/1\",\"title\":\"Editor semantic action\",\"actor\":{},\"operations\":[{operation}]}}",
+            encode(self.actor.as_str())
         );
         // History seals the complete consulted file base and enforces full
         // World revision; World validates the new object, defaults included.
         self.history
             .prepare(expected, "editor:action", &text)
-            .map_err(|error| SessionError(format!("placement refused: {error}")))?;
+            .map_err(|error| {
+                SessionError::new(
+                    RefusalCode::of_history(&error),
+                    format!("placement refused: {error}"),
+                )
+            })?;
         self.placing = Some(uid);
         self.status.phase = SessionPhase::Pending;
         self.status.message = "Pending World diff; Accept publishes, Cancel writes nothing".into();
@@ -1135,7 +1312,7 @@ impl Session {
                 } else {
                     SessionPhase::Ready
                 };
-                Err(SessionError(error.to_string()))
+                Err(SessionError::history(&error))
             }
         }
     }
@@ -1144,9 +1321,12 @@ impl Session {
             Ok(document) => document,
             Err(error) => {
                 self.status.phase = SessionPhase::Blocked;
-                return Err(SessionError(format!(
-                    "reopen inspection failed: {error}; preserve recovery and inspect source"
-                )));
+                return Err(SessionError::new(
+                    RefusalCode::SourceInvalid,
+                    format!(
+                        "reopen inspection failed: {error}; preserve recovery and inspect source"
+                    ),
+                ));
             }
         };
         if let Err(error) = self.verify_catalog() {
@@ -1158,7 +1338,7 @@ impl Session {
         {
             self.status.phase = SessionPhase::Blocked;
             self.status.message="Reopen inspection complete; source differs or publication uncertain. Preserve recovery; open a fresh explicitly inspected session".into();
-            return Err(refuse(&self.status.message));
+            return Err(refuse(RefusalCode::ReopenBlocked, &self.status.message));
         }
         self.selection = None;
         self.status.message = "Reopen verified committed source revision".into();
@@ -1169,10 +1349,16 @@ impl Session {
 /// order.
 fn stroke_cells(cells: &[[i64; 2]]) -> Result<(), SessionError> {
     if cells.is_empty() || cells.len() > crate::brush::MAXIMUM_STROKE_CELLS {
-        return Err(refuse("brush stroke cell count refused"));
+        return Err(refuse(
+            RefusalCode::InputBudget,
+            "brush stroke cell count refused",
+        ));
     }
     if !cells.windows(2).all(|pair| pair[0] < pair[1]) {
-        return Err(refuse("brush stroke cells must be distinct and ordered"));
+        return Err(refuse(
+            RefusalCode::InputInvalid,
+            "brush stroke cells must be distinct and ordered",
+        ));
     }
     Ok(())
 }
@@ -1192,10 +1378,11 @@ fn field_json(value: &FieldValue) -> Result<Value, SessionError> {
         FieldValue::Integer(v) => Ok(json!(v)),
         FieldValue::Number(v) => Ok(json!(v)),
         FieldValue::String(v) => Ok(json!(v)),
-        FieldValue::Json(v) if v.len() <= 65536 => {
-            serde_json::from_str(v).map_err(|e| SessionError(e.to_string()))
-        }
-        FieldValue::Json(_) => Err(refuse("existing field exceeds semantic editing budget")),
+        FieldValue::Json(v) if v.len() <= 65536 => serde_json::from_str(v).map_err(internal),
+        FieldValue::Json(_) => Err(refuse(
+            RefusalCode::InputBudget,
+            "existing field exceeds semantic editing budget",
+        )),
     }
 }
 
@@ -1219,20 +1406,29 @@ fn bounded_value(value: &Value) -> Result<(), SessionError> {
     while let Some((value, depth)) = pending.pop() {
         count += 1;
         if depth > 8 || count > 4096 {
-            return Err(refuse("field value nesting or entry budget exceeded"));
+            return Err(refuse(
+                RefusalCode::InputBudget,
+                "field value nesting or entry budget exceeded",
+            ));
         }
         let size = match value {
             Value::String(text) => text.len().checked_mul(6).and_then(|v| v.checked_add(3)),
             Value::Array(values) => {
                 if values.len() > 4096usize.saturating_sub(count + pending.len()) {
-                    return Err(refuse("field value entry budget exceeded"));
+                    return Err(refuse(
+                        RefusalCode::InputBudget,
+                        "field value entry budget exceeded",
+                    ));
                 }
                 pending.extend(values.iter().map(|v| (v, depth + 1)));
                 Some(values.len() + 2)
             }
             Value::Object(values) => {
                 if values.len() > 4096usize.saturating_sub(count + pending.len()) {
-                    return Err(refuse("field value entry budget exceeded"));
+                    return Err(refuse(
+                        RefusalCode::InputBudget,
+                        "field value entry budget exceeded",
+                    ));
                 }
                 let mut keys = Some(2usize);
                 for (key, value) in values {
@@ -1251,7 +1447,12 @@ fn bounded_value(value: &Value) -> Result<(), SessionError> {
         bytes = size
             .and_then(|size| bytes.checked_add(size))
             .filter(|size| *size <= 65536)
-            .ok_or_else(|| refuse("field value encoded byte budget exceeded"))?;
+            .ok_or_else(|| {
+                refuse(
+                    RefusalCode::InputBudget,
+                    "field value encoded byte budget exceeded",
+                )
+            })?;
     }
     Ok(())
 }

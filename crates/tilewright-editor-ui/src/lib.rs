@@ -136,8 +136,13 @@ mod tests {
     }
 }
 
+mod actor;
+pub mod review;
 mod session;
-pub use session::{Action, PortalTarget, Session, SessionError, SessionPhase, SessionStatus};
+pub use actor::Actor;
+pub use session::{
+    Action, PortalTarget, RefusalCode, Session, SessionError, SessionPhase, SessionStatus,
+};
 pub use tilewright_editor_preview::SelectionKey;
 
 pub mod anchors;

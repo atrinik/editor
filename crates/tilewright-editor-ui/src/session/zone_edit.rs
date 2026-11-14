@@ -7,7 +7,7 @@
 //! checks only what it must to refuse clearly (the grant, identifier shape,
 //! duplicates, cycles and use); World validates the result when it is
 //! prepared and its refusal leaves nothing pending.
-use super::{Action, Session, SessionError, SessionPhase, refuse};
+use super::{Action, RefusalCode, Session, SessionError, SessionPhase, invalid_source, refuse};
 use serde_json::{Value, json};
 use tilewright_source::Plane;
 
@@ -24,6 +24,7 @@ impl Session {
     pub(super) fn manage_zones(&mut self, action: &Action) -> Result<(), SessionError> {
         if !self.catalog.editing().zones.manage {
             return Err(refuse(
+                RefusalCode::GrantMissing,
                 "zone management refused: the catalog does not grant editing.zones.manage",
             ));
         }
@@ -40,11 +41,15 @@ impl Session {
             plane, expected, ..
         }) = action
         else {
-            return Err(refuse("not a zone management action"));
+            return Err(refuse(
+                RefusalCode::Internal,
+                "not a zone management action",
+            ));
         };
         let expected = *expected;
         if plane != self.catalog.view().0 {
             return Err(refuse(
+                RefusalCode::ScopeOutsideView,
                 "zone management is limited to the active view's plane",
             ));
         }
@@ -54,7 +59,7 @@ impl Session {
         let source = world
             .planes()
             .get(plane)
-            .ok_or_else(|| refuse("unknown plane"))?;
+            .ok_or_else(|| refuse(RefusalCode::TargetUnknown, "unknown plane"))?;
         if let Action::RenameZone {
             name: Some(name), ..
         }
@@ -64,6 +69,7 @@ impl Session {
             && name.chars().count() > MAXIMUM_NAME_CHARACTERS
         {
             return Err(refuse(
+                RefusalCode::InputBudget,
                 "display name refused: a zone's display name has at most 256 characters",
             ));
         }
@@ -85,7 +91,12 @@ impl Session {
                 self.create_operations(&path, zone, name, parent.as_deref())?
             }
             Action::DeleteZone { zone, .. } => delete(source, &path, zone)?,
-            _ => return Err(refuse("not a zone management action")),
+            _ => {
+                return Err(refuse(
+                    RefusalCode::Internal,
+                    "not a zone management action",
+                ));
+            }
         };
         self.prepare_text(expected, &operations, "zone change refused")
     }
@@ -115,11 +126,11 @@ impl Session {
         let document = self.history.document();
         let limits = document.load_options().limits;
         let limit = u64::try_from(limits.max_input_bytes)
-            .map_err(|_| refuse("source byte budget overflow"))?;
+            .map_err(|_| refuse(RefusalCode::Internal, "source byte budget overflow"))?;
         let bytes = document
             .source()
             .read(path, limit)
-            .map_err(|error| SessionError(error.to_string()))?;
+            .map_err(invalid_source)?;
         let Some(bytes) = bytes else {
             // World writes the new document in its canonical layout.
             let text = format!("{{\"format\": \"tilewright.zones/1\", \"zones\": [{entry}]}}");
@@ -128,14 +139,19 @@ impl Session {
                 string(path)
             )]);
         };
-        let text = String::from_utf8(bytes).map_err(|_| refuse("zones.jsonc is not UTF-8"))?;
-        let syntax = tilewright_jsonc::Document::parse(text, &limits)
-            .map_err(|error| SessionError(error.to_string()))?;
+        let text = String::from_utf8(bytes)
+            .map_err(|_| refuse(RefusalCode::SourceInvalid, "zones.jsonc is not UTF-8"))?;
+        let syntax = tilewright_jsonc::Document::parse(text, &limits).map_err(invalid_source)?;
         let count = syntax
             .root()
             .get("zones")
             .and_then(tilewright_jsonc::Value::as_array)
-            .ok_or_else(|| refuse("zones.jsonc has no zones array to add to"))?
+            .ok_or_else(|| {
+                refuse(
+                    RefusalCode::SourceInvalid,
+                    "zones.jsonc has no zones array to add to",
+                )
+            })?
             .len();
         Ok(vec![
             json!({"op": "test", "path": path, "pointer": ["zones", {"id": zone}], "absent": true})
@@ -158,12 +174,18 @@ impl Session {
         refused: &str,
     ) -> Result<(), SessionError> {
         let text = format!(
-            "{{\"format\":\"tilewright.transaction/1\",\"title\":\"Editor semantic action\",\"actor\":\"editor:prototype\",\"operations\":[{}]}}",
+            "{{\"format\":\"tilewright.transaction/1\",\"title\":\"Editor semantic action\",\"actor\":{},\"operations\":[{}]}}",
+            string(self.actor.as_str()),
             operations.join(",")
         );
         self.history
             .prepare(expected, "editor:action", &text)
-            .map_err(|error| SessionError(format!("{refused}: {error}")))?;
+            .map_err(|error| {
+                SessionError::new(
+                    RefusalCode::of_history(&error),
+                    format!("{refused}: {error}"),
+                )
+            })?;
         self.status.phase = SessionPhase::Pending;
         self.status.message = "Pending World diff; Accept publishes, Cancel writes nothing".into();
         self.invalidate_frame()
@@ -171,10 +193,12 @@ impl Session {
 }
 
 fn known<'w>(plane: &'w Plane, zone: &str) -> Result<&'w tilewright_source::Zone, SessionError> {
-    plane
-        .zones
-        .get(zone)
-        .ok_or_else(|| refuse("unknown zone: it is not in this plane's zones.jsonc"))
+    plane.zones.get(zone).ok_or_else(|| {
+        refuse(
+            RefusalCode::TargetUnknown,
+            "unknown zone: it is not in this plane's zones.jsonc",
+        )
+    })
 }
 
 /// `set` (or `test` absent and `set`) of the `name` member, or its `remove`;
@@ -207,6 +231,7 @@ fn reparent(
         check_parent(plane, parent)?;
         if crate::zones::is_within(plane, parent, zone) {
             return Err(refuse(
+                RefusalCode::HierarchyCycle,
                 "parent refused: a zone cannot be its own parent or the child of one of its descendants (that would make a cycle)",
             ));
         }
@@ -231,8 +256,10 @@ fn member_change(
 ) -> Result<Vec<String>, SessionError> {
     let pointer = json!(["zones", {"id": zone}, member]);
     Ok(match (old, new) {
-        (None, None) => return Err(refuse(unchanged)),
-        (Some(old), Some(new)) if old == new => return Err(refuse(unchanged)),
+        (None, None) => return Err(refuse(RefusalCode::ChangeNone, unchanged)),
+        (Some(old), Some(new)) if old == new => {
+            return Err(refuse(RefusalCode::ChangeNone, unchanged));
+        }
         (Some(old), Some(new)) => vec![
             json!({"op": "set", "path": path, "pointer": pointer, "expect": old, "value": new})
                 .to_string(),
@@ -252,6 +279,7 @@ fn check_parent(plane: &Plane, parent: &str) -> Result<(), SessionError> {
         Ok(())
     } else {
         Err(refuse(
+            RefusalCode::TargetUnknown,
             "unknown parent zone: it is not in this plane's zones.jsonc",
         ))
     }
@@ -260,11 +288,15 @@ fn check_parent(plane: &Plane, parent: &str) -> Result<(), SessionError> {
 fn check_new(plane: &Plane, zone: &str, parent: Option<&str>) -> Result<(), SessionError> {
     if !tilewright_source::is_identifier(zone) {
         return Err(refuse(
+            RefusalCode::InputIdentifier,
             "invalid zone id: use 1 to 128 lowercase letters, digits, '_', '.' or '-', starting with a letter or digit",
         ));
     }
     if plane.zones.contains_key(zone) {
-        return Err(refuse("zone id already used in this plane"));
+        return Err(refuse(
+            RefusalCode::TargetExists,
+            "zone id already used in this plane",
+        ));
     }
     parent.map_or(Ok(()), |parent| check_parent(plane, parent))
 }
@@ -275,10 +307,13 @@ fn delete(plane: &Plane, path: &str, zone: &str) -> Result<Vec<String>, SessionE
     let definition = known(plane, zone)?;
     let usage = crate::zones::zone_use(plane, zone);
     if !usage.unused() {
-        return Err(SessionError(format!(
-            "zone is in use and cannot be deleted: {}",
-            usage.reasons().join("; ")
-        )));
+        return Err(SessionError::new(
+            RefusalCode::TargetInUse,
+            format!(
+                "zone is in use and cannot be deleted: {}",
+                usage.reasons().join("; ")
+            ),
+        ));
     }
     Ok(vec![format!(
         "{{\"op\": \"remove\", \"path\": {}, \"pointer\": [\"zones\", {{\"id\": {}}}], \"expect\": {}}}",

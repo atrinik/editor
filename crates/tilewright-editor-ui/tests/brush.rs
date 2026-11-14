@@ -40,7 +40,12 @@ fn fixture_with(configure: impl FnOnce(&Path)) -> (tempfile::TempDir, Session) {
     .unwrap();
     (
         dir,
-        Session::new(History::new(document), catalog, resources),
+        Session::new(
+            History::new(document),
+            catalog,
+            resources,
+            tilewright_editor_ui::Actor::new("editor:prototype").unwrap(),
+        ),
     )
 }
 fn fixture() -> (tempfile::TempDir, Session) {
@@ -351,7 +356,7 @@ fn one_stroke_is_one_pending_diff_with_one_undo_check_and_nothing_written() {
         session
             .dispatch(stroke_action(&session, vec![[0, 3]], "sand"), &mut records)
             .unwrap_err()
-            .0
+            .message()
             .contains("Accept or Cancel")
     );
     assert_eq!(
@@ -402,7 +407,7 @@ fn stroke_actions_refuse_invalid_cells_and_omit_unchanged_ones() {
                 &mut records
             )
             .unwrap_err()
-            .0
+            .message()
             .contains("changes no cell")
     );
     assert!(session.history().pending().is_none());
@@ -592,13 +597,21 @@ fn the_live_preview_is_exactly_the_cells_the_release_prepares() {
     press(&mut session, &mut tools, &mut records, [4, 0]);
     tools.extend_stroke(&cell(7, 0), generation).unwrap();
     let stroke = tools.stroke().unwrap().clone();
-    let refused = session.stroke_changes(&stroke).unwrap_err().0;
+    let refused = session
+        .stroke_changes(&stroke)
+        .unwrap_err()
+        .message()
+        .to_owned();
     let action = tools
         .finish_stroke(session.generation(), false)
         .unwrap()
         .unwrap();
     assert_eq!(
-        session.dispatch(action, &mut records).unwrap_err().0,
+        session
+            .dispatch(action, &mut records)
+            .unwrap_err()
+            .message()
+            .to_owned(),
         refused
     );
     assert!(session.history().pending().is_none());
@@ -625,7 +638,7 @@ fn a_preview_needs_a_ready_session_and_the_strokes_own_revision() {
         session
             .stroke_changes(&stroke)
             .unwrap_err()
-            .0
+            .message()
             .contains("stale")
     );
 }

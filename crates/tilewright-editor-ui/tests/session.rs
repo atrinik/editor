@@ -36,7 +36,12 @@ fn fixture_with(configure: impl FnOnce(&Path)) -> (tempfile::TempDir, Session) {
     .unwrap();
     (
         dir,
-        Session::new(History::new(document), catalog, resources),
+        Session::new(
+            History::new(document),
+            catalog,
+            resources,
+            tilewright_editor_ui::Actor::new("editor:prototype").unwrap(),
+        ),
     )
 }
 #[derive(Default)]
@@ -627,7 +632,12 @@ fn accepting_history_that_removes_selected_uid_clears_invalid_identity() {
         PreviewLimits::default(),
     )
     .unwrap();
-    let mut session = Session::new(history, catalog, resources);
+    let mut session = Session::new(
+        history,
+        catalog,
+        resources,
+        tilewright_editor_ui::Actor::new("editor:prototype").unwrap(),
+    );
     select(
         &mut session,
         SelectionKey::Object {
