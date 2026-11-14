@@ -377,6 +377,8 @@ fn the_apps_transactions_are_byte_identical_to_the_fixed_actor_text() {
     }
 }
 
+// Publishing is checked on Linux only; elsewhere World refuses it.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_redo_keeps_the_edits_actor_and_an_undo_records_none() {
     let dir = fixture_with(|_| {});
