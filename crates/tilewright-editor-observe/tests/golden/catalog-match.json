@@ -1,0 +1,112 @@
+{
+  "format": "tilewright.editor-catalog/1",
+  "revision": "<revision>",
+  "catalog": {
+    "status": "loaded",
+    "view": {
+      "plane": "main",
+      "layer": 0,
+      "bounds": [0, 0, 8, 6]
+    },
+    "presentation": "authored"
+  },
+  "match": "GRASS_EDGE_1",
+  "prototypes": [
+    {
+      "proto": "grass_edge_1",
+      "resource": "grass_edge_1",
+      "anchor": "ground",
+      "placeable": false,
+      "layer": null,
+      "fields": [],
+      "fields_more": 0,
+      "defaults": [],
+      "defaults_more": 0,
+      "portal": false,
+      "terrain": []
+    },
+    {
+      "proto": "grass_edge_10",
+      "resource": "grass_edge_10",
+      "anchor": "ground",
+      "placeable": false,
+      "layer": null,
+      "fields": [],
+      "fields_more": 0,
+      "defaults": [],
+      "defaults_more": 0,
+      "portal": false,
+      "terrain": []
+    },
+    {
+      "proto": "grass_edge_11",
+      "resource": "grass_edge_11",
+      "anchor": "ground",
+      "placeable": false,
+      "layer": null,
+      "fields": [],
+      "fields_more": 0,
+      "defaults": [],
+      "defaults_more": 0,
+      "portal": false,
+      "terrain": []
+    },
+    {
+      "proto": "grass_edge_12",
+      "resource": "grass_edge_12",
+      "anchor": "ground",
+      "placeable": false,
+      "layer": null,
+      "fields": [],
+      "fields_more": 0,
+      "defaults": [],
+      "defaults_more": 0,
+      "portal": false,
+      "terrain": []
+    },
+    {
+      "proto": "grass_edge_13",
+      "resource": "grass_edge_13",
+      "anchor": "ground",
+      "placeable": false,
+      "layer": null,
+      "fields": [],
+      "fields_more": 0,
+      "defaults": [],
+      "defaults_more": 0,
+      "portal": false,
+      "terrain": []
+    },
+    {
+      "proto": "grass_edge_14",
+      "resource": "grass_edge_14",
+      "anchor": "ground",
+      "placeable": false,
+      "layer": null,
+      "fields": [],
+      "fields_more": 0,
+      "defaults": [],
+      "defaults_more": 0,
+      "portal": false,
+      "terrain": []
+    },
+    {
+      "proto": "grass_edge_15",
+      "resource": "grass_edge_15",
+      "anchor": "ground",
+      "placeable": false,
+      "layer": null,
+      "fields": [],
+      "fields_more": 0,
+      "defaults": [],
+      "defaults_more": 0,
+      "portal": false,
+      "terrain": []
+    }
+  ],
+  "prototypes_more": 0,
+  "terrain_palette": [],
+  "terrain_palette_more": 0,
+  "zone_palette": [],
+  "zone_palette_more": 0
+}

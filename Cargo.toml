@@ -3,6 +3,7 @@ members = [
   "crates/tilewright-editor-app",
   "crates/tilewright-editor-commands",
   "crates/tilewright-editor-document",
+  "crates/tilewright-editor-observe",
   "crates/tilewright-editor-preview",
   "crates/tilewright-editor-project",
   "crates/tilewright-editor-recovery",
@@ -21,6 +22,7 @@ repository = "https://github.com/seraphinastudios/tilewright-editor"
 [workspace.dependencies]
 tilewright-editor-commands = { path = "crates/tilewright-editor-commands", version = "=0.1.0" }
 tilewright-editor-document = { path = "crates/tilewright-editor-document", version = "=0.1.0" }
+tilewright-editor-observe = { path = "crates/tilewright-editor-observe", version = "=0.1.0" }
 tilewright-editor-preview = { path = "crates/tilewright-editor-preview", version = "=0.1.0" }
 tilewright-editor-project = { path = "crates/tilewright-editor-project", version = "=0.1.0" }
 tilewright-editor-recovery = { path = "crates/tilewright-editor-recovery", version = "=0.1.0" }

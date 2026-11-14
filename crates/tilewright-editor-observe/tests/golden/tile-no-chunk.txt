@@ -1,0 +1,25 @@
+format: tilewright.editor-tile/1
+revision: <revision>
+tile:
+  plane: meadow
+  layer: 3
+  x: 100
+  y: -100
+chunk: none
+ground:
+  - grid: ground
+    value: none
+  - grid: detail
+    value: none
+  - grid: edge
+    value: none
+height: none
+zone: none
+catalog:
+  status: absent
+objects: (none)
+objects_more: 0
+anchors: (none)
+anchors_more: 0
+arrivals: (none)
+arrivals_more: 0

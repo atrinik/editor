@@ -1,0 +1,14 @@
+{
+  "format": "tilewright.editor-catalog/1",
+  "revision": "<revision>",
+  "catalog": {
+    "status": "absent"
+  },
+  "match": null,
+  "prototypes": [],
+  "prototypes_more": 0,
+  "terrain_palette": [],
+  "terrain_palette_more": 0,
+  "zone_palette": [],
+  "zone_palette_more": 0
+}

@@ -1,0 +1,22 @@
+[package]
+publish = false
+name = "tilewright-editor-observe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tilewright-editor-document.workspace = true
+tilewright-editor-preview.workspace = true
+tilewright-editor-ui.workspace = true
+tilewright-source.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+tilewright-editor-testkit.workspace = true
+
+[lints]
+workspace = true

@@ -1456,6 +1456,7 @@ dependencies = [
  "tilewright-edit",
  "tilewright-editor-commands",
  "tilewright-editor-document",
+ "tilewright-editor-observe",
  "tilewright-editor-preview",
  "tilewright-editor-recovery",
  "tilewright-editor-testkit",
@@ -1487,6 +1488,19 @@ name = "tilewright-editor-document"
 version = "0.1.0"
 dependencies = [
  "tilewright-editor-testkit",
+ "tilewright-source",
+]
+
+[[package]]
+name = "tilewright-editor-observe"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "tilewright-editor-document",
+ "tilewright-editor-preview",
+ "tilewright-editor-testkit",
+ "tilewright-editor-ui",
  "tilewright-source",
 ]
 

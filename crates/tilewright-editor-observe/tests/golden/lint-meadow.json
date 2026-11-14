@@ -1,0 +1,14 @@
+{
+  "format": "tilewright.editor-lint/1",
+  "revision": "<revision>",
+  "catalog": {
+    "status": "absent"
+  },
+  "counts": {
+    "error": 0,
+    "warning": 0,
+    "info": 0
+  },
+  "findings": [],
+  "findings_more": 0
+}
