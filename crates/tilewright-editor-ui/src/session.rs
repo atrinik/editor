@@ -439,6 +439,34 @@ impl Session {
         }
         Ok(())
     }
+    /// Why a per-object grant refused `uid`: it does not exist, it is
+    /// carried in an inventory (per-prototype grants cover placed objects
+    /// only), its prototype is granted (`granted`) but it is outside the
+    /// active view, or nothing grants it. Per-uid grants are not
+    /// view-scoped and are checked by the caller.
+    fn object_grant_refusal(
+        &self,
+        uid: &str,
+        granted: impl FnOnce(&tilewright_editor_preview::ObjectGrant) -> bool,
+    ) -> RefusalCode {
+        let world = self.history.document().world();
+        let (Some(object), Some(location)) = (world.object(uid), world.object_location(uid)) else {
+            return RefusalCode::TargetUnknown;
+        };
+        if !self
+            .catalog
+            .editing()
+            .objects
+            .get(&object.proto)
+            .is_some_and(granted)
+        {
+            RefusalCode::GrantMissing
+        } else if location.path.len() != 1 {
+            RefusalCode::TargetUnsupported
+        } else {
+            RefusalCode::ScopeOutsideView
+        }
+    }
     fn in_bounds(&self, x: i64, y: i64) -> bool {
         let (_, _, [min_x, min_y, w, h]) = self.catalog.view();
         x.checked_sub(min_x).is_some_and(|v| v >= 0 && v < w)
@@ -617,10 +645,11 @@ impl Session {
     ) -> Result<Vec<[i64; 2]>, SessionError> {
         if !self.can_prepare() {
             // The message predates the code; a blocked session says so by code.
-            let code = if self.history.pending().is_some() {
-                RefusalCode::PendingExists
-            } else {
+            let code = if self.status.phase == SessionPhase::Blocked || self.history.needs_reload()
+            {
                 RefusalCode::SessionBlocked
+            } else {
+                RefusalCode::PendingExists
             };
             return Err(refuse(
                 code,
@@ -905,13 +934,13 @@ impl Session {
                 expected,
             } => {
                 let world = self.history.document().world();
-                let granted = self.catalog.can_move(world, &uid);
-                if !granted || !self.in_bounds(x, y) {
-                    let code = if granted {
-                        RefusalCode::ScopeOutsideView
-                    } else {
-                        RefusalCode::GrantMissing
-                    };
+                let code = if self.catalog.can_move(world, &uid) {
+                    // Granted: only the destination can be outside the view.
+                    (!self.in_bounds(x, y)).then_some(RefusalCode::ScopeOutsideView)
+                } else {
+                    Some(self.object_grant_refusal(&uid, |_| true))
+                };
+                if let Some(code) = code {
                     return Err(refuse(code, "movement capability or bounds refused"));
                 }
                 let object = world
@@ -923,8 +952,13 @@ impl Session {
                 let (plane, layer, _) = self.catalog.view();
                 if location.path.len() != 1 || location.plane != plane || location.chunk.0 != layer
                 {
+                    let code = if location.path.len() == 1 {
+                        RefusalCode::ScopeOutsideView
+                    } else {
+                        RefusalCode::TargetUnsupported
+                    };
                     return Err(refuse(
-                        RefusalCode::ScopeOutsideView,
+                        code,
                         "only placed objects in the active spatial layer can move",
                     ));
                 }
@@ -987,7 +1021,7 @@ impl Session {
                 let world = self.history.document().world();
                 if !self.catalog.can_edit_field(world, &uid, &field) {
                     return Err(refuse(
-                        RefusalCode::GrantMissing,
+                        self.object_grant_refusal(&uid, |grant| grant.fields.contains(&field)),
                         "field capability or value budget refused",
                     ));
                 }
@@ -1079,7 +1113,7 @@ impl Session {
                 // The same active-view scope as every per-prototype grant.
                 if !self.catalog.can_delete(world, &uid) {
                     return Err(refuse(
-                        RefusalCode::ScopeOutsideView,
+                        self.object_grant_refusal(&uid, |_| true),
                         "only placed objects in the active view can be deleted",
                     ));
                 }

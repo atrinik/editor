@@ -6,155 +6,106 @@
 //! reworded; codes may not. `docs/ENGINE.md` lists every code.
 use std::fmt;
 
-/// Why the engine refused an action, as a stable dotted code: a group
-/// (`grant`, `scope`, `target`, ...) and the reason within it.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[non_exhaustive]
-pub enum RefusalCode {
+/// Declares [`RefusalCode`], [`RefusalCode::ALL`] and
+/// [`RefusalCode::as_str`] from one list, so no code can be left out of
+/// `ALL` (and so out of its uniqueness and documentation tests).
+macro_rules! refusal_codes {
+    ($($(#[doc = $doc:literal])* $variant:ident => $text:literal,)*) => {
+        /// Why the engine refused an action, as a stable dotted code: a group
+        /// (`grant`, `scope`, `target`, ...) and the reason within it.
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[non_exhaustive]
+        pub enum RefusalCode {
+            $($(#[doc = $doc])* $variant,)*
+        }
+
+        impl RefusalCode {
+            /// Every code, in documentation order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant,)*];
+
+            /// The stable code text.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $text,)*
+                }
+            }
+        }
+    };
+}
+
+refusal_codes! {
     /// The session is blocked after an uncertain publication or failed
     /// reopen; only an explicit Reopen inspection is accepted.
-    SessionBlocked,
+    SessionBlocked => "session.blocked",
     /// A change is pending review: Accept or Cancel it first.
-    PendingExists,
+    PendingExists => "pending.exists",
     /// Accept found no pending change.
-    PendingNone,
+    PendingNone => "pending.none",
     /// The action names a source revision other than the open one.
-    RevisionStale,
+    RevisionStale => "revision.stale",
     /// The source on disk differs from the World the session opened.
-    SourceChanged,
+    SourceChanged => "source.changed",
     /// The source cannot be read, is not UTF-8, does not parse, does not
     /// load, or lacks a document the action needs.
-    SourceInvalid,
+    SourceInvalid => "source.invalid",
     /// The editor catalog or its resources no longer verify.
-    CatalogRefused,
+    CatalogRefused => "catalog.refused",
     /// A selection names a stale frame or an unknown semantic key.
-    SelectionStale,
+    SelectionStale => "selection.stale",
     /// The catalog does not grant this edit.
-    GrantMissing,
+    GrantMissing => "grant.missing",
     /// The target is outside the catalog's active view, or is not a placed
     /// object of it.
-    ScopeOutsideView,
+    ScopeOutsideView => "scope.outside_view",
     /// The named object, plane, zone, anchor, grid or field does not exist.
-    TargetUnknown,
+    TargetUnknown => "target.unknown",
     /// A new id is already used.
-    TargetExists,
+    TargetExists => "target.exists",
     /// The target is still referenced and cannot be deleted.
-    TargetInUse,
+    TargetInUse => "target.in_use",
     /// The target exists but cannot take this edit (for example an
     /// object carried in an inventory).
-    TargetUnsupported,
+    TargetUnsupported => "target.unsupported",
     /// A zone parent would make a cycle.
-    HierarchyCycle,
+    HierarchyCycle => "hierarchy.cycle",
     /// A new id does not have the World identifier shape.
-    InputIdentifier,
+    InputIdentifier => "input.identifier",
     /// The action's input is malformed (for example unordered cells).
-    InputInvalid,
+    InputInvalid => "input.invalid",
     /// The action's input exceeds a value, length or count budget.
-    InputBudget,
+    InputBudget => "input.budget",
     /// The action would change nothing.
-    ChangeNone,
+    ChangeNone => "change.none",
     /// The actor given to the session is not a valid transaction actor.
-    ActorInvalid,
+    ActorInvalid => "actor.invalid",
     /// World refused the prepared transaction; nothing is pending.
-    WorldRefused,
+    WorldRefused => "world.refused",
     /// The pending change's review is incomplete, so Accept is refused.
-    ReviewIncomplete,
+    ReviewIncomplete => "review.incomplete",
     /// History has no room for another step.
-    HistoryFull,
+    HistoryFull => "history.full",
     /// Undo found no step to undo.
-    HistoryNothingToUndo,
+    HistoryNothingToUndo => "history.nothing_to_undo",
     /// Redo found no step to redo.
-    HistoryNothingToRedo,
+    HistoryNothingToRedo => "history.nothing_to_redo",
     /// The recovery store did not retain the inverse; nothing was published.
-    RecoveryFailed,
+    RecoveryFailed => "recovery.failed",
     /// Publication failed; the status reports what was applied.
-    PublishFailed,
+    PublishFailed => "publish.failed",
     /// Publication was applied, but the reopened source differs from the
     /// reviewed result or does not reopen.
-    PublishUnverified,
+    PublishUnverified => "publish.unverified",
     /// Reopen inspection found differing source or an uncertain
     /// publication.
-    ReopenBlocked,
+    ReopenBlocked => "reopen.blocked",
     /// No unused uid could be drawn for a new object.
-    UidUnavailable,
+    UidUnavailable => "uid.unavailable",
     /// An unexpected internal failure: a bug, not a property of the input.
-    Internal,
+    Internal => "internal.unexpected",
 }
 
 impl RefusalCode {
-    /// Every code, in documentation order.
-    pub const ALL: [Self; 31] = [
-        Self::SessionBlocked,
-        Self::PendingExists,
-        Self::PendingNone,
-        Self::RevisionStale,
-        Self::SourceChanged,
-        Self::SourceInvalid,
-        Self::CatalogRefused,
-        Self::SelectionStale,
-        Self::GrantMissing,
-        Self::ScopeOutsideView,
-        Self::TargetUnknown,
-        Self::TargetExists,
-        Self::TargetInUse,
-        Self::TargetUnsupported,
-        Self::HierarchyCycle,
-        Self::InputIdentifier,
-        Self::InputInvalid,
-        Self::InputBudget,
-        Self::ChangeNone,
-        Self::ActorInvalid,
-        Self::WorldRefused,
-        Self::ReviewIncomplete,
-        Self::HistoryFull,
-        Self::HistoryNothingToUndo,
-        Self::HistoryNothingToRedo,
-        Self::RecoveryFailed,
-        Self::PublishFailed,
-        Self::PublishUnverified,
-        Self::ReopenBlocked,
-        Self::UidUnavailable,
-        Self::Internal,
-    ];
-
-    /// The stable code text.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SessionBlocked => "session.blocked",
-            Self::PendingExists => "pending.exists",
-            Self::PendingNone => "pending.none",
-            Self::RevisionStale => "revision.stale",
-            Self::SourceChanged => "source.changed",
-            Self::SourceInvalid => "source.invalid",
-            Self::CatalogRefused => "catalog.refused",
-            Self::SelectionStale => "selection.stale",
-            Self::GrantMissing => "grant.missing",
-            Self::ScopeOutsideView => "scope.outside_view",
-            Self::TargetUnknown => "target.unknown",
-            Self::TargetExists => "target.exists",
-            Self::TargetInUse => "target.in_use",
-            Self::TargetUnsupported => "target.unsupported",
-            Self::HierarchyCycle => "hierarchy.cycle",
-            Self::InputIdentifier => "input.identifier",
-            Self::InputInvalid => "input.invalid",
-            Self::InputBudget => "input.budget",
-            Self::ChangeNone => "change.none",
-            Self::ActorInvalid => "actor.invalid",
-            Self::WorldRefused => "world.refused",
-            Self::ReviewIncomplete => "review.incomplete",
-            Self::HistoryFull => "history.full",
-            Self::HistoryNothingToUndo => "history.nothing_to_undo",
-            Self::HistoryNothingToRedo => "history.nothing_to_redo",
-            Self::RecoveryFailed => "recovery.failed",
-            Self::PublishFailed => "publish.failed",
-            Self::PublishUnverified => "publish.unverified",
-            Self::ReopenBlocked => "reopen.blocked",
-            Self::UidUnavailable => "uid.unavailable",
-            Self::Internal => "internal.unexpected",
-        }
-    }
-
     /// The code a History error is refused with.
     #[must_use]
     pub fn of_history(error: &tilewright_editor_commands::Error) -> Self {
@@ -252,6 +203,20 @@ mod tests {
                 documented.matches(&format!("`{text}`")).count(),
                 1,
                 "{text} must be listed exactly once in docs/ENGINE.md"
+            );
+        }
+        // Every code row of the table names a code that exists.
+        let listed: Vec<&str> = documented
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|rest| rest.split_once('`'))
+            .map(|(code, _)| code)
+            .collect();
+        assert_eq!(listed.len(), texts.len());
+        for code in listed {
+            assert!(
+                texts.contains(code),
+                "docs/ENGINE.md lists unknown code {code}"
             );
         }
         // Only one code is reserved for unexpected internal failures.

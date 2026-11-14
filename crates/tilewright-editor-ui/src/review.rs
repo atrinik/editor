@@ -238,7 +238,11 @@ pub struct PendingSummary<'s> {
 }
 
 impl<'s> PendingSummary<'s> {
-    pub(crate) fn of(
+    /// The summary of `pending`, prepared on the source revision `base`,
+    /// with its `review` and the notes and warnings that review was built
+    /// from. [`crate::Session::pending_summary`] is the usual way to get one.
+    #[must_use]
+    pub fn of(
         base: [u8; 32],
         pending: &'s Preview,
         review: &'s Review,

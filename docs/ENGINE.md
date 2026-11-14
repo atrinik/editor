@@ -26,10 +26,14 @@ bypass anything the desktop app enforces. See
   first to disable its Accept button, but the engine does not rely on it.
 - **The actor.** `Session::new` takes an `Actor`, the `actor` of every
   transaction the session prepares: non-empty, at most 256 characters (the
-  transaction format's limit) and free of control characters, for example
+  transaction format's limit), and made only of printable ASCII (space
+  included) and Unicode letters and digits, so no control, invisible or
+  format character (such as a bidirectional override) can hide in it; for example
   `editor:prototype` (the desktop app), `human:<name>` or `agent:<client>`.
   A redo replays the accepted edit with its actor. An undo replays World's
-  inverse of it, which records no actor.
+  inverse of it, which records no actor. Transaction text alone therefore
+  does not attribute every step: later work on proposals must record the
+  actor of each step itself.
 - **Summaries.** `Session::pending_summary` gives a bounded structured view
   of the pending change for callers that do not draw it: base and result
   revisions, at most 32 changed files with their change kind and sizes (and
@@ -49,8 +53,14 @@ coordinates, never by the frame selection: `Move`, `SetField`, `Remove`
 and `SetPortal` by uid; `Paint`, `PaintStroke`, `PaintZones` and `Place` by
 plane tile; zone and anchor actions by plane and id. `Select` and
 `ClearSelection` only change what the desktop app highlights; an accepted
-placement selects the new object. Targets must still be in the catalog's
-active view, because the catalog grants edits only there.
+placement selects the new object.
+
+Per-prototype grants (`editing.objects`, terrain, zones, anchors, portals)
+apply only in the catalog's active view, and only to placed objects, not to
+objects carried in an inventory (refused with the code target.unsupported).
+Per-uid grants (`movable_uids` and `fields`) are not view-scoped: they apply
+to their object wherever it is, though a move's destination must still be in
+the view.
 
 ## Refusal codes
 
@@ -79,7 +89,7 @@ Messages are for people and may be reworded; codes are stable.
 | `input.invalid` | The action's input is malformed, for example unordered stroke cells. |
 | `input.budget` | The action's input exceeds a value, length or count budget. |
 | `change.none` | The action would change nothing. |
-| `actor.invalid` | The actor is empty, too long or contains a control character. |
+| `actor.invalid` | The actor is empty, too long, or has a character outside printable ASCII and Unicode letters and digits. |
 | `world.refused` | World refused the prepared transaction; nothing is pending. |
 | `review.incomplete` | The pending change's review is incomplete, so Accept is refused. |
 | `history.full` | History has no room for another step. |

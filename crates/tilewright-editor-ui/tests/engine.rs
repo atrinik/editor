@@ -608,6 +608,14 @@ fn refusals_carry_codes_by_meaning() {
             RefusalCode::WorldRefused,
         ),
     ];
+    let mut cases = cases;
+    cases.extend(granted_refusals(expected));
+    let kinds: BTreeSet<&str> = cases.iter().filter_map(|(a, _)| edit_kind(a)).collect();
+    assert_eq!(
+        kinds,
+        EDIT_KINDS.into_iter().collect(),
+        "one case per edit kind"
+    );
     let mut seen = BTreeSet::new();
     for (action, code) in cases {
         let name = format!("{action:?}");
@@ -641,4 +649,365 @@ fn refusals_carry_codes_by_meaning() {
         RefusalCode::SourceChanged
     );
     assert!(!seen.contains(&RefusalCode::Internal));
+}
+
+fn main_plane() -> String {
+    "main".into()
+}
+
+/// One coded refusal or more for every edit kind, on the neutral fixture,
+/// where every kind is granted. The codes are the check that failed.
+#[allow(clippy::too_many_lines)]
+fn granted_refusals(expected: [u8; 32]) -> Vec<(Action, RefusalCode)> {
+    vec![
+        // Prototype granted, object outside the active view.
+        (
+            Action::Move {
+                uid: "marker_negative".into(),
+                x: 1,
+                y: 1,
+                expected,
+            },
+            RefusalCode::ScopeOutsideView,
+        ),
+        // Granted per uid, destination outside the view.
+        (
+            Action::Move {
+                uid: "marker_1".into(),
+                x: 100,
+                y: 1,
+                expected,
+            },
+            RefusalCode::ScopeOutsideView,
+        ),
+        (
+            Action::Move {
+                uid: "nowhere".into(),
+                x: 1,
+                y: 1,
+                expected,
+            },
+            RefusalCode::TargetUnknown,
+        ),
+        (
+            Action::SetField {
+                uid: "marker_negative".into(),
+                field: "label".into(),
+                value: json!("moved"),
+                expected,
+            },
+            RefusalCode::ScopeOutsideView,
+        ),
+        // A field the prototype grant does not list.
+        (
+            Action::SetField {
+                uid: "marker_2".into(),
+                field: "settings".into(),
+                value: json!({}),
+                expected,
+            },
+            RefusalCode::GrantMissing,
+        ),
+        (
+            Action::PaintZones {
+                plane: main_plane(),
+                layer: 0,
+                cells: vec![[100, 0]],
+                zone: Some("path".into()),
+                expected,
+            },
+            RefusalCode::ScopeOutsideView,
+        ),
+        (
+            Action::PaintZones {
+                plane: main_plane(),
+                layer: 0,
+                cells: vec![[6, 0]],
+                zone: Some("nowhere".into()),
+                expected,
+            },
+            RefusalCode::TargetUnknown,
+        ),
+        (
+            Action::Remove {
+                uid: "marker_negative".into(),
+                expected,
+            },
+            RefusalCode::ScopeOutsideView,
+        ),
+        (
+            Action::Place {
+                plane: main_plane(),
+                layer: 0,
+                x: 100,
+                y: 0,
+                proto: "marker".into(),
+                expected,
+            },
+            RefusalCode::ScopeOutsideView,
+        ),
+        (
+            Action::Place {
+                plane: main_plane(),
+                layer: 0,
+                x: 1,
+                y: 1,
+                proto: "grass".into(),
+                expected,
+            },
+            RefusalCode::GrantMissing,
+        ),
+        (
+            Action::RenameZone {
+                plane: main_plane(),
+                zone: "path".into(),
+                name: Some("Stone path".into()),
+                expected,
+            },
+            RefusalCode::ChangeNone,
+        ),
+        (
+            Action::RenameZone {
+                plane: main_plane(),
+                zone: "path".into(),
+                name: Some("x".repeat(257)),
+                expected,
+            },
+            RefusalCode::InputBudget,
+        ),
+        (
+            Action::SetZoneParent {
+                plane: main_plane(),
+                zone: "path".into(),
+                parent: Some("nowhere".into()),
+                expected,
+            },
+            RefusalCode::TargetUnknown,
+        ),
+        (
+            Action::DeleteZone {
+                plane: main_plane(),
+                zone: "meadow".into(),
+                expected,
+            },
+            RefusalCode::TargetInUse,
+        ),
+        (
+            Action::CreateAnchor {
+                plane: main_plane(),
+                anchor: "camp".into(),
+                x: 100,
+                y: 0,
+                expected,
+            },
+            RefusalCode::ScopeOutsideView,
+        ),
+        (
+            Action::CreateAnchor {
+                plane: main_plane(),
+                anchor: "arrival".into(),
+                x: 1,
+                y: 1,
+                expected,
+            },
+            RefusalCode::TargetExists,
+        ),
+        (
+            Action::MoveAnchor {
+                plane: main_plane(),
+                anchor: "lookout".into(),
+                x: 1,
+                y: 1,
+                expected,
+            },
+            RefusalCode::ScopeOutsideView,
+        ),
+        (
+            Action::DeleteAnchor {
+                plane: main_plane(),
+                anchor: "nowhere".into(),
+                expected,
+            },
+            RefusalCode::TargetUnknown,
+        ),
+        (
+            Action::SetPortal {
+                uid: "marker_1".into(),
+                target: None,
+                expected,
+            },
+            RefusalCode::GrantMissing,
+        ),
+        (
+            Action::SetPortal {
+                uid: "gate_east".into(),
+                target: Some(PortalTarget::Anchor {
+                    plane: main_plane(),
+                    anchor: "arrival".into(),
+                }),
+                expected,
+            },
+            RefusalCode::ChangeNone,
+        ),
+        (
+            Action::SetPortal {
+                uid: "gate_west".into(),
+                target: Some(PortalTarget::Anchor {
+                    plane: "nowhere".into(),
+                    anchor: "arrival".into(),
+                }),
+                expected,
+            },
+            RefusalCode::TargetUnknown,
+        ),
+    ]
+}
+
+#[test]
+fn an_ungranted_catalog_refuses_every_edit_kind_as_grant_missing() {
+    let dir = fixture_with(|root| {
+        edit_json(root, "preview.jsonc", |catalog| {
+            catalog["editing"] = json!({
+                "movable_uids": [], "terrain": [], "fields": [], "objects": [],
+                "zones": {"paint": false, "manage": false},
+                "anchors": {"edit": false},
+            });
+        });
+        spare_zone(root);
+    });
+    let mut session = open(dir.path(), AGENT_ACTOR);
+    let mut records = Records::default();
+    for action in edits(revision(&session)) {
+        let kind = edit_kind(&action).unwrap();
+        assert_eq!(
+            refused(&mut session, action, &mut records),
+            RefusalCode::GrantMissing,
+            "{kind}"
+        );
+    }
+    assert!(records.inverses.is_empty());
+}
+
+#[test]
+fn objects_carried_in_an_inventory_are_unsupported_targets() {
+    let dir = fixture_with(|root| {
+        edit_json(root, CHUNK, |chunk| {
+            chunk["objects"][0]["inventory"] = json!([{"uid": "carried_marker", "proto": "marker", "fields": {"label": "Carried"}}]);
+            chunk["objects"][2]["inventory"] = json!([{"uid": "carried_gate", "proto": "gate"}]);
+        });
+    });
+    let mut session = open(dir.path(), AGENT_ACTOR);
+    let mut records = Records::default();
+    let expected = revision(&session);
+    for action in [
+        Action::Move {
+            uid: "carried_marker".into(),
+            x: 1,
+            y: 1,
+            expected,
+        },
+        Action::SetField {
+            uid: "carried_marker".into(),
+            field: "label".into(),
+            value: json!("Moved"),
+            expected,
+        },
+        Action::Remove {
+            uid: "carried_marker".into(),
+            expected,
+        },
+        Action::SetPortal {
+            uid: "carried_gate".into(),
+            target: None,
+            expected,
+        },
+    ] {
+        let kind = edit_kind(&action).unwrap();
+        assert_eq!(
+            refused(&mut session, action, &mut records),
+            RefusalCode::TargetUnsupported,
+            "{kind}"
+        );
+    }
+}
+
+/// Edits the chunk after the inverse is retained, so publication fails.
+struct ConcurrentEdit {
+    chunk: std::path::PathBuf,
+}
+impl RecoveryStore for ConcurrentEdit {
+    fn retain(&mut self, _inverse: &str) -> Result<(), String> {
+        let bytes = fs::read_to_string(&self.chunk).unwrap();
+        fs::write(&self.chunk, format!("// concurrent writer\n{bytes}")).unwrap();
+        Ok(())
+    }
+}
+
+#[test]
+fn pending_blocked_and_failed_publication_have_their_own_codes() {
+    let dir = fixture_with(|_| {});
+    let mut session = open(dir.path(), AGENT_ACTOR);
+    let mut records = Records::default();
+    // A stroke begun while the session was ready.
+    session
+        .dispatch(
+            Action::Select {
+                generation: session.generation(),
+                key: SelectionKey::Cell {
+                    plane: main_plane(),
+                    layer: 0,
+                    grid: "floor".into(),
+                    x: 0,
+                    y: 0,
+                },
+            },
+            &mut records,
+        )
+        .unwrap();
+    let key = session.selection().unwrap().clone();
+    let inspected = tilewright_editor_ui::inspector::inspect(
+        session.world(),
+        session.catalog(),
+        session.selection(),
+        session.generation(),
+        revision(&session),
+    );
+    let mut tools = tilewright_editor_ui::tools::ToolState::default();
+    tools.set_mode(tilewright_editor_ui::tools::ToolMode::Terrain);
+    tools
+        .choose_terrain(session.catalog(), "floor", "sand")
+        .unwrap();
+    tools.begin_stroke(&inspected, &key, false).unwrap();
+    let stroke = tools.stroke().unwrap().clone();
+    assert!(session.stroke_changes(&stroke).is_ok());
+    let expected = revision(&session);
+    session
+        .dispatch(edits(expected).swap_remove(2), &mut records)
+        .unwrap();
+    assert_eq!(
+        session.stroke_changes(&stroke).unwrap_err().code(),
+        RefusalCode::PendingExists
+    );
+    let mut failing = ConcurrentEdit {
+        chunk: dir.path().join(CHUNK),
+    };
+    let error = session.dispatch(Action::Accept, &mut failing).unwrap_err();
+    assert_eq!(error.code(), RefusalCode::PublishFailed, "{error}");
+    assert_eq!(session.status().phase, SessionPhase::Blocked);
+    // Blocked, with the failed change still pending for inspection.
+    assert!(session.history().pending().is_some());
+    assert_eq!(
+        session.stroke_changes(&stroke).unwrap_err().code(),
+        RefusalCode::SessionBlocked
+    );
+    for action in [Action::Accept, Action::Undo, Action::Cancel] {
+        assert_eq!(
+            refused(&mut session, action, &mut records),
+            RefusalCode::SessionBlocked
+        );
+    }
+    assert_eq!(
+        refused(&mut session, Action::Reopen, &mut records),
+        RefusalCode::ReopenBlocked
+    );
 }
